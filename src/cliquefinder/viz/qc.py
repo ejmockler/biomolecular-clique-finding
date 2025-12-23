@@ -608,6 +608,824 @@ class QCVisualizer:
         )
 
     # =========================================================================
+    # ADAPTIVE OUTLIER HANDLING NARRATIVES
+    # =========================================================================
+
+    def plot_skewness_adaptation(
+        self,
+        medcouples: np.ndarray,
+        lower_fences: np.ndarray,
+        upper_fences: np.ndarray,
+        feature_ids: np.ndarray,
+        figsize: tuple[float, float] = (14, 8)
+    ) -> Figure:
+        """
+        Visualize medcouple-based asymmetric fence adaptation.
+
+        Narrative: "We detected distribution asymmetry and adapted outlier bounds
+        accordingly—right-skewed features get wider upper fences, left-skewed
+        features get wider lower fences."
+
+        Cognitive Task: Understand WHY different proteins have different fence widths.
+
+        Perceptual Channels:
+        - X-position: Medcouple (skewness measure)
+        - Y-position: Fence asymmetry ratio
+        - Color: Skewness direction (blue=left, red=right, gray=symmetric)
+        - Vertical position: Shows how bounds expand/contract with skewness
+
+        Parameters
+        ----------
+        medcouples : np.ndarray
+            Medcouple values per feature (range [-1, 1])
+        lower_fences : np.ndarray
+            Lower outlier fence per feature
+        upper_fences : np.ndarray
+            Upper outlier fence per feature
+        feature_ids : np.ndarray
+            Feature identifiers for labeling
+        """
+        fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+        # === Panel 1: Medcouple distribution (skewness landscape) ===
+        ax1 = axes[0]
+
+        # Color by skewness direction
+        colors = np.where(
+            medcouples > 0.1, self.palette.ctrl,  # Right-skewed (orange)
+            np.where(medcouples < -0.1, self.palette.case, self.palette.neutral)  # Left-skewed (blue) / symmetric (gray)
+        )
+
+        ax1.hist(medcouples, bins=50, color=self.palette.neutral, edgecolor='white', alpha=0.7)
+
+        # Shade skewness regions
+        ax1.axvspan(-1, -0.1, alpha=0.15, color=self.palette.case, label='Left-skewed')
+        ax1.axvspan(-0.1, 0.1, alpha=0.15, color=self.palette.neutral, label='Symmetric')
+        ax1.axvspan(0.1, 1, alpha=0.15, color=self.palette.ctrl, label='Right-skewed')
+
+        ax1.axvline(0, color='black', linestyle='-', linewidth=2)
+
+        # Summary stats
+        n_left = (medcouples < -0.1).sum()
+        n_sym = ((medcouples >= -0.1) & (medcouples <= 0.1)).sum()
+        n_right = (medcouples > 0.1).sum()
+
+        ax1.text(0.02, 0.98,
+                f"Left-skewed: {n_left:,} ({100*n_left/len(medcouples):.0f}%)\n"
+                f"Symmetric: {n_sym:,} ({100*n_sym/len(medcouples):.0f}%)\n"
+                f"Right-skewed: {n_right:,} ({100*n_right/len(medcouples):.0f}%)",
+                transform=ax1.transAxes, va='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+        ax1.set_xlabel("Medcouple (MC)")
+        ax1.set_ylabel("Number of Features")
+        ax1.set_title("Distribution Skewness Landscape")
+        ax1.set_xlim(-1, 1)
+        ax1.legend(loc='upper right', fontsize=8)
+
+        # === Panel 2: Fence asymmetry vs medcouple (the adaptation story) ===
+        ax2 = axes[1]
+
+        # Compute fence asymmetry: ratio of upper to lower fence width
+        # Higher ratio = wider upper fence relative to lower
+        fence_ratio = np.log2((upper_fences + 1) / (lower_fences + 1 + 1e-10))
+
+        # Scatter with medcouple coloring
+        scatter = ax2.scatter(medcouples, fence_ratio, c=medcouples, cmap='RdBu_r',
+                             alpha=0.6, s=20, edgecolors='none', vmin=-1, vmax=1)
+
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax2, shrink=0.8)
+        cbar.set_label('Medcouple')
+
+        # Trend line (theoretical)
+        mc_range = np.linspace(-0.8, 0.8, 100)
+        # Hubert-Vandervieren: right-skew (MC>0) → expand upper fence
+        expected_ratio = mc_range * 2  # Simplified visualization of adaptation
+        ax2.plot(mc_range, expected_ratio, 'k--', linewidth=2, alpha=0.7, label='Expected adaptation')
+
+        ax2.axhline(0, color='gray', linestyle='-', linewidth=1)
+        ax2.axvline(0, color='gray', linestyle='-', linewidth=1)
+
+        ax2.set_xlabel("Medcouple (Skewness)")
+        ax2.set_ylabel("log₂(Upper/Lower Fence Ratio)")
+        ax2.set_title("Fence Adaptation to Skewness")
+        ax2.legend(loc='upper left', fontsize=8)
+
+        # === Panel 3: Top asymmetric features (who needed adaptation?) ===
+        ax3 = axes[2]
+
+        # Find most skewed features
+        skewness_magnitude = np.abs(medcouples)
+        top_idx = np.argsort(skewness_magnitude)[-15:][::-1]
+
+        top_features = feature_ids[top_idx]
+        top_mc = medcouples[top_idx]
+
+        # Convert to gene symbols
+        top_gene_symbols = [get_gene_symbol(f) for f in top_features]
+
+        y_pos = np.arange(len(top_features))
+        colors_bar = [self.palette.ctrl if mc > 0 else self.palette.case for mc in top_mc]
+
+        ax3.barh(y_pos, top_mc, color=colors_bar, edgecolor='white')
+        ax3.set_yticks(y_pos)
+        ax3.set_yticklabels(top_gene_symbols, fontsize=8)
+        ax3.invert_yaxis()
+        ax3.axvline(0, color='black', linestyle='-', linewidth=2)
+        ax3.set_xlabel("Medcouple")
+        ax3.set_title("Most Asymmetric Features")
+
+        # Add skewness direction labels
+        ax3.text(0.6, 1.02, "Right-skewed →", transform=ax3.transAxes, fontsize=8,
+                color=self.palette.ctrl, ha='center')
+        ax3.text(-0.1, 1.02, "← Left-skewed", transform=ax3.transAxes, fontsize=8,
+                color=self.palette.case, ha='center')
+
+        fig.suptitle("Medcouple-Adjusted Outlier Detection:\nAdapting to Distribution Shape",
+                    fontweight='bold', fontsize=12)
+        plt.tight_layout()
+
+        return Figure(
+            fig=fig,
+            title="Skewness Adaptation",
+            description=f"{n_left:,} left-skewed, {n_sym:,} symmetric, {n_right:,} right-skewed features",
+            figure_type="matplotlib"
+        )
+
+    def plot_probabilistic_scores(
+        self,
+        outlier_pvalues: np.ndarray,
+        outlier_mask: np.ndarray,
+        degrees_of_freedom: float,
+        figsize: tuple[float, float] = (14, 8)
+    ) -> Figure:
+        """
+        Visualize Student's t probabilistic outlier scores.
+
+        Narrative: "Instead of binary outlier flags, we assigned probability
+        scores using heavy-tailed Student's t distributions. This captures
+        uncertainty—borderline values get intermediate scores."
+
+        Cognitive Task: See the gradient from confident to uncertain outliers.
+
+        Perceptual Channels:
+        - X-position: p-value (probability of being this extreme)
+        - Color gradient: Outlier confidence (red=confident, yellow=uncertain)
+        - Histogram shape: Shows concentration of confidence levels
+
+        Parameters
+        ----------
+        outlier_pvalues : np.ndarray
+            P-values from Student's t distribution (shape: n_features × n_samples)
+        outlier_mask : np.ndarray
+            Binary outlier mask for comparison
+        degrees_of_freedom : float
+            Fitted df parameter (lower = heavier tails)
+        """
+        fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+        # Flatten arrays for overall analysis
+        pvals_flat = outlier_pvalues.flatten()
+        mask_flat = outlier_mask.flatten()
+
+        # === Panel 1: P-value distribution (where is confidence?) ===
+        ax1 = axes[0]
+
+        # Log-transform p-values for better visualization
+        log_pvals = -np.log10(pvals_flat + 1e-300)  # Avoid log(0)
+
+        # Histogram with gradient coloring based on significance
+        bins = np.linspace(0, min(50, log_pvals.max()), 100)
+        n, bins_edges, patches = ax1.hist(log_pvals, bins=bins, edgecolor='white', linewidth=0.3)
+
+        # Color patches by significance level
+        cmap = plt.cm.YlOrRd
+        for i, patch in enumerate(patches):
+            bin_center = (bins_edges[i] + bins_edges[i+1]) / 2
+            # Normalize to [0, 1] for colormap
+            intensity = min(1.0, bin_center / 10)  # Cap at -log10(p) = 10
+            patch.set_facecolor(cmap(intensity))
+
+        # Add significance thresholds
+        ax1.axvline(-np.log10(0.05), color='black', linestyle='--', linewidth=2,
+                   label='p = 0.05')
+        ax1.axvline(-np.log10(0.01), color='black', linestyle=':', linewidth=2,
+                   label='p = 0.01')
+        ax1.axvline(-np.log10(0.001), color='black', linestyle='-.', linewidth=2,
+                   label='p = 0.001')
+
+        ax1.set_xlabel("-log₁₀(p-value)")
+        ax1.set_ylabel("Count")
+        ax1.set_title("Outlier Confidence Distribution")
+        ax1.legend(loc='upper right', fontsize=8)
+
+        # Summary stats
+        n_p05 = (pvals_flat < 0.05).sum()
+        n_p01 = (pvals_flat < 0.01).sum()
+        n_p001 = (pvals_flat < 0.001).sum()
+        ax1.text(0.98, 0.98,
+                f"p < 0.05: {n_p05:,} ({100*n_p05/len(pvals_flat):.2f}%)\n"
+                f"p < 0.01: {n_p01:,} ({100*n_p01/len(pvals_flat):.2f}%)\n"
+                f"p < 0.001: {n_p001:,} ({100*n_p001/len(pvals_flat):.2f}%)",
+                transform=ax1.transAxes, va='top', ha='right', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+        # === Panel 2: Binary vs probabilistic comparison ===
+        ax2 = axes[1]
+
+        # For values flagged as outliers by binary method, show their p-value distribution
+        binary_outlier_pvals = pvals_flat[mask_flat]
+        binary_inlier_pvals = pvals_flat[~mask_flat]
+
+        if len(binary_outlier_pvals) > 0:
+            ax2.hist(-np.log10(binary_outlier_pvals + 1e-300), bins=50, alpha=0.7,
+                    color=self.palette.outlier, label=f'Binary outliers (n={len(binary_outlier_pvals):,})',
+                    edgecolor='white', density=True)
+
+        if len(binary_inlier_pvals) > 0:
+            ax2.hist(-np.log10(binary_inlier_pvals + 1e-300), bins=50, alpha=0.5,
+                    color=self.palette.neutral, label=f'Binary inliers (n={len(binary_inlier_pvals):,})',
+                    edgecolor='white', density=True)
+
+        ax2.set_xlabel("-log₁₀(p-value)")
+        ax2.set_ylabel("Density")
+        ax2.set_title("Binary vs Probabilistic: Outlier Confidence")
+        ax2.legend(loc='upper right', fontsize=8)
+
+        # === Panel 3: Degrees of freedom impact (tail heaviness) ===
+        ax3 = axes[2]
+
+        # Show Student's t PDF with fitted df vs Normal
+        x = np.linspace(-6, 6, 200)
+
+        # Normal distribution
+        normal_pdf = stats.norm.pdf(x)
+
+        # Student's t with fitted df
+        t_pdf = stats.t.pdf(x, df=degrees_of_freedom)
+
+        # Reference: t with df=3 (heavy tails) and df=30 (near-normal)
+        t3_pdf = stats.t.pdf(x, df=3)
+        t30_pdf = stats.t.pdf(x, df=30)
+
+        ax3.plot(x, normal_pdf, 'k-', linewidth=2, label='Normal', alpha=0.7)
+        ax3.plot(x, t30_pdf, '--', color=self.palette.neutral, linewidth=1.5,
+                label='t (df=30, light tails)', alpha=0.7)
+        ax3.plot(x, t_pdf, '-', color=self.palette.highlight, linewidth=3,
+                label=f't (df={degrees_of_freedom:.1f}, fitted)')
+        ax3.plot(x, t3_pdf, '--', color=self.palette.outlier, linewidth=1.5,
+                label='t (df=3, heavy tails)', alpha=0.7)
+
+        # Shade tail regions
+        tail_x = x[np.abs(x) > 2.5]
+        ax3.fill_between(tail_x, 0, stats.t.pdf(tail_x, df=degrees_of_freedom),
+                        alpha=0.3, color=self.palette.highlight, label='Tail mass')
+
+        ax3.set_xlabel("Standardized Value (z)")
+        ax3.set_ylabel("Probability Density")
+        ax3.set_title(f"Tail Heaviness: Fitted df = {degrees_of_freedom:.1f}")
+        ax3.legend(loc='upper right', fontsize=8)
+        ax3.set_xlim(-6, 6)
+        ax3.set_ylim(0, 0.45)
+
+        # Interpretation
+        if degrees_of_freedom < 10:
+            tail_interpretation = "Heavy tails → tolerant of extremes"
+        elif degrees_of_freedom < 30:
+            tail_interpretation = "Moderate tails → balanced"
+        else:
+            tail_interpretation = "Light tails → strict outlier detection"
+
+        ax3.text(0.5, 0.02, tail_interpretation, transform=ax3.transAxes,
+                ha='center', fontsize=10, style='italic',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        fig.suptitle("Student's t Probabilistic Outlier Scoring:\nCapturing Uncertainty in Extreme Values",
+                    fontweight='bold', fontsize=12)
+        plt.tight_layout()
+
+        return Figure(
+            fig=fig,
+            title="Probabilistic Outlier Scores",
+            description=f"df={degrees_of_freedom:.1f}, {n_p001:,} values with p < 0.001",
+            figure_type="matplotlib"
+        )
+
+    def plot_soft_clip_transformation(
+        self,
+        original_values: np.ndarray,
+        clipped_values: np.ndarray,
+        outlier_mask: np.ndarray,
+        sharpness: float = 5.0,
+        figsize: tuple[float, float] = (14, 8)
+    ) -> Figure:
+        """
+        Visualize soft clipping transformation curve and rank preservation.
+
+        Narrative: "We smoothly compressed extreme values using a sigmoid function,
+        preserving rank order while reducing their influence. No information is
+        completely lost—extremes are just pulled closer together."
+
+        Cognitive Task: Understand the transformation curve, verify rank preservation.
+
+        Perceptual Channels:
+        - Curve shape: Shows smooth compression (not hard cutoff)
+        - Before/after scatter: Shows transformation applied
+        - Rank comparison: Verifies ordering preserved
+
+        Parameters
+        ----------
+        original_values : np.ndarray
+            Original expression values (flat or 2D)
+        clipped_values : np.ndarray
+            Soft-clipped values
+        outlier_mask : np.ndarray
+            Boolean mask of outlier positions
+        sharpness : float
+            Sharpness parameter used in tanh transformation
+        """
+        fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+        # Flatten if needed
+        orig_flat = original_values.flatten()
+        clip_flat = clipped_values.flatten()
+        mask_flat = outlier_mask.flatten()
+
+        # Focus on outliers only
+        orig_out = orig_flat[mask_flat]
+        clip_out = clip_flat[mask_flat]
+
+        # === Panel 1: Transformation curve (the core insight) ===
+        ax1 = axes[0]
+
+        # Create a range spanning the data
+        x_range = np.linspace(orig_flat.min(), orig_flat.max(), 500)
+
+        # Compute bounds for soft clipping (approximate from data)
+        non_outlier = orig_flat[~mask_flat]
+        if len(non_outlier) > 0:
+            lower_bound = np.percentile(non_outlier, 1)
+            upper_bound = np.percentile(non_outlier, 99)
+        else:
+            lower_bound = np.percentile(orig_flat, 5)
+            upper_bound = np.percentile(orig_flat, 95)
+
+        # Theoretical soft clip curve
+        center = (lower_bound + upper_bound) / 2
+        half_width = (upper_bound - lower_bound) / 2
+
+        def soft_clip_curve(x, c, hw, k):
+            """Soft clipping using tanh."""
+            normalized = (x - c) / hw
+            clipped = np.tanh(normalized / k) * k
+            return c + hw * clipped / k
+
+        y_theoretical = soft_clip_curve(x_range, center, half_width, 1/sharpness)
+
+        # Plot identity line (no transformation)
+        ax1.plot(x_range, x_range, 'k--', linewidth=1, alpha=0.5, label='Identity (no change)')
+
+        # Plot soft clip curve
+        ax1.plot(x_range, y_theoretical, '-', color=self.palette.highlight, linewidth=3,
+                label=f'Soft clip (k={sharpness:.1f})')
+
+        # Mark the bounds
+        ax1.axvline(lower_bound, color=self.palette.case, linestyle=':', linewidth=2)
+        ax1.axvline(upper_bound, color=self.palette.case, linestyle=':', linewidth=2)
+        ax1.axhline(lower_bound, color=self.palette.case, linestyle=':', linewidth=2, alpha=0.5)
+        ax1.axhline(upper_bound, color=self.palette.case, linestyle=':', linewidth=2, alpha=0.5)
+
+        # Shade compression regions
+        ax1.fill_between(x_range, x_range, y_theoretical, where=x_range < lower_bound,
+                        alpha=0.3, color=self.palette.ctrl, label='Expansion zone')
+        ax1.fill_between(x_range, x_range, y_theoretical, where=x_range > upper_bound,
+                        alpha=0.3, color=self.palette.case, label='Compression zone')
+
+        ax1.set_xlabel("Original Value")
+        ax1.set_ylabel("Soft-Clipped Value")
+        ax1.set_title("Soft Clipping Transformation Curve")
+        ax1.legend(loc='upper left', fontsize=8)
+
+        # === Panel 2: Before vs After scatter for outliers ===
+        ax2 = axes[1]
+
+        if len(orig_out) > 0:
+            # Color by direction of change
+            delta = clip_out - orig_out
+            pulled_down = delta < 0
+            pulled_up = delta > 0
+            unchanged = np.abs(delta) < 1e-6
+
+            ax2.scatter(orig_out[pulled_down], clip_out[pulled_down],
+                       alpha=0.5, s=20, c=self.palette.case,
+                       label=f'Compressed ({pulled_down.sum():,})', edgecolors='none')
+            ax2.scatter(orig_out[pulled_up], clip_out[pulled_up],
+                       alpha=0.5, s=20, c=self.palette.ctrl,
+                       label=f'Expanded ({pulled_up.sum():,})', edgecolors='none')
+
+            # Identity line
+            all_vals = np.concatenate([orig_out, clip_out])
+            lims = [all_vals.min(), all_vals.max()]
+            ax2.plot(lims, lims, 'k--', linewidth=1, alpha=0.5)
+
+            # Add bounds
+            ax2.axvline(lower_bound, color='gray', linestyle=':', alpha=0.5)
+            ax2.axvline(upper_bound, color='gray', linestyle=':', alpha=0.5)
+
+        ax2.set_xlabel("Original Value")
+        ax2.set_ylabel("Soft-Clipped Value")
+        ax2.set_title(f"Outlier Values: Before vs After ({len(orig_out):,} values)")
+        ax2.legend(loc='upper left', fontsize=8)
+
+        # === Panel 3: Rank preservation verification ===
+        ax3 = axes[2]
+
+        if len(orig_out) > 100:
+            # Subsample for visualization
+            sample_idx = np.random.choice(len(orig_out), min(500, len(orig_out)), replace=False)
+            orig_sample = orig_out[sample_idx]
+            clip_sample = clip_out[sample_idx]
+        else:
+            orig_sample = orig_out
+            clip_sample = clip_out
+
+        # Compute ranks
+        orig_ranks = stats.rankdata(orig_sample)
+        clip_ranks = stats.rankdata(clip_sample)
+
+        # Scatter ranks
+        ax3.scatter(orig_ranks, clip_ranks, alpha=0.5, s=15,
+                   c=self.palette.highlight, edgecolors='none')
+
+        # Perfect preservation line
+        max_rank = max(orig_ranks.max(), clip_ranks.max())
+        ax3.plot([1, max_rank], [1, max_rank], 'k--', linewidth=2, alpha=0.7,
+                label='Perfect preservation')
+
+        # Compute Spearman correlation
+        if len(orig_sample) > 2:
+            spearman_r, _ = stats.spearmanr(orig_sample, clip_sample)
+        else:
+            spearman_r = 1.0
+
+        ax3.set_xlabel("Original Rank")
+        ax3.set_ylabel("Soft-Clipped Rank")
+        ax3.set_title(f"Rank Preservation (Spearman ρ = {spearman_r:.4f})")
+        ax3.legend(loc='upper left', fontsize=8)
+
+        # Annotation about rank preservation
+        if spearman_r > 0.999:
+            rank_msg = "Perfect rank preservation"
+            msg_color = self.palette.highlight
+        elif spearman_r > 0.99:
+            rank_msg = "Near-perfect rank preservation"
+            msg_color = self.palette.highlight
+        else:
+            rank_msg = "Some rank changes (extreme compression)"
+            msg_color = self.palette.outlier
+
+        ax3.text(0.5, 0.02, rank_msg, transform=ax3.transAxes,
+                ha='center', fontsize=10, color=msg_color, style='italic',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        fig.suptitle("Soft Clipping: Smooth Compression Preserving Biological Order",
+                    fontweight='bold', fontsize=12)
+        plt.tight_layout()
+
+        return Figure(
+            fig=fig,
+            title="Soft Clipping Transformation",
+            description=f"Spearman ρ = {spearman_r:.4f}, {len(orig_out):,} outliers transformed",
+            figure_type="matplotlib"
+        )
+
+    def plot_weighted_contribution(
+        self,
+        values_x: np.ndarray,
+        values_y: np.ndarray,
+        weights: np.ndarray,
+        feature_name_x: str = "Feature X",
+        feature_name_y: str = "Feature Y",
+        unweighted_corr: Optional[float] = None,
+        weighted_corr: Optional[float] = None,
+        figsize: tuple[float, float] = (14, 6)
+    ) -> Figure:
+        """
+        Visualize weighted correlation contribution.
+
+        Narrative: "Instead of removing outliers from correlation calculations,
+        we downweighted their influence. Every data point contributes, but
+        extreme values have reduced impact."
+
+        Cognitive Task: See which values had reduced influence.
+
+        Perceptual Channels:
+        - Position: X-Y coordinates in correlation space
+        - Size: Weight (larger = more influence)
+        - Color: Weight intensity (darker = more influence)
+
+        Parameters
+        ----------
+        values_x, values_y : np.ndarray
+            Feature values for correlation pair
+        weights : np.ndarray
+            Sample weights (0-1, lower for outliers)
+        feature_name_x, feature_name_y : str
+            Feature labels for axes
+        unweighted_corr, weighted_corr : float, optional
+            Pre-computed correlations for annotation
+        """
+        fig, axes = plt.subplots(1, 3, figsize=figsize)
+
+        # === Panel 1: Weight distribution ===
+        ax1 = axes[0]
+
+        ax1.hist(weights, bins=50, color=self.palette.case, edgecolor='white', alpha=0.8)
+
+        # Mark weight thresholds
+        ax1.axvline(1.0, color='black', linestyle='-', linewidth=2, label='Full weight')
+        ax1.axvline(0.5, color=self.palette.outlier, linestyle='--', linewidth=2,
+                   label='Half weight')
+
+        # Count by weight categories
+        n_full = (weights > 0.95).sum()
+        n_reduced = ((weights <= 0.95) & (weights > 0.5)).sum()
+        n_low = (weights <= 0.5).sum()
+
+        ax1.text(0.02, 0.98,
+                f"Full weight (>0.95): {n_full:,} ({100*n_full/len(weights):.1f}%)\n"
+                f"Reduced (0.5-0.95): {n_reduced:,} ({100*n_reduced/len(weights):.1f}%)\n"
+                f"Low weight (≤0.5): {n_low:,} ({100*n_low/len(weights):.1f}%)",
+                transform=ax1.transAxes, va='top', fontsize=9,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+        ax1.set_xlabel("Weight")
+        ax1.set_ylabel("Count")
+        ax1.set_title("Sample Weight Distribution")
+        ax1.legend(loc='upper left', fontsize=8)
+        ax1.set_xlim(0, 1.05)
+
+        # === Panel 2: Scatter with size-encoded weights ===
+        ax2 = axes[1]
+
+        # Normalize weights for size mapping
+        size_min, size_max = 5, 100
+        sizes = size_min + (size_max - size_min) * weights
+
+        # Color by weight
+        scatter = ax2.scatter(values_x, values_y, s=sizes, c=weights, cmap='viridis',
+                             alpha=0.6, edgecolors='white', linewidths=0.3,
+                             vmin=0, vmax=1)
+
+        cbar = plt.colorbar(scatter, ax=ax2, shrink=0.8)
+        cbar.set_label('Weight')
+
+        # Add regression lines
+        if len(values_x) > 2:
+            # Unweighted regression
+            z_uw = np.polyfit(values_x, values_y, 1)
+            p_uw = np.poly1d(z_uw)
+            x_line = np.linspace(values_x.min(), values_x.max(), 100)
+            ax2.plot(x_line, p_uw(x_line), '--', color=self.palette.neutral, linewidth=2,
+                    label='Unweighted fit')
+
+            # Weighted regression
+            z_w = np.polyfit(values_x, values_y, 1, w=weights)
+            p_w = np.poly1d(z_w)
+            ax2.plot(x_line, p_w(x_line), '-', color=self.palette.highlight, linewidth=2,
+                    label='Weighted fit')
+
+        ax2.set_xlabel(get_gene_symbol(feature_name_x))
+        ax2.set_ylabel(get_gene_symbol(feature_name_y))
+        ax2.set_title("Correlation Space\n(size & color = weight)")
+        ax2.legend(loc='best', fontsize=8)
+
+        # === Panel 3: Correlation comparison ===
+        ax3 = axes[2]
+
+        # If correlations not provided, compute them
+        if unweighted_corr is None and len(values_x) > 2:
+            unweighted_corr, _ = stats.pearsonr(values_x, values_y)
+
+        if weighted_corr is None and len(values_x) > 2:
+            # Weighted Pearson correlation
+            w_sum = weights.sum()
+            mean_x = np.average(values_x, weights=weights)
+            mean_y = np.average(values_y, weights=weights)
+            cov_xy = np.sum(weights * (values_x - mean_x) * (values_y - mean_y)) / w_sum
+            var_x = np.sum(weights * (values_x - mean_x)**2) / w_sum
+            var_y = np.sum(weights * (values_y - mean_y)**2) / w_sum
+            weighted_corr = cov_xy / np.sqrt(var_x * var_y) if var_x > 0 and var_y > 0 else 0
+
+        # Bar comparison
+        correlations = [unweighted_corr or 0, weighted_corr or 0]
+        labels = ['Unweighted', 'Weighted']
+        colors = [self.palette.neutral, self.palette.highlight]
+
+        bars = ax3.bar(labels, correlations, color=colors, edgecolor='white', linewidth=2)
+
+        # Add value labels on bars
+        for bar, corr in zip(bars, correlations):
+            height = bar.get_height()
+            ax3.annotate(f'{corr:.3f}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=12, fontweight='bold')
+
+        ax3.set_ylabel("Pearson Correlation")
+        ax3.set_title("Effect of Weighting on Correlation")
+
+        # Show the change
+        if unweighted_corr and weighted_corr:
+            delta = weighted_corr - unweighted_corr
+            delta_pct = 100 * delta / (abs(unweighted_corr) + 1e-10)
+
+            if abs(delta) < 0.01:
+                change_msg = "Minimal change"
+            elif delta > 0:
+                change_msg = f"↑ {abs(delta):.3f} ({abs(delta_pct):.1f}% increase)"
+            else:
+                change_msg = f"↓ {abs(delta):.3f} ({abs(delta_pct):.1f}% decrease)"
+
+            ax3.text(0.5, 0.02, change_msg, transform=ax3.transAxes,
+                    ha='center', fontsize=10, style='italic',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        # Set y-axis limits
+        ax3.set_ylim(min(0, min(correlations) - 0.1), max(1, max(correlations) + 0.1))
+
+        fig.suptitle("Weighted Correlation: Downweighting Outlier Influence",
+                    fontweight='bold', fontsize=12)
+        plt.tight_layout()
+
+        return Figure(
+            fig=fig,
+            title="Weighted Correlation",
+            description=f"r_unweighted={unweighted_corr:.3f}, r_weighted={weighted_corr:.3f}",
+            figure_type="matplotlib"
+        )
+
+    def plot_adaptive_summary_card(
+        self,
+        matrix_before: BioMatrix,
+        matrix_after: BioMatrix,
+        medcouples: Optional[np.ndarray] = None,
+        outlier_pvalues: Optional[np.ndarray] = None,
+        degrees_of_freedom: Optional[float] = None,
+        weights: Optional[np.ndarray] = None,
+        figsize: tuple[float, float] = (16, 12)
+    ) -> Figure:
+        """
+        Unified summary card for adaptive outlier handling.
+
+        Combines insights from all adaptive methods into a single dashboard:
+        - Top-left: Intervention magnitude (standard)
+        - Top-right: Skewness adaptation (medcouple)
+        - Bottom-left: Probabilistic scores (Student's t)
+        - Bottom-right: Weight distribution (weighted correlation)
+
+        Parameters
+        ----------
+        matrix_before : BioMatrix
+            Data before imputation
+        matrix_after : BioMatrix
+            Data after imputation
+        medcouples : np.ndarray, optional
+            Medcouple values per feature
+        outlier_pvalues : np.ndarray, optional
+            P-values from Student's t scoring
+        degrees_of_freedom : float, optional
+            Fitted df parameter
+        weights : np.ndarray, optional
+            Sample weights for weighted correlation
+        """
+        fig = plt.figure(figsize=figsize)
+        gs = GridSpec(2, 2, figure=fig)
+
+        # Get outlier mask
+        outlier_mask = matrix_before.data != matrix_after.data
+        n_outliers = outlier_mask.sum()
+        total = matrix_before.data.size
+        pct = 100 * n_outliers / total
+
+        # === Panel 1: Intervention magnitude (standard view) ===
+        ax1 = fig.add_subplot(gs[0, 0])
+
+        orig = matrix_before.data[outlier_mask]
+        imputed = matrix_after.data[outlier_mask]
+        delta = imputed - orig
+
+        if len(orig) > 0:
+            pulled_down = delta < 0
+            pulled_up = delta > 0
+
+            ax1.scatter(orig[pulled_down], imputed[pulled_down],
+                       alpha=0.4, s=12, c=self.palette.case,
+                       label=f'Down ({pulled_down.sum():,})', edgecolors='none')
+            ax1.scatter(orig[pulled_up], imputed[pulled_up],
+                       alpha=0.4, s=12, c=self.palette.ctrl,
+                       label=f'Up ({pulled_up.sum():,})', edgecolors='none')
+
+            all_vals = np.concatenate([orig, imputed])
+            lims = [all_vals.min(), all_vals.max()]
+            ax1.plot(lims, lims, 'k-', linewidth=1.5, alpha=0.7)
+
+            if all_vals.max() / (all_vals.min() + 1) > 100:
+                ax1.set_xscale('log')
+                ax1.set_yscale('log')
+
+        ax1.set_xlabel("Original")
+        ax1.set_ylabel("Imputed")
+        ax1.set_title("Winsorization Pattern")
+        ax1.legend(loc='upper left', fontsize=7)
+
+        # === Panel 2: Skewness adaptation ===
+        ax2 = fig.add_subplot(gs[0, 1])
+
+        if medcouples is not None:
+            ax2.hist(medcouples, bins=40, color=self.palette.neutral, edgecolor='white', alpha=0.7)
+            ax2.axvspan(-1, -0.1, alpha=0.15, color=self.palette.case)
+            ax2.axvspan(-0.1, 0.1, alpha=0.15, color=self.palette.neutral)
+            ax2.axvspan(0.1, 1, alpha=0.15, color=self.palette.ctrl)
+            ax2.axvline(0, color='black', linestyle='-', linewidth=2)
+            ax2.set_xlim(-1, 1)
+
+            n_left = (medcouples < -0.1).sum()
+            n_right = (medcouples > 0.1).sum()
+            ax2.text(0.02, 0.98, f"L:{n_left:,} R:{n_right:,}",
+                    transform=ax2.transAxes, va='top', fontsize=9)
+        else:
+            ax2.text(0.5, 0.5, "Medcouple not computed", ha='center', va='center',
+                    transform=ax2.transAxes, fontsize=10, color='gray')
+
+        ax2.set_xlabel("Medcouple")
+        ax2.set_ylabel("Features")
+        ax2.set_title("Skewness Distribution")
+
+        # === Panel 3: Probabilistic scores ===
+        ax3 = fig.add_subplot(gs[1, 0])
+
+        if outlier_pvalues is not None:
+            log_pvals = -np.log10(outlier_pvalues.flatten() + 1e-300)
+            bins = np.linspace(0, min(30, log_pvals.max()), 60)
+            n, bins_edges, patches = ax3.hist(log_pvals, bins=bins, edgecolor='white', linewidth=0.3)
+
+            cmap = plt.cm.YlOrRd
+            for i, patch in enumerate(patches):
+                bin_center = (bins_edges[i] + bins_edges[i+1]) / 2
+                intensity = min(1.0, bin_center / 10)
+                patch.set_facecolor(cmap(intensity))
+
+            ax3.axvline(-np.log10(0.05), color='black', linestyle='--', linewidth=2)
+            ax3.axvline(-np.log10(0.001), color='black', linestyle='-.', linewidth=2)
+
+            df_text = f"df={degrees_of_freedom:.1f}" if degrees_of_freedom else ""
+            ax3.text(0.98, 0.98, df_text, transform=ax3.transAxes,
+                    va='top', ha='right', fontsize=9)
+        else:
+            ax3.text(0.5, 0.5, "P-values not computed", ha='center', va='center',
+                    transform=ax3.transAxes, fontsize=10, color='gray')
+
+        ax3.set_xlabel("-log₁₀(p-value)")
+        ax3.set_ylabel("Count")
+        ax3.set_title("Outlier Confidence")
+
+        # === Panel 4: Weight distribution ===
+        ax4 = fig.add_subplot(gs[1, 1])
+
+        if weights is not None:
+            ax4.hist(weights.flatten(), bins=50, color=self.palette.highlight,
+                    edgecolor='white', alpha=0.8)
+            ax4.axvline(1.0, color='black', linestyle='-', linewidth=2)
+            ax4.axvline(0.5, color=self.palette.outlier, linestyle='--', linewidth=2)
+            ax4.set_xlim(0, 1.05)
+
+            n_full = (weights > 0.95).sum()
+            n_low = (weights <= 0.5).sum()
+            ax4.text(0.02, 0.98, f"Full:{n_full:,} Low:{n_low:,}",
+                    transform=ax4.transAxes, va='top', fontsize=9)
+        else:
+            ax4.text(0.5, 0.5, "Weights not computed", ha='center', va='center',
+                    transform=ax4.transAxes, fontsize=10, color='gray')
+
+        ax4.set_xlabel("Weight")
+        ax4.set_ylabel("Count")
+        ax4.set_title("Sample Weights")
+
+        fig.suptitle(f"Adaptive Outlier Handling Summary\n"
+                    f"{n_outliers:,} outliers ({pct:.2f}%) detected and processed",
+                    fontweight='bold', fontsize=13)
+        plt.tight_layout()
+
+        return Figure(
+            fig=fig,
+            title="Adaptive Outlier Summary",
+            description=f"{n_outliers:,} outliers ({pct:.2f}%) with adaptive methods",
+            figure_type="matplotlib"
+        )
+
+    # =========================================================================
     # SEX CLASSIFICATION NARRATIVE
     # =========================================================================
 
