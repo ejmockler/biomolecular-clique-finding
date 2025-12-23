@@ -1,0 +1,13 @@
+{
+  "lambert_2018": {
+    "source": "Lambert et al. (2018) Cell",
+    "doi": "10.1016/j.cell.2018.01.029",
+    "url": "http://humantfs.ccbr.utoronto.ca/download/v_1.01/DatabaseExtract_v_1.01.csv",
+    "downloaded": "2025-12-05T16:25:26.355396",
+    "checksum": "5438940ddef71b6fb8017af609e7599338159f47e2e03ca0439dc0711a8d4cc9",
+    "file": "data/tf_databases/lambert_2018_human_tfs.csv",
+    "version": "1.01",
+    "species": "Homo sapiens",
+    "n_tfs": 1639
+  }
+}
