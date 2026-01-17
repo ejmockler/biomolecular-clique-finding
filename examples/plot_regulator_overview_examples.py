@@ -13,7 +13,7 @@ from cliquefinder.viz.cliques import CliqueVisualizer
 # Load data
 data_dir = Path("results/cliques")
 rewiring_df = pd.read_csv(data_dir / "regulator_rewiring_stats.csv")
-stratified_df = pd.read_csv(data_dir / "stratified_cliques.csv")
+stratified_df = pd.read_csv(data_dir / "cliques.csv")
 
 # Create output directory
 output_dir = Path("figures/regulator_overview_examples")

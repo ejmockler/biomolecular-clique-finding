@@ -11,7 +11,7 @@ from pathlib import Path
 from cliquefinder.viz import CliqueVisualizer, FigureCollection
 
 # Configuration
-DATA_PATH = Path("results/cliques/stratified_cliques.csv")
+DATA_PATH = Path("results/cliques/cliques.csv")
 OUTPUT_DIR = Path("figures/stratum_heatmaps")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

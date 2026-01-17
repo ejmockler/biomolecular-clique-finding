@@ -16,7 +16,7 @@ from pathlib import Path
 from cliquefinder.viz import CliqueVisualizer
 
 # Load stratified cliques data
-data_path = Path("results/cliques/stratified_cliques.csv")
+data_path = Path("results/cliques/cliques.csv")
 df = pd.read_csv(data_path)
 
 # Initialize visualizer with paper style for publication quality

@@ -498,16 +498,24 @@ def figure_5_clique_size_distribution(stratified_df, output_path):
 
 def main():
     """Generate all narrative figures."""
+    import argparse
+    parser = argparse.ArgumentParser(description='Generate narrative figures')
+    parser.add_argument('--data-dir', type=Path, default=Path('output/regulatory_cliques'),
+                        help='Directory with clique analysis results')
+    parser.add_argument('--output-dir', type=Path, default=Path('output/regulatory_cliques/figures'),
+                        help='Output directory for figures')
+    args = parser.parse_args()
+
     setup_style()
 
     # Paths
-    data_dir = Path('results/proteomics_cliques_optimized')
-    output_dir = Path('figures/clique_narrative')
+    data_dir = args.data_dir
+    output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading data...")
     summary = pd.read_csv(data_dir / 'regulators_summary.csv')
-    stratified = pd.read_csv(data_dir / 'stratified_cliques.csv')
+    stratified = pd.read_csv(data_dir / 'cliques.csv')
     rewiring = pd.read_csv(data_dir / 'regulator_rewiring_stats.csv')
 
     print(f"  Regulators: {len(summary)}")

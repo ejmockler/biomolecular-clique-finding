@@ -20,7 +20,7 @@ def main():
 
     # Load clique data
     print("\nLoading data...")
-    df = pd.read_csv("results/cliques/stratified_cliques.csv")
+    df = pd.read_csv("results/cliques/cliques.csv")
     print(f"  Loaded {len(df)} clique entries")
     print(f"  Regulators: {df['regulator'].nunique()}")
 
