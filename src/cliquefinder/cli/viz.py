@@ -157,10 +157,14 @@ def run_qc(args):
 
         flags_files = list(args.input.glob("*.flags.csv"))
         flags_file = flags_files[0] if flags_files else None
+
+        params_files = list(args.input.glob("*.params.json"))
+        params_file = params_files[0] if params_files else None
     else:
         data_file = args.input
         metadata_file = None
         flags_file = None
+        params_file = None
         # Try to find sibling files
         stem = args.input.stem.replace('.data', '')
         parent = args.input.parent
@@ -173,6 +177,11 @@ def run_qc(args):
             candidate = parent / pattern
             if candidate.exists():
                 flags_file = candidate
+                break
+        for pattern in [f"{stem}.params.json", f"{stem}_params.json"]:
+            candidate = parent / pattern
+            if candidate.exists():
+                params_file = candidate
                 break
 
     if data_file is None:
@@ -218,6 +227,36 @@ def run_qc(args):
         # Use load_matrix for flexible format handling (TSV, proteomics formats, etc.)
         raw_original = load_matrix(args.original)
 
+        # Check if log transformation was applied during imputation
+        import json
+        params_file = None
+        for pattern in ["*.params.json", "*_params.json"]:
+            matches = list(args.input.glob(pattern)) if args.input.is_dir() else list(args.input.parent.glob(pattern))
+            if matches:
+                params_file = matches[0]
+                break
+
+        log_transform_applied = False
+        log_method = "log1p"
+        if params_file and params_file.exists():
+            with open(params_file) as f:
+                params = json.load(f)
+                log_transform_applied = params.get("is_log_transformed", False)
+                log_method = params.get("log_transform_method", "log1p")
+
+        if log_transform_applied:
+            print(f"    Applying {log_method} to original (matching imputation)")
+            if log_method == "log1p":
+                raw_original_data = np.log1p(raw_original.data)
+            elif log_method == "log2":
+                raw_original_data = np.log2(raw_original.data + 1)
+            elif log_method == "log10":
+                raw_original_data = np.log10(raw_original.data + 1)
+            else:
+                raw_original_data = np.log1p(raw_original.data)
+        else:
+            raw_original_data = raw_original.data
+
         # Align to imputed samples and features
         # The imputed data may have dropped samples/features during QC
         common_samples = matrix.sample_ids.intersection(raw_original.sample_ids)
@@ -245,7 +284,7 @@ def run_qc(args):
             orig_feature_idx = {f: i for i, f in enumerate(raw_original.feature_ids)}
 
             aligned_data = np.array([
-                [raw_original.data[orig_feature_idx[f], orig_sample_idx[s]]
+                [raw_original_data[orig_feature_idx[f], orig_sample_idx[s]]
                  for s in sample_order]
                 for f in feature_order
             ])
@@ -322,7 +361,7 @@ def run_qc(args):
         # 4. Outlier distribution by stratum (data-driven, no arbitrary thresholds)
         print("  - Outlier distribution by stratum...")
         try:
-            fig = viz.plot_outlier_distribution_by_stratum(matrix_before, matrix)
+            fig = viz.plot_outlier_distribution_by_stratum(matrix_before, matrix, params_path=params_file)
             collection.add("04_outlier_by_stratum", fig)
         except Exception as e:
             print(f"    Warning: {e}")
@@ -332,7 +371,7 @@ def run_qc(args):
         sex_pred_col = None
         sex_gt_col = None
 
-        for col in ["Sex_predicted"]:
+        for col in ["Sex_imputed", "Sex_predicted"]:
             if col in matrix.sample_metadata.columns:
                 sex_pred_col = col
                 break

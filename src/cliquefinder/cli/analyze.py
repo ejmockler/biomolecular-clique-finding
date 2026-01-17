@@ -73,6 +73,8 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Regulator gene symbols to analyze")
     parser.add_argument("--stratify-by", nargs="+", default=["phenotype", "Sex"],
                         help="Metadata columns for stratification")
+    parser.add_argument("--no-stratify", action="store_true",
+                        help="Disable stratification (analyze all samples as one cohort)")
     parser.add_argument("--min-evidence", type=int, default=2,
                         help="Minimum evidence for CoGEx relationships")
     parser.add_argument("--min-correlation", type=float, default=0.7,
@@ -192,6 +194,11 @@ def run_analyze(args: argparse.Namespace) -> int:
     # Handle log transform flag
     if args.no_log_transform:
         args.log_transform = False
+
+    # Handle stratification flag
+    if args.no_stratify:
+        args.stratify_by = []
+        logger.info("Stratification disabled - analyzing all samples as one cohort")
 
     print(f"\n{'='*70}")
     print("  Phase 2: Regulatory Clique Discovery")

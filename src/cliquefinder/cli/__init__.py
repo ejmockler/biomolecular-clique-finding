@@ -2,11 +2,12 @@
 CliqueFinder CLI - Command-line interface for co-expression module discovery.
 
 Commands:
-    cliquefinder impute       - Detect and impute outliers in expression data
-    cliquefinder analyze      - Regulatory validation with INDRA CoGEx (knowledge-guided)
-    cliquefinder discover     - De novo co-expression discovery (data-driven)
-    cliquefinder sensitivity  - MAD-Z threshold sensitivity analysis (methodological rigor)
-    cliquefinder viz          - Generate visualizations and reports
+    cliquefinder impute        - Detect and impute outliers in expression data
+    cliquefinder analyze       - Regulatory validation with INDRA CoGEx (knowledge-guided)
+    cliquefinder discover      - De novo co-expression discovery (data-driven)
+    cliquefinder differential  - Clique-level differential abundance (MSstats-inspired)
+    cliquefinder sensitivity   - MAD-Z threshold sensitivity analysis (methodological rigor)
+    cliquefinder viz           - Generate visualizations and reports
 """
 
 import argparse
@@ -22,11 +23,12 @@ def main(args: Optional[List[str]] = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-  impute       Detect and impute outliers in expression data
-  analyze      Regulatory validation with INDRA CoGEx (knowledge-guided)
-  discover     De novo co-expression module discovery (data-driven)
-  sensitivity  MAD-Z threshold sensitivity analysis (methodological rigor)
-  viz          Generate visualizations and reports
+  impute        Detect and impute outliers in expression data
+  analyze       Regulatory validation with INDRA CoGEx (knowledge-guided)
+  discover      De novo co-expression module discovery (data-driven)
+  differential  Clique-level differential abundance (MSstats-inspired)
+  sensitivity   MAD-Z threshold sensitivity analysis (methodological rigor)
+  viz           Generate visualizations and reports
 
 Examples:
   cliquefinder impute --input data.csv --output results/imputed
@@ -45,10 +47,11 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Import and register subcommands
-    from cliquefinder.cli import impute, analyze, discover, sensitivity, viz
+    from cliquefinder.cli import impute, analyze, discover, differential, sensitivity, viz
     impute.register_parser(subparsers)
     analyze.register_parser(subparsers)
     discover.register_parser(subparsers)
+    differential.setup_parser(subparsers)
     sensitivity.register_parser(subparsers)
     viz.register_parser(subparsers)
 

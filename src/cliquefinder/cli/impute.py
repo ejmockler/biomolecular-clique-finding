@@ -16,7 +16,7 @@ from cliquefinder import BioMatrix
 from cliquefinder.io.loaders import load_csv_matrix, load_matrix
 from cliquefinder.io.formats import PRESETS
 from cliquefinder.io.writers import write_csv_matrix, write_sample_metadata
-from cliquefinder.quality.outliers import OutlierDetector, AdaptiveOutlierDetector
+from cliquefinder.quality.outliers import OutlierDetector, AdaptiveOutlierDetector, MultiPassOutlierDetector, KDEAdaptiveOutlierDetector
 from cliquefinder.quality.imputation import Imputer
 from cliquefinder.core.quality import QualityFlag
 
@@ -318,19 +318,33 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         description="Phase 1: Outlier detection and MAD-clip imputation for proteomic/transcriptomic data"
     )
 
-    parser.add_argument("--input", "-i", type=Path, required=True,
+    # Configuration file support
+    parser.add_argument("--config", "-c", type=Path, default=None,
+                        help="Path to YAML/JSON config file (optional, CLI args override config values)")
+
+    parser.add_argument("--input", "-i", type=Path, required=False,
                         help="Input data file (gene/protein IDs x samples)")
-    parser.add_argument("--output", "-o", type=Path, required=True,
+    parser.add_argument("--output", "-o", type=Path, required=False,
                         help="Output base path (without extension)")
     parser.add_argument("--format", "-f", choices=list(PRESETS.keys()) + ['auto'],
                         default='auto',
                         help="Input format preset (default: auto-detect)")
-    parser.add_argument("--method", choices=["mad-z", "iqr", "adjusted-boxplot"], default="mad-z",
+    parser.add_argument("--method", choices=["mad-z", "iqr", "adjusted-boxplot", "kde-adaptive"], default="mad-z",
                         help="Outlier detection method: mad-z (symmetric), iqr (symmetric), "
-                             "adjusted-boxplot (asymmetric, recommended for skewed proteomics data). Default: mad-z")
-    parser.add_argument("--threshold", type=float, default=3.5,
-                        help="Outlier detection threshold. For mad-z: MAD-Z score (default: 3.5). "
+                             "adjusted-boxplot (asymmetric), kde-adaptive (finds optimal threshold per stratum). Default: mad-z")
+    parser.add_argument("--threshold", type=float, default=5.0,
+                        help="Outlier detection threshold. For mad-z: MAD-Z score (default: 5.0). "
                              "For iqr/adjusted-boxplot: IQR whisker multiplier (default: 1.5)")
+    parser.add_argument("--upper-threshold", type=float, default=None,
+                        help="Upper tail threshold (default: same as --threshold). "
+                             "Use higher values to be more lenient on upper tail.")
+    parser.add_argument("--lower-threshold", type=float, default=None,
+                        help="Lower tail threshold (default: same as --threshold). "
+                             "Use lower values to be stricter on lower tail.")
+    parser.add_argument("--upper-only", action="store_true", default=False,
+                        help="Only detect upper-tail outliers (disable lower-tail detection). "
+                             "Recommended for proteomics where low values are often real biology, "
+                             "not technical artifacts.")
     parser.add_argument("--mode", choices=["within_group", "per_feature", "global"],
                         default="within_group", help="Detection mode (default: within_group)")
     parser.add_argument("--group-cols", nargs="+", default=["phenotype"],
@@ -347,8 +361,24 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--soft-clip-sharpness", type=float, default=None,
                         help="Sharpness for soft-clip (auto-computed if not specified). "
                              "Higher values → closer to hard clipping")
-    parser.add_argument("--clip-threshold", type=float, default=3.5,
-                        help="MAD-Z threshold for clipping (default: 3.5, should match --threshold)")
+    parser.add_argument("--clip-threshold", type=float, default=5.0,
+                        help="MAD-Z threshold for clipping (default: 5.0, should match --threshold)")
+
+    # Multi-pass detection options (Pass 2: Residual-based detection)
+    parser.add_argument("--residual-threshold", type=float, default=4.25,
+                        help="MAD-Z threshold for residual-based outlier detection in Pass 2 (default: 4.25)")
+    parser.add_argument("--no-residual-pass", dest="residual_enabled", action="store_false", default=True,
+                        help="Disable residual-based outlier detection (Pass 2)")
+    parser.add_argument("--residual-high-end-only", action="store_true", default=True,
+                        help="Only flag high-end residuals in Pass 2 (default: True)")
+    parser.add_argument("--residual-both-tails", dest="residual_high_end_only", action="store_false",
+                        help="Flag both high and low residuals in Pass 2")
+
+    # Multi-pass detection options (Pass 3: Global percentile cap)
+    parser.add_argument("--global-cap-percentile", type=float, default=99.95,
+                        help="Global percentile threshold for Pass 3 capping (default: 99.95)")
+    parser.add_argument("--no-global-cap", dest="global_cap_enabled", action="store_false", default=True,
+                        help="Disable global percentile capping (Pass 3)")
 
     # Log transformation options
     parser.add_argument("--log-transform", action="store_true", default=True,
@@ -789,9 +819,38 @@ def run_impute(args: argparse.Namespace) -> int:
     """Execute the impute command."""
     import pandas as pd
     import logging
+    import sys
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
+
+    # Load and merge config file if provided
+    if args.config:
+        from cliquefinder.cli.config import load_config, merge_config_with_args, validate_config
+
+        print(f"Loading configuration from: {args.config}")
+        try:
+            config = load_config(args.config)
+            validate_config(config)
+
+            # Get raw CLI args to detect explicit overrides
+            # Note: sys.argv includes script name, need to skip it
+            cli_args = sys.argv[2:]  # Skip 'cliquefinder impute'
+
+            # Merge config with CLI args (CLI overrides)
+            args = merge_config_with_args(config, args, cli_args)
+            print(f"  Configuration loaded successfully")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ERROR: Config file error: {e}")
+            return 1
+
+    # Validate required arguments (after config merge)
+    if not args.input:
+        print("ERROR: --input is required (via CLI or config file)")
+        return 1
+    if not args.output:
+        print("ERROR: --output is required (via CLI or config file)")
+        return 1
 
     start_time = datetime.now()
     print(f"\n{'='*70}")
@@ -914,38 +973,116 @@ def run_impute(args: argparse.Namespace) -> int:
 
     # Determine detection threshold (adjust default for IQR-based methods)
     detection_threshold = args.threshold
-    if args.method in ("iqr", "adjusted-boxplot") and args.threshold == 3.5:
+    if args.method in ("iqr", "adjusted-boxplot") and args.threshold == 5.0:
         # User didn't override threshold, use IQR default (1.5)
         detection_threshold = 1.5
         print(f"\nNote: Using default IQR threshold (1.5) for {args.method} method")
+
+    # Handle --upper-only flag: disable lower-tail detection
+    if args.upper_only:
+        args.lower_threshold = float('inf')  # Effectively disable lower tail
+        print(f"\nUpper-tail only mode: Lower-tail detection disabled")
+        print(f"  Rationale: Low values in proteomics are often real biology, not artifacts")
 
     print(f"\nDetecting outliers: method={args.method}, threshold={detection_threshold}")
     print(f"  Scoring: {args.scoring_method}")
     print(f"  Stratification: {pass1_group_cols}")
 
-    # Use AdaptiveOutlierDetector for new methods (adjusted-boxplot or student_t scoring)
+    # Determine if multi-pass detection is enabled
+    use_multipass = args.residual_enabled or args.global_cap_enabled
+
+    # Determine if adaptive detector should be used (for Pass 2 sex-stratified detection)
     use_adaptive = args.method == "adjusted-boxplot" or args.scoring_method == "student_t"
 
-    if use_adaptive:
-        detector = AdaptiveOutlierDetector(
-            method=args.method, threshold=detection_threshold,
-            mode=args.mode, group_cols=pass1_group_cols,
-            scoring_method=args.scoring_method
+    # Use KDE Adaptive detector if specified (standalone, doesn't combine with multi-pass)
+    if args.method == "kde-adaptive":
+        print(f"\nUsing KDE Adaptive outlier detection:")
+        print(f"  Finds optimal threshold per stratum based on distribution")
+
+        # For KDE-adaptive, use 5.0 as default min_threshold (only extreme outliers)
+        kde_min_threshold = 5.0
+
+        detector = KDEAdaptiveOutlierDetector(
+            group_cols=pass1_group_cols,
+            upper_only=args.upper_only,
+            min_threshold=kde_min_threshold,
+            max_threshold=7.0,
         )
         matrix_with_outliers = detector.apply(matrix)
 
-        # Report adaptive-specific diagnostics
-        if args.method == "adjusted-boxplot" and detector.medcouples_ is not None:
-            mean_mc = detector.medcouples_.mean()
-            print(f"  Mean medcouple: {mean_mc:.4f} ({'right-skewed' if mean_mc > 0.1 else 'left-skewed' if mean_mc < -0.1 else 'symmetric'})")
-        if args.scoring_method == "student_t" and detector.df_shared_ is not None:
-            print(f"  Fitted degrees of freedom: {detector.df_shared_:.2f}")
-    else:
-        detector = OutlierDetector(
-            method=args.method, threshold=detection_threshold,
-            mode=args.mode, group_cols=pass1_group_cols
+        # Report per-stratum thresholds
+        print(f"\nAdaptive thresholds per stratum:")
+        for stratum, threshold in detector.thresholds_.items():
+            count = detector.stratum_counts_[stratum]
+            print(f"  {stratum}: threshold={threshold:.2f}, outliers={count:,}")
+
+    # Use MultiPassOutlierDetector if any pass is enabled beyond Pass 1
+    elif use_multipass:
+        print(f"\nUsing multi-pass outlier detection:")
+        print(f"  Pass 1: Within-group {args.method} detection")
+        if args.residual_enabled:
+            print(f"  Pass 2: Residual-based detection (threshold={args.residual_threshold}, high-end-only={args.residual_high_end_only})")
+        if args.global_cap_enabled:
+            print(f"  Pass 3: Global cap at {args.global_cap_percentile}th percentile")
+
+        detector = MultiPassOutlierDetector(
+            detection_method=args.method,
+            detection_threshold=detection_threshold,
+            scoring_method=args.scoring_method,
+            group_cols=pass1_group_cols,
+            upper_threshold=args.upper_threshold,
+            lower_threshold=args.lower_threshold,
+            residual_enabled=args.residual_enabled,
+            residual_threshold=args.residual_threshold,
+            residual_high_end_only=args.residual_high_end_only,
+            global_cap_enabled=args.global_cap_enabled,
+            global_cap_percentile=args.global_cap_percentile,
         )
         matrix_with_outliers = detector.apply(matrix)
+
+        # Report multi-pass diagnostics
+        pass_summary = detector.get_pass_summary()
+        print(f"\nMulti-pass detection results:")
+        print(f"  Pass 1 (within-group): {pass_summary['pass1_within_group']:,} outliers")
+        if args.residual_enabled:
+            print(f"  Pass 2 (residual): +{pass_summary['pass2_residual']:,} additional outliers")
+        if args.global_cap_enabled:
+            print(f"  Pass 3 (global cap): +{pass_summary['pass3_global_cap']:,} additional outliers")
+            if pass_summary['global_threshold'] is not None:
+                print(f"  Global threshold: {pass_summary['global_threshold']:.4f}")
+
+        # Report adjusted-boxplot diagnostics if applicable
+        if args.method == "adjusted-boxplot" and detector.detector_.medcouples_ is not None:
+            mean_mc = detector.detector_.medcouples_.mean()
+            print(f"  Mean medcouple: {mean_mc:.4f} ({'right-skewed' if mean_mc > 0.1 else 'left-skewed' if mean_mc < -0.1 else 'symmetric'})")
+    else:
+        # Use AdaptiveOutlierDetector for new methods (adjusted-boxplot or student_t scoring)
+        use_adaptive = args.method == "adjusted-boxplot" or args.scoring_method == "student_t"
+
+        if use_adaptive:
+            detector = AdaptiveOutlierDetector(
+                method=args.method, threshold=detection_threshold,
+                mode=args.mode, group_cols=pass1_group_cols,
+                scoring_method=args.scoring_method,
+                upper_threshold=args.upper_threshold,
+                lower_threshold=args.lower_threshold
+            )
+            matrix_with_outliers = detector.apply(matrix)
+
+            # Report adaptive-specific diagnostics
+            if args.method == "adjusted-boxplot" and detector.medcouples_ is not None:
+                mean_mc = detector.medcouples_.mean()
+                print(f"  Mean medcouple: {mean_mc:.4f} ({'right-skewed' if mean_mc > 0.1 else 'left-skewed' if mean_mc < -0.1 else 'symmetric'})")
+            if args.scoring_method == "student_t" and detector.df_shared_ is not None:
+                print(f"  Fitted degrees of freedom: {detector.df_shared_:.2f}")
+        else:
+            detector = OutlierDetector(
+                method=args.method, threshold=detection_threshold,
+                mode=args.mode, group_cols=pass1_group_cols,
+                upper_threshold=args.upper_threshold,
+                lower_threshold=args.lower_threshold
+            )
+            matrix_with_outliers = detector.apply(matrix)
 
     outlier_mask = (matrix_with_outliers.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
     n_outliers = np.sum(outlier_mask)
@@ -964,13 +1101,21 @@ def run_impute(args: argparse.Namespace) -> int:
     if args.impute_strategy == "mad-clip":
         imputer_kwargs["threshold"] = args.clip_threshold
     elif args.impute_strategy == "soft-clip":
+        # CRITICAL: Pass detection threshold so soft-clip bounds match detection bounds
+        imputer_kwargs["threshold"] = args.threshold  # Use detection threshold, not clip_threshold
         if args.soft_clip_sharpness:
             imputer_kwargs["sharpness"] = args.soft_clip_sharpness
             print(f"  Sharpness: {args.soft_clip_sharpness}")
         else:
             print(f"  Sharpness: auto-computed from data bounds")
+        print(f"  Threshold: {args.threshold} (matching detection)")
     elif args.impute_strategy == "knn":
         print(f"  Using k-nearest neighbors imputation")
+
+    # Enforce global cap as max upper bound for imputation
+    if use_multipass and args.global_cap_enabled and pass_summary.get('global_threshold') is not None:
+        imputer_kwargs["max_upper_bound"] = pass_summary['global_threshold']
+        print(f"  Max upper bound: {pass_summary['global_threshold']:.4f} (from global cap)")
 
     imputer = Imputer(**imputer_kwargs)
     matrix_imputed = imputer.apply(matrix_with_outliers)
@@ -1091,16 +1236,50 @@ def run_impute(args: argparse.Namespace) -> int:
                 print(f"  Scoring: {args.scoring_method}")
                 print(f"  Stratification: {pass2_group_cols}")
 
-                if use_adaptive:
+                # Use same detection method as Pass 1 for consistency
+                if args.method == "kde-adaptive":
+                    print(f"\nUsing KDE Adaptive outlier detection (Pass 2):")
+                    kde_min_threshold = 5.0
+                    detector_pass2 = KDEAdaptiveOutlierDetector(
+                        group_cols=pass2_group_cols,
+                        upper_only=args.upper_only,
+                        min_threshold=kde_min_threshold,
+                        max_threshold=7.0,
+                    )
+                elif use_multipass:
+                    print(f"\nUsing multi-pass outlier detection (same as Pass 1):")
+                    print(f"  Pass 1: Within-group {args.method} detection")
+                    if args.residual_enabled:
+                        print(f"  Pass 2: Residual-based detection (threshold={args.residual_threshold}, high-end-only={args.residual_high_end_only})")
+                    if args.global_cap_enabled:
+                        print(f"  Pass 3: Global cap at {args.global_cap_percentile}th percentile")
+
+                    detector_pass2 = MultiPassOutlierDetector(
+                        detection_method=args.method,
+                        detection_threshold=detection_threshold,
+                        group_cols=pass2_group_cols,
+                        upper_threshold=args.upper_threshold,
+                        lower_threshold=args.lower_threshold,
+                        residual_enabled=args.residual_enabled,
+                        residual_threshold=args.residual_threshold,
+                        residual_high_end_only=args.residual_high_end_only,
+                        global_cap_enabled=args.global_cap_enabled,
+                        global_cap_percentile=args.global_cap_percentile,
+                    )
+                elif use_adaptive:
                     detector_pass2 = AdaptiveOutlierDetector(
                         method=args.method, threshold=detection_threshold,
                         mode=args.mode, group_cols=pass2_group_cols,
-                        scoring_method=args.scoring_method
+                        scoring_method=args.scoring_method,
+                        upper_threshold=args.upper_threshold,
+                        lower_threshold=args.lower_threshold
                     )
                 else:
                     detector_pass2 = OutlierDetector(
                         method=args.method, threshold=detection_threshold,
-                        mode=args.mode, group_cols=pass2_group_cols
+                        mode=args.mode, group_cols=pass2_group_cols,
+                        upper_threshold=args.upper_threshold,
+                        lower_threshold=args.lower_threshold
                     )
                 matrix_with_outliers_pass2 = detector_pass2.apply(matrix_for_pass2)
 
@@ -1121,6 +1300,13 @@ def run_impute(args: argparse.Namespace) -> int:
                     imputer_kwargs_pass2["threshold"] = args.clip_threshold
                 elif args.impute_strategy == "soft-clip" and args.soft_clip_sharpness:
                     imputer_kwargs_pass2["sharpness"] = args.soft_clip_sharpness
+
+                # Enforce global cap as max upper bound for imputation (Pass 2)
+                if use_multipass and args.global_cap_enabled:
+                    pass2_summary = detector_pass2.get_pass_summary()
+                    if pass2_summary.get('global_threshold') is not None:
+                        imputer_kwargs_pass2["max_upper_bound"] = pass2_summary['global_threshold']
+                        print(f"  Max upper bound: {pass2_summary['global_threshold']:.4f} (from global cap)")
 
                 imputer_pass2 = Imputer(**imputer_kwargs_pass2)
                 matrix_imputed = imputer_pass2.apply(matrix_with_outliers_pass2)
@@ -1152,6 +1338,10 @@ def run_impute(args: argparse.Namespace) -> int:
 
     # Write preprocessing parameters for downstream steps
     params_path = Path(str(args.output) + ".params.json")
+
+    # For kde-adaptive, record the actual min_threshold used
+    effective_threshold = 5.0 if args.method == "kde-adaptive" else args.threshold
+
     preprocessing_params = {
         'timestamp': datetime.now().isoformat(),
         'input': str(args.input),
@@ -1160,9 +1350,18 @@ def run_impute(args: argparse.Namespace) -> int:
         'log_transform_method': 'log1p' if args.log_transform else None,
         'outlier_detection': {
             'method': args.method,
-            'threshold': args.threshold,
+            'threshold': effective_threshold,
+            'upper_only': args.upper_only,
+            'upper_threshold': args.upper_threshold,
+            'lower_threshold': None if args.upper_only else args.lower_threshold,
             'mode': args.mode,
             'group_cols': args.group_cols if args.mode == 'within_group' else None,
+            'multi_pass_enabled': use_multipass,
+            'residual_enabled': args.residual_enabled if use_multipass else False,
+            'residual_threshold': args.residual_threshold if use_multipass and args.residual_enabled else None,
+            'residual_high_end_only': args.residual_high_end_only if use_multipass and args.residual_enabled else None,
+            'global_cap_enabled': args.global_cap_enabled if use_multipass else False,
+            'global_cap_percentile': args.global_cap_percentile if use_multipass and args.global_cap_enabled else None,
         },
         'imputation': {
             'strategy': args.impute_strategy,
@@ -1199,6 +1398,22 @@ def run_impute(args: argparse.Namespace) -> int:
             f.write(f"  Sample ID fallback: {'Yes' if args.sample_id_fallback else 'No'}\n\n")
 
         f.write(f"Dataset: {matrix_original.n_features:,} features x {matrix_original.n_samples:,} samples\n")
+
+        # Report multi-pass outlier detection if used
+        if use_multipass:
+            f.write(f"\nMulti-Pass Outlier Detection:\n")
+            pass_summary = detector.get_pass_summary()
+            f.write(f"  Pass 1 (within-group {args.method}): {pass_summary['pass1_within_group']:,} outliers\n")
+            if args.residual_enabled:
+                f.write(f"  Pass 2 (residual-based): +{pass_summary['pass2_residual']:,} additional outliers\n")
+                f.write(f"    Threshold: {args.residual_threshold}\n")
+                f.write(f"    High-end only: {args.residual_high_end_only}\n")
+            if args.global_cap_enabled:
+                f.write(f"  Pass 3 (global percentile cap): +{pass_summary['pass3_global_cap']:,} additional outliers\n")
+                f.write(f"    Percentile: {args.global_cap_percentile}\n")
+                if pass_summary['global_threshold'] is not None:
+                    f.write(f"    Threshold value: {pass_summary['global_threshold']:.4f}\n")
+            f.write(f"  Total outliers: {pass_summary['total']:,} ({100*pass_summary['total']/matrix_original.data.size:.2f}%)\n")
 
         # Report outlier detection/imputation stats (two-pass aware)
         if use_two_pass and 'pass2' in pass1_stats:

@@ -6,13 +6,13 @@ demonstrating that outlier detection results are robust across a range of
 reasonable threshold values.
 
 Scientific rationale:
-    The MAD-Z threshold (default 3.5) is somewhat arbitrary. Demonstrating
-    result stability across threshold values (e.g., 2.5-4.5) shows that
+    The MAD-Z threshold (default 5.0) is somewhat arbitrary. Demonstrating
+    result stability across threshold values (e.g., 4.0-6.0) shows that
     conclusions are not dependent on this specific choice.
 
 Usage:
     cliquefinder sensitivity --input data.csv --output sensitivity_report
-    cliquefinder sensitivity --input data.csv --thresholds 2.5 3.0 3.5 4.0 4.5
+    cliquefinder sensitivity --input data.csv --thresholds 4.0 4.5 5.0 5.5 6.0
 """
 
 import argparse
@@ -45,7 +45,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Scientific Context:
-  The MAD-Z threshold (default 3.5) controls outlier detection sensitivity.
+  The MAD-Z threshold (default 5.0) controls outlier detection sensitivity.
   This analysis sweeps multiple thresholds to demonstrate result stability,
   a methodological requirement for rigorous publication.
 
@@ -55,11 +55,11 @@ Output Formats:
   - TXT: Human-readable report with interpretation
 
 Examples:
-  # Default thresholds (2.5, 3.0, 3.5, 4.0, 4.5)
+  # Default thresholds (4.0, 4.5, 5.0, 5.5, 6.0)
   cliquefinder sensitivity --input data.csv --output results/sensitivity
 
   # Custom threshold range
-  cliquefinder sensitivity --input data.csv --thresholds 3.0 3.5 4.0
+  cliquefinder sensitivity --input data.csv --thresholds 4.5 5.0 5.5
 
   # Stratified by phenotype and sex
   cliquefinder sensitivity --input data.csv --group-cols phenotype Sex
@@ -84,8 +84,8 @@ Examples:
         "--thresholds",
         type=float,
         nargs="+",
-        default=[2.5, 3.0, 3.5, 4.0, 4.5],
-        help="MAD-Z thresholds to test (default: 2.5 3.0 3.5 4.0 4.5)"
+        default=[4.0, 4.5, 5.0, 5.5, 6.0],
+        help="MAD-Z thresholds to test (default: 4.0 4.5 5.0 5.5 6.0)"
     )
 
     parser.add_argument(
@@ -335,8 +335,8 @@ def generate_interpretation(results: List[Dict[str, Any]]) -> str:
     # Recommendations
     interpretation.append("Recommendations:")
 
-    # Find middle threshold (closest to 3.5)
-    default_threshold = 3.5
+    # Find middle threshold (closest to 5.0)
+    default_threshold = 5.0
     closest_idx = min(range(len(thresholds)), key=lambda i: abs(thresholds[i] - default_threshold))
     recommended = results[closest_idx]
 

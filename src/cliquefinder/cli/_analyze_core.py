@@ -932,7 +932,7 @@ def save_results(
     Output files (all in output_dir):
     - analysis_parameters.json: Run parameters for reproducibility
     - regulators_summary.csv: One row per regulator with key metrics
-    - stratified_cliques.csv: One row per (regulator, condition)
+    - cliques.csv: One row per (regulator, condition)
     - differential_rewiring.csv: One row per (regulator, comparison)
     - clique_genes.csv: Long-form (regulator, condition, gene) for network analysis
     - gene_clique_frequency.csv: Genes ranked by clique participation
@@ -1108,8 +1108,8 @@ def save_results(
     stratified_df = pd.DataFrame(stratified_rows)
     if len(stratified_df) > 0:
         stratified_df = stratified_df[stratified_df['n_coherent_genes'] > 0]
-    logger.info(f"  stratified_cliques.csv: {len(stratified_df)} rows with cliques (filtered from {len(stratified_rows)} total)")
-    stratified_df.to_csv(output_dir / 'stratified_cliques.csv', index=False)
+    logger.info(f"  cliques.csv: {len(stratified_df)} rows with cliques (filtered from {len(stratified_rows)} total)")
+    stratified_df.to_csv(output_dir / 'cliques.csv', index=False)
 
     # 3. Regulator Rewiring Stats (sorted by rewiring_score descending)
     # FILTER: Only include regulators that have at least one clique

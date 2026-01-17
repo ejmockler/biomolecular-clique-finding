@@ -1,83 +1,126 @@
 # Biomolecular Clique Finding
 
-INDRA-driven regulatory coherence analysis for ALS transcriptomics data.
+Multi-modal biomolecular data analysis with outlier detection, imputation, and INDRA CoGEx knowledge graph integration.
 
 ## Overview
 
-This project analyzes transcriptional regulatory networks in ALS (Amyotrophic Lateral Sclerosis) patient-derived motor neurons. The pipeline:
+`cliquefinder` is a Python package for analyzing proteomics and transcriptomics data with robust quality control. The pipeline:
 
-1. **Imputes** missing/outlier values in RNA-seq count data using k-NN with quality tracking
-2. **Queries** INDRA CoGEx knowledge graph for regulator-target relationships
-3. **Finds** coherent regulatory modules via correlation-based community detection
-4. **Compares** disease vs control to identify regulatory rewiring
+1. **Detects outliers** using multi-pass strategies (adjusted-boxplot, residual-based, global cap)
+2. **Imputes** missing/outlier values with soft-clip strategy and quality flag tracking
+3. **Infers phenotypes** from clinical data (AnswerALS-specific)
+4. **Integrates** INDRA CoGEx knowledge graph for regulatory network analysis
+5. **Validates** results via enrichment tests and cross-modal analysis
 
-## Data Sources
-
-- **Expression**: ALS cohort 1-6 RNA-seq counts (60k+ genes x 3000+ samples)
-- **Metadata**: Sample-Mapping-File-Feb-2024.csv + acwm.csv clinical data
-- **Knowledge**: INDRA CoGEx Neo4j graph (causal regulator-target relationships)
-
-## Pipeline
-
-```bash
-# 1. Prepare metadata (links samples to phenotype + sex)
-python scripts/prepare_metadata.py \
-    --counts aals_cohort1-6_counts_merged.csv \
-    --mapping Sample-Mapping-File-Feb-2024.csv \
-    --clinical acwm.csv \
-    --output data/prepared_metadata.csv
-
-# 2. Impute outliers with quality tracking
-python scripts/impute_outliers.py \
-    --input aals_cohort1-6_counts_merged.csv \
-    --metadata data/prepared_metadata.csv \
-    --output results/imputed \
-    --k 5
-
-# 3. Run INDRA-driven coherence analysis
-python scripts/analyze_tf_coherence.py \
-    --input results/imputed/imputed.data.csv \
-    --metadata results/imputed/imputed.metadata.csv \
-    --output results/coherence \
-    --regulators TP53 SOD1 TARDBP FUS \
-    --stratify-by phenotype Sex \
-    --min-evidence 3
-```
-
-## Core Modules
-
-### biocore/
-- `BioMatrix`: Immutable expression matrix with quality flags
-- `io/`: Data loading and export
-- `transforms/`: Imputation, normalization, enrichment
-- `knowledge/`: INDRA CoGEx client, coherence analysis
-
-### Key Classes
-- `CoGExClient`: Query INDRA Neo4j for regulator targets
-- `INDRAModuleExtractor`: Extract regulatory modules from CoGEx
-- `CoherenceAnalyzer`: Leiden community detection on correlation networks
-- `CliqueValidator`: Validate regulatory coherence via maximal cliques
-
-## Requirements
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Requires `.env` file with INDRA CoGEx credentials:
+For INDRA CoGEx integration, create a `.env` file with credentials:
 ```
 INDRA_NEO4J_URL=bolt://...
 INDRA_NEO4J_USER=...
 INDRA_NEO4J_PASSWORD=...
 ```
 
+## Quick Start
+
+### CLI Usage
+
+```bash
+# Imputation with configuration file
+cliquefinder impute --config configs/proteomics_als.yaml
+
+# Or with CLI arguments
+cliquefinder impute \
+  --input data.csv \
+  --output results/imputed \
+  --method adjusted-boxplot \
+  --threshold 1.5 \
+  --impute-strategy soft-clip
+
+# Analysis
+cliquefinder analyze --input results/imputed.csv --output results/analysis
+```
+
+### Configuration Files
+
+See `configs/` for YAML/JSON examples:
+- `proteomics_als.yaml`: ALS proteomics imputation
+- `transcriptomics_als.yaml`: ALS transcriptomics imputation
+- Custom configurations supported
+
+## Core Components
+
+### Key Classes
+
+- **BioMatrix**: Core data structure with quality flags and metadata tracking
+- **MultiPassOutlierDetector**: Three-pass outlier detection pipeline
+  - Adjusted-boxplot method
+  - Residual-based detection
+  - Global cap enforcement
+- **Imputer**: Multiple imputation strategies (soft-clip, knn, mean, median)
+- **AnswerALSPhenotypeInferencer**: ALS-specific phenotype inference from clinical data
+- **QCVisualizer**: Quality control visualizations
+- **CoGExClient**: INDRA CoGEx knowledge graph integration
+
+### Package Modules
+
+```
+src/cliquefinder/
+  core/              # BioMatrix, transforms, quality flags
+  quality/           # Outlier detection, imputation
+  io/                # Data loading, phenotype inference
+  cli/               # Command-line interface
+  viz/               # Visualizations
+  knowledge/         # INDRA CoGEx integration
+  validation/        # Enrichment tests, ID mapping
+```
+
+## Features
+
+- **Multi-pass outlier detection**: Combines statistical methods for robust outlier identification
+- **Quality flag tracking**: Every data point tagged with quality status (original, imputed, outlier)
+- **Soft-clip imputation**: Preserves data structure while handling outliers
+- **Phenotype inference**: Automated clinical phenotype extraction
+- **Cross-modal analysis**: Proteomics + transcriptomics integration
+- **Knowledge graph queries**: INDRA CoGEx regulatory network analysis
+- **Flexible configuration**: YAML/JSON config files or CLI arguments
+
+## Documentation
+
+See `docs/` for detailed documentation:
+- Architecture and design decisions
+- API reference
+- Analysis workflows
+- Quality control procedures
+
 ## Project Structure
 
 ```
-biocore/           # Core library
-scripts/           # Analysis pipelines
-tests/             # Unit tests
-data/              # Input data and caches
-results/           # Analysis outputs
-docs/              # Specifications
+src/cliquefinder/    # Main package
+  core/              # BioMatrix, transforms, quality flags
+  quality/           # Outlier detection, imputation
+  io/                # Data loading, phenotype inference
+  cli/               # Command-line interface
+  viz/               # Visualizations
+  knowledge/         # INDRA CoGEx integration
+  validation/        # Enrichment tests, ID mapping
+scripts/             # Analysis scripts
+configs/             # YAML/JSON configuration files
+tests/               # Unit tests
+docs/                # Documentation
+data/                # Input data and caches
+results/             # Analysis outputs
 ```
+
+## Development
+
+Run tests:
+```bash
+pytest tests/
+```
+
+See `docs/` for development guidelines and contribution instructions.
