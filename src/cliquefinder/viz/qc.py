@@ -22,6 +22,7 @@ Sex Classification Narrative:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Literal
 import numpy as np
 import pandas as pd
@@ -181,8 +182,12 @@ class QCVisualizer:
         """
         fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-        # Find changed values
-        changed_mask = matrix_before.data != matrix_after.data
+        # Find changed values - prefer quality flags, fall back to threshold comparison
+        if matrix_after.quality_flags is not None:
+            from cliquefinder.core.quality import QualityFlag
+            changed_mask = (matrix_after.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
+        else:
+            changed_mask = np.abs(matrix_before.data - matrix_after.data) > 0.1
         n_changed = changed_mask.sum()
         pct_changed = 100 * n_changed / matrix_before.data.size
 
@@ -346,7 +351,8 @@ class QCVisualizer:
         self,
         matrix_before: BioMatrix,
         matrix_after: BioMatrix,
-        figsize: tuple[float, float] = (14, 10)
+        figsize: tuple[float, float] = (14, 10),
+        params_path: Optional[Path] = None
     ) -> Figure:
         """
         Show where outliers occur AND where they were winsorized to.
@@ -363,7 +369,7 @@ class QCVisualizer:
         phenotype = metadata.get("phenotype", pd.Series(["ALL"] * matrix_before.n_samples))
 
         sex_col = None
-        for col in ["Sex_predicted", "SEX"]:
+        for col in ["Sex_imputed", "Sex_predicted", "SEX", "Sex"]:
             if col in metadata.columns:
                 sex_col = col
                 break
@@ -377,8 +383,14 @@ class QCVisualizer:
         unique_strata = sorted(strata.unique())
         n_strata = len(unique_strata)
 
-        # Get actual outlier mask from data comparison
-        outlier_mask = matrix_before.data != matrix_after.data
+        # Get actual outlier mask - prefer quality flags, fall back to threshold comparison
+        if matrix_after.quality_flags is not None:
+            # Use actual outlier flags (more reliable)
+            from cliquefinder.core.quality import QualityFlag
+            outlier_mask = (matrix_after.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
+        else:
+            # Fall back to threshold-based comparison (0.1 tolerance for meaningful changes)
+            outlier_mask = np.abs(matrix_before.data - matrix_after.data) > 0.1
 
         # Create grid layout
         n_cols = min(2, n_strata)
@@ -388,68 +400,127 @@ class QCVisualizer:
 
         colors = get_stratum_colors(unique_strata, self.palette)
 
+        # Try to get detection threshold and upper_only flag from params file
+        detection_threshold = 3.0  # default
+        upper_only = False  # default
+        resolved_params_path = params_path
+        if resolved_params_path is None or not resolved_params_path.exists():
+            # Try deriving from matrix source path
+            if hasattr(matrix_after, 'source_path') and matrix_after.source_path:
+                resolved_params_path = Path(str(matrix_after.source_path).replace('.data.csv', '.params.json'))
+        if resolved_params_path is None or not resolved_params_path.exists():
+            # Try to find any .params.json in the input directory
+            if hasattr(self, 'input_path') and self.input_path:
+                input_dir = Path(self.input_path)
+                if input_dir.is_dir():
+                    params_files = list(input_dir.glob('*.params.json'))
+                    if params_files:
+                        resolved_params_path = params_files[0]
+
+        if resolved_params_path and resolved_params_path.exists():
+            import json
+            with open(resolved_params_path) as f:
+                params = json.load(f)
+                outlier_params = params.get('outlier_detection', {})
+                detection_threshold = outlier_params.get('threshold', 3.0)
+                upper_only = outlier_params.get('upper_only', False)
+
         for i, stratum in enumerate(unique_strata):
             ax = axes[i]
             sample_mask = (strata == stratum).values
 
-            # Get values for this stratum (both before and after)
-            stratum_before = matrix_before.data[:, sample_mask].flatten()
-            stratum_after = matrix_after.data[:, sample_mask].flatten()
-            stratum_outlier_mask = outlier_mask[:, sample_mask].flatten()
+            # Get values for this stratum
+            stratum_before = matrix_before.data[:, sample_mask]
+            stratum_outlier_mask = outlier_mask[:, sample_mask]
 
-            # Filter to positive values for log scale
-            all_pos = stratum_before[stratum_before > 0]
-            if len(all_pos) == 0:
+            # Compute MAD-Z scores per gene, then flatten
+            # Z = (x - median) / (MAD * 1.4826)
+            mad_z_scores = []
+            outlier_z_scores = []
+
+            for gene_idx in range(stratum_before.shape[0]):
+                gene_values = stratum_before[gene_idx, :]
+                gene_outliers = stratum_outlier_mask[gene_idx, :]
+
+                # Skip genes with no valid values
+                valid_mask = np.isfinite(gene_values) & (gene_values > 0)
+                if valid_mask.sum() < 3:
+                    continue
+
+                valid_values = gene_values[valid_mask]
+                median = np.median(valid_values)
+                mad = np.median(np.abs(valid_values - median))
+
+                # Avoid division by zero
+                if mad < 1e-10:
+                    continue
+
+                # Scale MAD to be consistent with std for normal data
+                scaled_mad = mad * 1.4826
+
+                # Compute Z-scores for all values
+                z = (gene_values - median) / scaled_mad
+                mad_z_scores.extend(z[valid_mask].tolist())
+
+                # Track outlier Z-scores
+                outlier_z = z[gene_outliers & valid_mask]
+                outlier_z_scores.extend(outlier_z.tolist())
+
+            mad_z_scores = np.array(mad_z_scores)
+            outlier_z_scores = np.array(outlier_z_scores)
+
+            if len(mad_z_scores) == 0:
                 continue
 
-            # Get imputed values for outliers to find actual bounds
-            outlier_imputed = stratum_after[stratum_outlier_mask]
-            outlier_imputed_pos = outlier_imputed[outlier_imputed > 0]
-
             # Count statistics
-            n_total = len(stratum_before)
-            n_outliers = stratum_outlier_mask.sum()
+            n_total = len(mad_z_scores)
+            n_outliers = len(outlier_z_scores)
             pct_outliers = 100 * n_outliers / n_total if n_total > 0 else 0
 
-            # Data range
-            data_min, data_max = all_pos.min(), all_pos.max()
+            # Symmetric bins in Z-score space
+            z_max = min(np.abs(mad_z_scores).max(), 10)  # Cap at 10 for display
+            bins = np.linspace(-z_max, z_max, 101)
 
-            # Log-spaced bins spanning the data range
-            bins = np.logspace(np.log10(data_min), np.log10(data_max), 101)
-
-            # Single histogram of entire original distribution
+            # Histogram of MAD-Z scores
             color = colors[stratum]
-            ax.hist(all_pos, bins=bins, color=color, alpha=0.7,
+            ax.hist(mad_z_scores, bins=bins, color=color, alpha=0.7,
                    edgecolor='white', linewidth=0.3)
 
-            # Show actual winsorization bounds as vertical lines
-            # These are the min/max values that outliers were clipped TO
-            if len(outlier_imputed_pos) > 0:
-                lower_bound = outlier_imputed_pos.min()
-                upper_bound = outlier_imputed_pos.max()
+            # Count outliers in each tail
+            n_clipped_upper = (outlier_z_scores > 0).sum() if len(outlier_z_scores) > 0 else 0
+            n_clipped_lower = (outlier_z_scores < 0).sum() if len(outlier_z_scores) > 0 else 0
 
-                ax.axvline(lower_bound, color='black', linestyle='--', linewidth=2)
-                ax.axvline(upper_bound, color='black', linestyle='-', linewidth=2)
+            # Tint regions beyond detection threshold - THE KEY PERCEPTUAL FIX
+            # Upper tail: beyond +threshold (always shown)
+            if n_clipped_upper > 0:
+                ax.axvspan(detection_threshold, z_max * 1.1,
+                          color=self.palette.outlier, alpha=0.25, zorder=1)
+            ax.axvline(detection_threshold, color=self.palette.outlier,
+                      linestyle='-', linewidth=2, zorder=3)
 
-                # Shade regions outside bounds (what got clipped)
-                ax.axvspan(data_min * 0.9, lower_bound, alpha=0.3, color=self.palette.outlier)
-                ax.axvspan(upper_bound, data_max * 1.1, alpha=0.3, color=self.palette.outlier)
+            # Lower tail: beyond -threshold (only shown if NOT upper_only)
+            if not upper_only:
+                if n_clipped_lower > 0:
+                    ax.axvspan(-z_max * 1.1, -detection_threshold,
+                              color=self.palette.outlier, alpha=0.25, zorder=1)
+                ax.axvline(-detection_threshold, color=self.palette.outlier,
+                          linestyle='-', linewidth=2, zorder=3)
 
-                # Count what's in each tail
-                n_below = (all_pos < lower_bound).sum()
-                n_above = (all_pos > upper_bound).sum()
-
-                # All bound info in annotation box
+            # Annotation box with counts (adjust based on upper_only)
+            if upper_only:
+                ax.text(0.98, 0.98,
+                       f"Upper tail: {n_clipped_upper:,}",
+                       transform=ax.transAxes, va='top', ha='right', fontsize=9,
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            else:
                 ax.text(0.02, 0.98,
-                       f"Lower: {fmt_num(lower_bound)} ({n_below:,} clipped)\n"
-                       f"Upper: {fmt_num(upper_bound)} ({n_above:,} clipped)",
+                       f"Lower tail: {n_clipped_lower:,}\nUpper tail: {n_clipped_upper:,}",
                        transform=ax.transAxes, va='top', fontsize=8,
                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
-            ax.set_xscale('log')
             ax.set_yscale('log')
-            ax.set_xlim(data_min * 0.9, data_max * 1.1)
-            ax.set_xlabel("Expression Value (log)")
+            ax.set_xlim(-z_max * 1.1, z_max * 1.1)
+            ax.set_xlabel("MAD-Z Score")
             ax.set_ylabel("Count (log)")
             ax.set_title(f"{stratum} (n={sample_mask.sum():,} samples, {pct_outliers:.1f}% clipped)")
 
@@ -461,16 +532,22 @@ class QCVisualizer:
         total_values = matrix_before.data.size
         overall_pct = 100 * total_outliers / total_values
 
-        fig.suptitle(f"Outlier Distribution with Winsorization Bounds\n"
-                    f"({total_outliers:,} outliers = {overall_pct:.2f}%, bounds from actual imputed values)",
+        # Build title based on detection mode
+        if upper_only:
+            threshold_text = f"Upper-tail only threshold: +{detection_threshold}"
+        else:
+            threshold_text = f"Detection threshold: ±{detection_threshold}"
+
+        fig.suptitle(f"Outlier Distribution in MAD-Z Score Space\n"
+                    f"{threshold_text} · {total_outliers:,} outliers ({overall_pct:.2f}%)",
                     fontweight='bold', fontsize=12)
 
         plt.tight_layout()
 
         return Figure(
             fig=fig,
-            title="Outlier Distribution by Stratum",
-            description=f"{total_outliers:,} outliers ({overall_pct:.2f}%) with actual winsorization bounds",
+            title="Outlier Distribution by Stratum (MAD-Z)",
+            description=f"{threshold_text}, {total_outliers:,} outliers ({overall_pct:.2f}%)",
             figure_type="matplotlib"
         )
 
@@ -495,8 +572,8 @@ class QCVisualizer:
         if matrix_after.quality_flags is not None:
             outlier_mask = (matrix_after.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
         else:
-            # Fallback: compute from difference
-            outlier_mask = matrix_before.data != matrix_after.data
+            # Fallback: compute from threshold-based difference
+            outlier_mask = np.abs(matrix_before.data - matrix_after.data) > 0.1
 
         n_outliers = outlier_mask.sum()
         total = matrix_before.data.size
@@ -1303,8 +1380,12 @@ class QCVisualizer:
         fig = plt.figure(figsize=figsize)
         gs = GridSpec(2, 2, figure=fig)
 
-        # Get outlier mask
-        outlier_mask = matrix_before.data != matrix_after.data
+        # Get outlier mask - prefer quality flags, fall back to threshold comparison
+        if matrix_after.quality_flags is not None:
+            from cliquefinder.core.quality import QualityFlag
+            outlier_mask = (matrix_after.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
+        else:
+            outlier_mask = np.abs(matrix_before.data - matrix_after.data) > 0.1
         n_outliers = outlier_mask.sum()
         total = matrix_before.data.size
         pct = 100 * n_outliers / total

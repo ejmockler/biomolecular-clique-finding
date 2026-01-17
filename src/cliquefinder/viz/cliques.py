@@ -125,7 +125,7 @@ class CliqueVisualizer:
         >>> from cliquefinder.viz import CliqueVisualizer
         >>>
         >>> # Load stratified cliques
-        >>> df = pd.read_csv("results/cliques/stratified_cliques.csv")
+        >>> df = pd.read_csv("results/cliques/cliques.csv")
         >>>
         >>> # Create heatmap for MAPT regulator
         >>> viz = CliqueVisualizer(style="paper")
@@ -474,7 +474,7 @@ class CliqueVisualizer:
         >>> from cliquefinder.core.biomatrix import BioMatrix
         >>>
         >>> # Load cliques and expression data
-        >>> df = pd.read_csv("results/cliques/stratified_cliques.csv")
+        >>> df = pd.read_csv("results/cliques/cliques.csv")
         >>> expr = pd.read_csv("results/proteomics_imputed.data.csv", index_col=0)
         >>>
         >>> # Create network with correlations
@@ -840,7 +840,7 @@ class CliqueVisualizer:
         >>> from cliquefinder.viz import CliqueVisualizer
         >>>
         >>> # Load stratified cliques
-        >>> df = pd.read_csv("results/cliques/stratified_cliques.csv")
+        >>> df = pd.read_csv("results/cliques/cliques.csv")
         >>>
         >>> # Create flow diagram for MAPT regulator
         >>> viz = CliqueVisualizer(style="paper")
@@ -1201,7 +1201,7 @@ class CliqueVisualizer:
         >>>
         >>> # Load data
         >>> rewiring_df = pd.read_csv("results/cliques/regulator_rewiring_stats.csv")
-        >>> stratified_df = pd.read_csv("results/cliques/stratified_cliques.csv")
+        >>> stratified_df = pd.read_csv("results/cliques/cliques.csv")
         >>>
         >>> # Create overview
         >>> viz = CliqueVisualizer(style="paper")
