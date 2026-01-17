@@ -14,6 +14,12 @@ from cliquefinder.knowledge.clique_validator import (
     GeneNotFoundError,
 )
 
+from cliquefinder.knowledge.clique_algorithms import (
+    kcore_reduction,
+    compute_degeneracy_ordering,
+    estimate_clique_complexity,
+)
+
 from cliquefinder.knowledge.cogex import (
     GeneId,
     INDRAEdge,
@@ -55,6 +61,14 @@ from cliquefinder.knowledge.cross_modal_mapper import (
     CrossModalIDMapper,
 )
 
+from cliquefinder.knowledge.graph_query import (
+    QueryDirection,
+    QueryResult,
+    GraphQuery,
+    get_c9orf72_neighbor_sets,
+    query_to_feature_sets,
+)
+
 __all__ = [
     # Clique validation
     'CorrelationClique',
@@ -62,6 +76,10 @@ __all__ = [
     'CliqueValidator',
     'InsufficientSamplesError',
     'GeneNotFoundError',
+    # Clique algorithms
+    'kcore_reduction',
+    'compute_degeneracy_ordering',
+    'estimate_clique_complexity',
     # INDRA CoGEx
     'GeneId',
     'INDRAEdge',
@@ -90,4 +108,10 @@ __all__ = [
     # Cross-modal ID mapping
     'CrossModalMapping',
     'CrossModalIDMapper',
+    # Composable graph queries
+    'QueryDirection',
+    'QueryResult',
+    'GraphQuery',
+    'get_c9orf72_neighbor_sets',
+    'query_to_feature_sets',
 ]
