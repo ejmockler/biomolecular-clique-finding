@@ -10,7 +10,7 @@ from pathlib import Path
 from cliquefinder.viz import CliqueVisualizer
 
 # Load data
-data_path = Path("/Users/noot/Documents/biomolecular-clique-finding/results/cliques/stratified_cliques.csv")
+data_path = Path("/Users/noot/Documents/biomolecular-clique-finding/results/cliques/cliques.csv")
 df = pd.read_csv(data_path)
 
 print("Data loaded successfully!")

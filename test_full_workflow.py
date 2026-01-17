@@ -20,7 +20,7 @@ print("=" * 80)
 print("\n1. Loading data...")
 data_dir = Path("results/cliques")
 rewiring_df = pd.read_csv(data_dir / "regulator_rewiring_stats.csv")
-stratified_df = pd.read_csv(data_dir / "stratified_cliques.csv")
+stratified_df = pd.read_csv(data_dir / "cliques.csv")
 print(f"   ✓ Loaded {len(rewiring_df)} rewiring records")
 print(f"   ✓ Loaded {len(stratified_df)} stratified records")
 

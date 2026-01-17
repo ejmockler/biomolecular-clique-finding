@@ -13,7 +13,7 @@ def test_clique_network():
     """Test the clique network visualization."""
 
     # Load data
-    df = pd.read_csv("results/cliques/stratified_cliques.csv")
+    df = pd.read_csv("results/cliques/cliques.csv")
     expr = pd.read_csv("results/proteomics_imputed.data.csv", index_col=0)
 
     # Create visualizer
