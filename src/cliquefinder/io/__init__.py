@@ -45,6 +45,15 @@ from cliquefinder.io.metadata import (
     get_column_groups,
     list_available_columns,
 )
+from cliquefinder.io.phenotype import (
+    PhenotypeInferencer,
+    AnswerALSPhenotypeInferencer,
+    GenericPhenotypeInferencer,
+)
+from cliquefinder.io.data_filters import (
+    MetadataRowFilter,
+    RegexMetadataRowFilter,
+)
 
 __all__ = [
     'load_csv_matrix',
@@ -55,4 +64,9 @@ __all__ = [
     'CLINICAL_COLUMNS',
     'get_column_groups',
     'list_available_columns',
+    'PhenotypeInferencer',
+    'AnswerALSPhenotypeInferencer',
+    'GenericPhenotypeInferencer',
+    'MetadataRowFilter',
+    'RegexMetadataRowFilter',
 ]
