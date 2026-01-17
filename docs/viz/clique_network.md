@@ -108,7 +108,7 @@ import pandas as pd
 from cliquefinder.viz.cliques import CliqueVisualizer
 
 # Load clique data
-df = pd.read_csv("results/cliques/stratified_cliques.csv")
+df = pd.read_csv("results/cliques/cliques.csv")
 
 # Create visualizer
 viz = CliqueVisualizer(style="paper")
