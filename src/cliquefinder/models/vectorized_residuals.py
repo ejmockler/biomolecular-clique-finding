@@ -382,7 +382,7 @@ def detect_outliers_vectorized(
     expression: np.ndarray,
     metadata: pd.DataFrame,
     formula: str = "expression ~ C(phenotype)",
-    threshold: float = 3.5,
+    threshold: float = 5.0,
     batch_size: int = 1000
 ) -> Tuple[np.ndarray, ResidualDiagnostics]:
     """
@@ -396,7 +396,7 @@ def detect_outliers_vectorized(
         expression: Expression matrix (n_proteins × n_samples)
         metadata: Sample metadata DataFrame
         formula: R-style formula for model
-        threshold: MAD-Z threshold for outliers
+        threshold: MAD-Z threshold for outliers (default: 5.0)
         batch_size: Proteins per batch for memory efficiency
 
     Returns:
@@ -409,7 +409,7 @@ def detect_outliers_vectorized(
         ...     expression_matrix,
         ...     sample_metadata,
         ...     formula="expression ~ C(phenotype) + C(cohort)",
-        ...     threshold=3.5
+        ...     threshold=5.0
         ... )
         >>> print(f"Detected {outliers.sum()} outliers ({100*outliers.mean():.2f}%)")
     """

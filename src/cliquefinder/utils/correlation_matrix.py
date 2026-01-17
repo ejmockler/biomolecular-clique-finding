@@ -918,7 +918,7 @@ def get_weighted_correlation_matrix(
         >>>
         >>> # Downweight outliers detected by MAD
         >>> from cliquefinder.quality import OutlierDetector
-        >>> detector = OutlierDetector(method='mad-z', threshold=3.5)
+        >>> detector = OutlierDetector(method='mad-z', threshold=5.0)
         >>> flagged = detector.apply(matrix)
         >>> weights = np.ones_like(matrix.data)
         >>> weights[flagged.quality_flags & QualityFlag.OUTLIER_DETECTED > 0] = 0.0
