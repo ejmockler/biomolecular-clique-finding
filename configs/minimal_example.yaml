@@ -1,0 +1,7 @@
+# Minimal CliqueFinder Configuration Example
+#
+# This demonstrates the simplest possible config - just input/output paths.
+# All other parameters will use their CLI defaults.
+
+input: "data/my_proteomics.csv"
+output: "results/imputed"

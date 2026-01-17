@@ -1,0 +1,34 @@
+{
+  "_comment": "CliqueFinder Configuration - Proteomics ALS Analysis (JSON format)",
+  "_usage": "cliquefinder impute --config configs/proteomics_als.json",
+
+  "input": "data/raw_proteomics.csv",
+  "output": "results/imputed",
+  "metadata": null,
+
+  "detection": {
+    "method": "adjusted-boxplot",
+    "threshold": 1.5,
+    "stratify_by": ["phenotype"],
+    "residual": {
+      "enabled": true,
+      "threshold": 4.25,
+      "high_end_only": true
+    },
+    "global_cap": {
+      "enabled": true,
+      "percentile": 99.95
+    }
+  },
+
+  "imputation": {
+    "strategy": "soft-clip",
+    "sharpness": 5.0
+  },
+
+  "phenotype": {
+    "source_col": "SUBJECT_GROUP",
+    "case_values": ["ALS", "ALS-FTD"],
+    "ctrl_values": ["Healthy Control", "Control", "HC"]
+  }
+}
