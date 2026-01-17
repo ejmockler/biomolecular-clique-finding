@@ -87,7 +87,12 @@ References:
       Label-Free Quantitative Proteomics Data Sets to Compare Imputation Strategies"
 """
 
-from cliquefinder.quality.outliers import OutlierDetector, ResidualOutlierDetector
+from cliquefinder.quality.outliers import (
+    OutlierDetector,
+    ResidualOutlierDetector,
+    AdaptiveOutlierDetector,
+    MultiPassOutlierDetector,
+)
 from cliquefinder.quality.imputation import Imputer
 from cliquefinder.quality.filtering import (
     StratifiedExpressionFilter,
@@ -110,6 +115,8 @@ __all__ = [
     # Outlier detection
     'OutlierDetector',
     'ResidualOutlierDetector',
+    'AdaptiveOutlierDetector',
+    'MultiPassOutlierDetector',
     # Imputation
     'Imputer',
     # Expression filtering

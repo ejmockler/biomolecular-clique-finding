@@ -46,6 +46,9 @@ import pandas as pd
 import warnings
 from scipy import stats
 from scipy.optimize import minimize_scalar
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import norm
+from sklearn.neighbors import NearestNeighbors
 
 from cliquefinder.core.transform import Transform
 from cliquefinder.core.quality import QualityFlag
@@ -85,12 +88,12 @@ class OutlierDetector(Transform):
             Use with pre-normalized data on same scale.
 
     Methods:
-        mad-z (recommended): Median Absolute Deviation, threshold 3.5
+        mad-z (recommended): Median Absolute Deviation, threshold 5.0
         iqr: Interquartile Range (Tukey's method), threshold 1.5
 
     Args:
         method: "mad-z" (recommended) or "iqr"
-        threshold: Detection threshold (3.5 for MAD-Z, 1.5 for IQR)
+        threshold: Detection threshold (5.0 for MAD-Z, 1.5 for IQR)
         mode: "within_group" (default), "per_feature", or "global"
         group_cols: Metadata column(s) for grouping. Can be:
             - str: Single column (e.g., "phenotype")
@@ -112,9 +115,11 @@ class OutlierDetector(Transform):
     def __init__(
         self,
         method: Literal["mad-z", "iqr"] = "mad-z",
-        threshold: float = 3.5,
+        threshold: float = 5.0,
         mode: Literal["within_group", "per_feature", "global"] = "within_group",
-        group_cols: str | list[str] = "phenotype"
+        group_cols: str | list[str] = "phenotype",
+        upper_threshold: float | None = None,
+        lower_threshold: float | None = None
     ):
         if method not in ("mad-z", "iqr"):
             raise ValueError(f"method must be 'mad-z' or 'iqr', got '{method}'")
@@ -127,13 +132,23 @@ class OutlierDetector(Transform):
         if isinstance(group_cols, str):
             group_cols = [group_cols]
 
+        # Use threshold as default for both upper/lower if not specified
+        effective_upper = upper_threshold if upper_threshold is not None else threshold
+        effective_lower = lower_threshold if lower_threshold is not None else threshold
+
         super().__init__(
             name="OutlierDetector",
-            params={"method": method, "threshold": threshold, "mode": mode, "group_cols": group_cols}
+            params={
+                "method": method, "threshold": threshold, "mode": mode,
+                "group_cols": group_cols, "upper_threshold": effective_upper,
+                "lower_threshold": effective_lower
+            }
         )
 
         self.method = method
         self.threshold = threshold
+        self.upper_threshold = effective_upper
+        self.lower_threshold = effective_lower
         self.mode = mode
         self.group_cols = group_cols
 
@@ -254,19 +269,24 @@ class OutlierDetector(Transform):
         return self._iqr(data, per_feature=False)
 
     def _mad_z(self, data: np.ndarray, per_feature: bool) -> np.ndarray:
-        """MAD-Z outlier detection."""
+        """MAD-Z outlier detection with asymmetric threshold support."""
         if per_feature:
             medians = np.median(data, axis=1, keepdims=True)
             mad = np.median(np.abs(data - medians), axis=1, keepdims=True)
             mad = np.where(mad == 0, 1.0, mad)  # Avoid division by zero
-            z_scores = 0.6745 * np.abs(data - medians) / mad
+            scaled_mad = mad / 0.6745  # Convert to MAD scale
+            # Asymmetric detection: separate thresholds for upper/lower
+            upper_bound = medians + self.upper_threshold * scaled_mad
+            lower_bound = medians - self.lower_threshold * scaled_mad
         else:
             median = np.median(data)
             mad = np.median(np.abs(data - median))
             mad = mad if mad != 0 else 1.0
-            z_scores = 0.6745 * np.abs(data - median) / mad
+            scaled_mad = mad / 0.6745
+            upper_bound = median + self.upper_threshold * scaled_mad
+            lower_bound = median - self.lower_threshold * scaled_mad
 
-        return z_scores > self.threshold
+        return (data > upper_bound) | (data < lower_bound)
 
     def _iqr(self, data: np.ndarray, per_feature: bool) -> np.ndarray:
         """IQR (Tukey) outlier detection."""
@@ -294,7 +314,7 @@ class ResidualOutlierDetector(Transform):
 
     Args:
         formula: R-style model formula (e.g., "expression ~ C(phenotype)")
-        threshold: MAD-Z threshold for residuals (default: 3.5)
+        threshold: MAD-Z threshold for residuals (default: 5.0)
 
     Examples:
         >>> detector = ResidualOutlierDetector(formula="expression ~ C(phenotype)")
@@ -312,7 +332,7 @@ class ResidualOutlierDetector(Transform):
     def __init__(
         self,
         formula: str = "expression ~ C(phenotype)",
-        threshold: float = 3.5
+        threshold: float = 5.0
     ):
         super().__init__(
             name="ResidualOutlierDetector",
@@ -780,7 +800,7 @@ class AdaptiveOutlierDetector(Transform):
             - "iqr": Symmetric IQR (Tukey) method
             - "adjusted-boxplot": Asymmetric medcouple-adjusted fences (Hubert & Vandervieren)
         threshold: Detection threshold
-            - For mad-z: MAD-Z threshold (default: 3.5)
+            - For mad-z: MAD-Z threshold (default: 5.0)
             - For iqr/adjusted-boxplot: IQR whisker multiplier (default: 1.5)
             - For student_t: p-value threshold (default: 0.01)
         mode: Detection scope
@@ -826,10 +846,12 @@ class AdaptiveOutlierDetector(Transform):
     def __init__(
         self,
         method: Literal["mad-z", "iqr", "adjusted-boxplot"] = "mad-z",
-        threshold: float = 3.5,
+        threshold: float = 5.0,
         mode: Literal["within_group", "per_feature", "global"] = "within_group",
         group_cols: str | list[str] = "phenotype",
-        scoring_method: Literal["binary", "student_t"] = "binary"
+        scoring_method: Literal["binary", "student_t"] = "binary",
+        upper_threshold: float | None = None,
+        lower_threshold: float | None = None
     ):
         if method not in ("mad-z", "iqr", "adjusted-boxplot"):
             raise ValueError(f"method must be 'mad-z', 'iqr', or 'adjusted-boxplot', got '{method}'")
@@ -844,6 +866,10 @@ class AdaptiveOutlierDetector(Transform):
         if isinstance(group_cols, str):
             group_cols = [group_cols]
 
+        # Use threshold as default for both upper/lower if not specified
+        effective_upper = upper_threshold if upper_threshold is not None else threshold
+        effective_lower = lower_threshold if lower_threshold is not None else threshold
+
         super().__init__(
             name="AdaptiveOutlierDetector",
             params={
@@ -851,12 +877,16 @@ class AdaptiveOutlierDetector(Transform):
                 "threshold": threshold,
                 "mode": mode,
                 "group_cols": group_cols,
-                "scoring_method": scoring_method
+                "scoring_method": scoring_method,
+                "upper_threshold": effective_upper,
+                "lower_threshold": effective_lower
             }
         )
 
         self.method = method
         self.threshold = threshold
+        self.upper_threshold = effective_upper
+        self.lower_threshold = effective_lower
         self.mode = mode
         self.group_cols = group_cols
         self.scoring_method = scoring_method
@@ -942,7 +972,9 @@ class AdaptiveOutlierDetector(Transform):
             method=self.method,
             threshold=self.threshold,
             mode=self.mode,
-            group_cols=self.group_cols
+            group_cols=self.group_cols,
+            upper_threshold=self.upper_threshold,
+            lower_threshold=self.lower_threshold
         )
 
         # Dispatch to mode-specific detection
@@ -1155,4 +1187,564 @@ class AdaptiveOutlierDetector(Transform):
             'theoretical_quantiles': theoretical,
             'sample_quantiles': standardized,
             'df': self.df_shared_
+        }
+
+
+class MultiPassOutlierDetector(Transform):
+    """
+    Multi-pass outlier detection combining multiple complementary methods.
+
+    This orchestrator applies multiple detection passes sequentially, combining
+    their results. Different artifact mechanisms require different detection
+    approaches:
+
+    1. **Within-group detection** (adjusted boxplot): Catches statistical outliers
+       relative to each feature's distribution within phenotype groups.
+
+    2. **Residual-based detection**: Catches values that are extreme relative to
+       expected row + column effects (additive model). Useful for high-end outliers
+       missed by within-group detection.
+
+    3. **Global percentile cap**: Catches physically implausible values like
+       detector saturation, regardless of within-feature statistics.
+
+    Scientific Rationale:
+        - Adjusted boxplot handles skewed distributions common in omics data
+        - Residual model detects cross-feature artifacts (batch effects)
+        - Global cap catches hardware limits (saturation, detection floor)
+
+    Example:
+        >>> from cliquefinder.quality import MultiPassOutlierDetector
+        >>>
+        >>> detector = MultiPassOutlierDetector(
+        ...     # Pass 1: within-group adjusted boxplot
+        ...     detection_method="adjusted-boxplot",
+        ...     detection_threshold=1.5,
+        ...     group_cols=["phenotype"],
+        ...     # Pass 2: residual-based
+        ...     residual_enabled=True,
+        ...     residual_threshold=4.25,
+        ...     residual_high_end_only=True,
+        ...     # Pass 3: global percentile cap
+        ...     global_cap_enabled=True,
+        ...     global_cap_percentile=99.95,
+        ... )
+        >>> flagged = detector.apply(matrix)
+        >>> print(f"Total outliers: {detector.n_outliers_}")
+
+    Attributes (set after apply):
+        n_outliers_: Total outlier count across all passes
+        pass1_count_: Outliers from within-group detection
+        pass2_count_: Additional outliers from residual detection
+        pass3_count_: Additional outliers from global cap
+        global_threshold_: The computed global percentile threshold
+        detector_: The underlying AdaptiveOutlierDetector (for medcouple access)
+    """
+
+    name = "MultiPassOutlierDetector"
+
+    def __init__(
+        self,
+        # Pass 1: Within-group detection
+        detection_method: str = "adjusted-boxplot",
+        detection_threshold: float = 1.5,
+        scoring_method: str = "binary",
+        group_cols: list[str] | None = None,
+        # Asymmetric threshold support (for upper-only mode)
+        upper_threshold: float | None = None,
+        lower_threshold: float | None = None,
+        # Pass 2: Residual-based detection
+        residual_enabled: bool = True,
+        residual_threshold: float = 4.25,
+        residual_high_end_only: bool = True,
+        # Pass 3: Global percentile cap
+        global_cap_enabled: bool = True,
+        global_cap_percentile: float = 99.95,
+    ):
+        """
+        Initialize multi-pass outlier detector.
+
+        Args:
+            detection_method: Method for Pass 1 ("adjusted-boxplot", "mad-z", "iqr")
+            detection_threshold: Threshold for Pass 1 (1.5 for IQR, 5.0 for MAD-Z)
+            scoring_method: Scoring for Pass 1 ("binary" or "student_t")
+            group_cols: Columns to stratify by (e.g., ["phenotype"])
+
+            upper_threshold: Override threshold for upper-tail detection (None = use detection_threshold)
+            lower_threshold: Override threshold for lower-tail detection (None = use detection_threshold,
+                           float('inf') = disable lower-tail for upper-only mode)
+
+            residual_enabled: Whether to run Pass 2
+            residual_threshold: MAD-Z threshold for residuals (default 4.25)
+            residual_high_end_only: Only flag positive residuals (high values)
+
+            global_cap_enabled: Whether to run Pass 3
+            global_cap_percentile: Percentile threshold (default 99.95)
+        """
+        self.detection_method = detection_method
+        self.detection_threshold = detection_threshold
+        self.scoring_method = scoring_method
+        self.group_cols = group_cols
+        self.upper_threshold = upper_threshold
+        self.lower_threshold = lower_threshold
+
+        self.residual_enabled = residual_enabled
+        self.residual_threshold = residual_threshold
+        self.residual_high_end_only = residual_high_end_only
+
+        self.global_cap_enabled = global_cap_enabled
+        self.global_cap_percentile = global_cap_percentile
+
+        # Attributes set after apply()
+        self.n_outliers_: int | None = None
+        self.pass1_count_: int | None = None
+        self.pass2_count_: int | None = None
+        self.pass3_count_: int | None = None
+        self.global_threshold_: float | None = None
+        self.detector_: AdaptiveOutlierDetector | None = None
+
+    def apply(self, matrix: BioMatrix) -> BioMatrix:
+        """
+        Apply multi-pass outlier detection.
+
+        Args:
+            matrix: Input BioMatrix
+
+        Returns:
+            BioMatrix with OUTLIER_DETECTED flags set
+        """
+        errors = self.validate(matrix)
+        if errors:
+            raise ValueError(
+                f"Validation failed for {self.name}:\n" +
+                "\n".join(f"  - {err}" for err in errors)
+            )
+
+        # Pass 1: Within-group detection
+        self.detector_ = AdaptiveOutlierDetector(
+            method=self.detection_method,
+            threshold=self.detection_threshold,
+            mode="within_group" if self.group_cols else "per_feature",
+            group_cols=self.group_cols,
+            scoring_method=self.scoring_method,
+            upper_threshold=self.upper_threshold,
+            lower_threshold=self.lower_threshold,
+        )
+        matrix_flagged = self.detector_.apply(matrix)
+
+        # Track outlier mask
+        outlier_mask = (matrix_flagged.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
+        self.pass1_count_ = int(outlier_mask.sum())
+
+        # Pass 2: Residual-based detection
+        self.pass2_count_ = 0
+        if self.residual_enabled:
+            # Compute additive model residuals
+            row_medians = np.median(matrix.data, axis=1, keepdims=True)
+            col_medians = np.median(matrix.data, axis=0, keepdims=True)
+            grand_median = np.median(matrix.data)
+            expected = row_medians + col_medians - grand_median
+            residuals = matrix.data - expected
+
+            # MAD-based z-scores on residuals
+            residual_median = np.median(residuals)
+            residual_mad = np.median(np.abs(residuals - residual_median)) * 1.4826
+            if residual_mad > 0:
+                z_residuals = (residuals - residual_median) / residual_mad
+
+                # Flag high residuals
+                if self.residual_high_end_only:
+                    residual_outliers = z_residuals > self.residual_threshold
+                else:
+                    residual_outliers = np.abs(z_residuals) > self.residual_threshold
+
+                # Count new outliers (not already flagged)
+                new_from_residual = residual_outliers & (~outlier_mask)
+                self.pass2_count_ = int(new_from_residual.sum())
+
+                # Combine masks
+                outlier_mask = outlier_mask | residual_outliers
+
+                # Update quality flags
+                new_flags = matrix_flagged.quality_flags.copy()
+                new_flags[residual_outliers] = new_flags[residual_outliers] | np.uint8(QualityFlag.OUTLIER_DETECTED)
+                matrix_flagged = BioMatrix(
+                    data=matrix_flagged.data,
+                    feature_ids=matrix_flagged.feature_ids,
+                    sample_ids=matrix_flagged.sample_ids,
+                    sample_metadata=matrix_flagged.sample_metadata,
+                    quality_flags=new_flags,
+                )
+
+        # Pass 3: Global percentile cap
+        self.pass3_count_ = 0
+        if self.global_cap_enabled:
+            self.global_threshold_ = np.percentile(matrix.data, self.global_cap_percentile)
+            global_outliers = matrix.data > self.global_threshold_
+
+            # Count new outliers
+            new_from_global = global_outliers & (~outlier_mask)
+            self.pass3_count_ = int(new_from_global.sum())
+
+            # Combine masks
+            outlier_mask = outlier_mask | global_outliers
+
+            # Update quality flags
+            new_flags = matrix_flagged.quality_flags.copy()
+            new_flags[global_outliers] = new_flags[global_outliers] | np.uint8(QualityFlag.OUTLIER_DETECTED)
+            matrix_flagged = BioMatrix(
+                data=matrix_flagged.data,
+                feature_ids=matrix_flagged.feature_ids,
+                sample_ids=matrix_flagged.sample_ids,
+                sample_metadata=matrix_flagged.sample_metadata,
+                quality_flags=new_flags,
+            )
+
+        self.n_outliers_ = int(outlier_mask.sum())
+
+        return matrix_flagged
+
+    def validate(self, matrix: BioMatrix) -> list[str]:
+        """Validate input matrix."""
+        errors = []
+
+        if matrix.data.size == 0:
+            errors.append("Matrix has no data")
+
+        if self.group_cols:
+            for col in self.group_cols:
+                if col not in matrix.sample_metadata.columns:
+                    errors.append(f"Group column '{col}' not in sample_metadata")
+
+        if not 0 < self.global_cap_percentile <= 100:
+            errors.append(f"global_cap_percentile must be in (0, 100], got {self.global_cap_percentile}")
+
+        return errors
+
+    def get_pass_summary(self) -> dict:
+        """
+        Get summary of outliers detected by each pass.
+
+        Returns:
+            Dict with counts and percentages per pass
+        """
+        if self.n_outliers_ is None:
+            raise ValueError("Must call apply() before get_pass_summary()")
+
+        return {
+            'pass1_within_group': self.pass1_count_,
+            'pass2_residual': self.pass2_count_,
+            'pass3_global_cap': self.pass3_count_,
+            'total': self.n_outliers_,
+            'global_threshold': self.global_threshold_,
+        }
+
+
+class KDEAdaptiveOutlierDetector(Transform):
+    """
+    Adaptive outlier detection using KDE-based threshold selection.
+
+    Instead of a fixed MAD-Z threshold, this detector finds the natural
+    "elbow" point in the distribution where the tail begins, adapting
+    to each stratum's actual distribution.
+
+    Algorithm:
+        1. Compute MAD-Z scores for each gene within each stratum
+        2. Pool all MAD-Z scores for the stratum
+        3. Use adaptive KDE to estimate the density
+        4. Find cumulative density tail (e.g., top 0.5%)
+        5. Detect inflection point via gradient analysis
+        6. Use inflection point as adaptive threshold
+
+    This is more robust than fixed thresholds because:
+        - Heavy-tailed distributions get higher thresholds automatically
+        - Light-tailed distributions get lower thresholds
+        - Each stratum gets its own adaptive threshold
+
+    Parameters:
+        group_cols: Columns for stratification (default: ['phenotype'])
+        upper_only: Only detect upper-tail outliers (default: True)
+        k_neighbors: Neighbors for adaptive KDE bandwidth (default: 10)
+        cumulative_density_threshold: Tail start threshold (default: 0.005)
+        gradient_sensitivity: Sensitivity for inflection detection (default: 0.005)
+        min_threshold: Minimum threshold to prevent over-detection (default: 2.0)
+        max_threshold: Maximum threshold to ensure some detection (default: 5.0)
+        fallback_threshold: Threshold if KDE fails (default: 3.0)
+
+    Attributes:
+        thresholds_: Dict mapping stratum -> detected threshold
+        n_outliers_: Total outliers detected
+        stratum_counts_: Dict mapping stratum -> outlier count
+
+    References:
+        Based on the adaptive KDE thresholding approach from case-control-genomics
+        feature selection (detect_beta_tail_threshold).
+    """
+
+    def __init__(
+        self,
+        group_cols: list[str] | None = None,
+        upper_only: bool = True,
+        k_neighbors: int = 10,
+        cumulative_density_threshold: float = 0.005,
+        gradient_sensitivity: float = 0.005,
+        min_threshold: float = 2.0,
+        max_threshold: float = 5.0,
+        fallback_threshold: float = 3.0,
+    ):
+        self.group_cols = group_cols or ['phenotype']
+        self.upper_only = upper_only
+        self.k_neighbors = k_neighbors
+        self.cumulative_density_threshold = cumulative_density_threshold
+        self.gradient_sensitivity = gradient_sensitivity
+        self.min_threshold = min_threshold
+        self.max_threshold = max_threshold
+        self.fallback_threshold = fallback_threshold
+
+        # Fitted attributes
+        self.thresholds_: dict[str, float] | None = None
+        self.n_outliers_: int | None = None
+        self.stratum_counts_: dict[str, int] | None = None
+        self.kde_diagnostics_: dict[str, dict] | None = None
+
+    def _detect_kde_threshold(
+        self,
+        mad_z_scores: np.ndarray,
+        stratum_name: str
+    ) -> tuple[float, dict]:
+        """
+        Detect adaptive threshold using KDE inflection point.
+
+        Returns:
+            (threshold, diagnostics_dict)
+        """
+        diagnostics = {
+            'n_values': len(mad_z_scores),
+            'method': 'kde_inflection',
+        }
+
+        # Filter to positive (upper-tail) values for upper_only mode
+        if self.upper_only:
+            scores = mad_z_scores[mad_z_scores > 0]
+        else:
+            scores = np.abs(mad_z_scores)
+
+        if len(scores) < 50:
+            # Not enough data for reliable KDE
+            diagnostics['method'] = 'fallback_insufficient_data'
+            return self.fallback_threshold, diagnostics
+
+        # Create evaluation grid
+        x_min, x_max = scores.min(), scores.max()
+        x_grid = np.linspace(x_min, x_max, 500)
+
+        # Calculate adaptive bandwidths using k-nearest neighbors
+        k = min(self.k_neighbors, len(scores) - 1)
+        nbrs = NearestNeighbors(n_neighbors=k)
+        nbrs.fit(scores.reshape(-1, 1))
+        distances, _ = nbrs.kneighbors(scores.reshape(-1, 1))
+        bandwidths = distances[:, -1]
+        bandwidths = np.clip(bandwidths, 0.01, None)  # Avoid zero bandwidth
+
+        # Estimate KDE with adaptive bandwidths
+        kde_values = np.zeros_like(x_grid)
+        for i, point in enumerate(scores):
+            kde_values += norm.pdf(x_grid, loc=point, scale=bandwidths[i])
+        kde_values /= len(scores)
+
+        # Smooth the KDE
+        kde_smooth = gaussian_filter1d(kde_values, sigma=1)
+
+        # Calculate cumulative density from the right (upper tail)
+        dx = x_grid[1] - x_grid[0]
+        cumulative_density = np.cumsum(kde_smooth[::-1] * dx)[::-1]
+
+        # Find start of tail region
+        tail_indices = np.where(cumulative_density <= self.cumulative_density_threshold)[0]
+        if len(tail_indices) > 0:
+            tail_start_idx = tail_indices[0]
+        else:
+            # Fallback: use 95th percentile as tail start
+            tail_start_idx = int(0.95 * len(x_grid))
+
+        # Calculate gradient
+        gradient = np.gradient(kde_smooth)
+        gradient_smooth = gaussian_filter1d(gradient, sigma=1)
+
+        # Find inflection point in tail region
+        threshold_idx = None
+        window_points = 5
+
+        for i in range(tail_start_idx, len(gradient_smooth) - window_points):
+            window = gradient_smooth[i:i + window_points]
+            # Check for sustained negative gradient (density falling off)
+            if np.mean(window) < -self.gradient_sensitivity and np.all(window < 0):
+                threshold_idx = i
+                break
+
+        if threshold_idx is None:
+            # Fallback: use tail start
+            threshold_idx = tail_start_idx
+            diagnostics['method'] = 'kde_tail_start'
+
+        threshold = x_grid[threshold_idx]
+
+        # Apply bounds
+        threshold = np.clip(threshold, self.min_threshold, self.max_threshold)
+
+        diagnostics.update({
+            'raw_threshold': x_grid[threshold_idx] if threshold_idx < len(x_grid) else None,
+            'tail_start': x_grid[tail_start_idx] if tail_start_idx < len(x_grid) else None,
+            'final_threshold': threshold,
+            'kde_peak': x_grid[np.argmax(kde_smooth)],
+            'score_range': (float(x_min), float(x_max)),
+        })
+
+        return threshold, diagnostics
+
+    def apply(self, matrix: BioMatrix) -> BioMatrix:
+        """
+        Apply adaptive KDE-based outlier detection.
+
+        Returns:
+            BioMatrix with quality_flags updated
+        """
+        # Initialize outlier mask
+        outlier_mask = np.zeros((matrix.n_features, matrix.n_samples), dtype=bool)
+
+        # Build stratum labels
+        if self.group_cols:
+            strata = matrix.sample_metadata[self.group_cols].apply(
+                lambda row: '_'.join(str(v) for v in row), axis=1
+            )
+        else:
+            strata = pd.Series(['all'] * matrix.n_samples, index=matrix.sample_ids)
+
+        unique_strata = strata.unique()
+        self.thresholds_ = {}
+        self.stratum_counts_ = {}
+        self.kde_diagnostics_ = {}
+
+        print(f"\nKDE Adaptive Outlier Detection:")
+        print(f"  Stratification: {self.group_cols}")
+        print(f"  Upper-only: {self.upper_only}")
+
+        for stratum in unique_strata:
+            sample_mask = (strata == stratum).values
+            stratum_data = matrix.data[:, sample_mask]
+
+            # Compute MAD-Z scores for all genes in this stratum
+            all_mad_z = []
+            gene_mad_z = []  # Store per-gene MAD-Z for flagging
+
+            for gene_idx in range(stratum_data.shape[0]):
+                gene_values = stratum_data[gene_idx, :]
+
+                # Skip genes with insufficient valid values
+                valid_mask = np.isfinite(gene_values) & (gene_values > 0)
+                if valid_mask.sum() < 3:
+                    gene_mad_z.append(np.full(sample_mask.sum(), np.nan))
+                    continue
+
+                valid_values = gene_values[valid_mask]
+                median = np.median(valid_values)
+                mad = np.median(np.abs(valid_values - median))
+
+                if mad < 1e-10:
+                    gene_mad_z.append(np.full(sample_mask.sum(), np.nan))
+                    continue
+
+                # Compute MAD-Z scores (scaled to be comparable to Z-scores)
+                scaled_mad = mad * 1.4826
+                z_scores = (gene_values - median) / scaled_mad
+                gene_mad_z.append(z_scores)
+
+                # Collect valid scores for KDE
+                all_mad_z.extend(z_scores[valid_mask].tolist())
+
+            all_mad_z = np.array(all_mad_z)
+
+            # Detect adaptive threshold for this stratum
+            threshold, diagnostics = self._detect_kde_threshold(all_mad_z, stratum)
+            self.thresholds_[stratum] = threshold
+            self.kde_diagnostics_[stratum] = diagnostics
+
+            # Apply threshold to flag outliers
+            stratum_outliers = 0
+            sample_indices = np.where(sample_mask)[0]
+
+            for gene_idx, z_scores in enumerate(gene_mad_z):
+                if z_scores is None or np.all(np.isnan(z_scores)):
+                    continue
+
+                # Flag based on upper_only setting
+                if self.upper_only:
+                    gene_outliers = z_scores > threshold
+                else:
+                    gene_outliers = np.abs(z_scores) > threshold
+
+                # Map back to full outlier mask
+                for local_idx, global_idx in enumerate(sample_indices):
+                    if gene_outliers[local_idx]:
+                        outlier_mask[gene_idx, global_idx] = True
+                        stratum_outliers += 1
+
+            self.stratum_counts_[stratum] = stratum_outliers
+
+            print(f"\n  {stratum}:")
+            print(f"    Samples: {sample_mask.sum()}")
+            print(f"    Adaptive threshold: {threshold:.2f}")
+            print(f"    Method: {diagnostics['method']}")
+            print(f"    Outliers: {stratum_outliers:,}")
+
+        self.n_outliers_ = outlier_mask.sum()
+
+        # Update quality flags
+        if matrix.quality_flags is None:
+            new_flags = np.zeros_like(outlier_mask, dtype=np.uint8)
+        else:
+            new_flags = matrix.quality_flags.copy()
+
+        new_flags[outlier_mask] |= QualityFlag.OUTLIER_DETECTED
+
+        return BioMatrix(
+            data=matrix.data,
+            feature_ids=matrix.feature_ids,
+            sample_ids=matrix.sample_ids,
+            sample_metadata=matrix.sample_metadata,
+            quality_flags=new_flags
+        )
+
+    def validate(self, matrix: BioMatrix) -> list[str]:
+        """Validate detector configuration."""
+        errors = []
+
+        if self.group_cols:
+            for col in self.group_cols:
+                if col not in matrix.sample_metadata.columns:
+                    errors.append(f"Group column '{col}' not in sample_metadata")
+
+        if self.k_neighbors < 1:
+            errors.append(f"k_neighbors must be >= 1, got {self.k_neighbors}")
+
+        if not 0 < self.cumulative_density_threshold < 1:
+            errors.append(f"cumulative_density_threshold must be in (0, 1)")
+
+        return errors
+
+    def get_threshold_summary(self) -> dict:
+        """
+        Get summary of adaptive thresholds per stratum.
+
+        Returns:
+            Dict with threshold info and diagnostics
+        """
+        if self.thresholds_ is None:
+            raise ValueError("Must call apply() before get_threshold_summary()")
+
+        return {
+            'thresholds': self.thresholds_,
+            'stratum_counts': self.stratum_counts_,
+            'total_outliers': self.n_outliers_,
+            'diagnostics': self.kde_diagnostics_,
         }

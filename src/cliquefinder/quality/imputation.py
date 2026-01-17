@@ -65,11 +65,11 @@ Examples:
     >>> from cliquefinder.core.quality import QualityFlag
     >>>
     >>> # Typical workflow: detect then impute
-    >>> detector = OutlierDetector(method="mad-z", threshold=3.5)
+    >>> detector = OutlierDetector(method="mad-z", threshold=5.0)
     >>> flagged = detector.apply(matrix)
     >>>
     >>> # Impute outliers using MAD-clip (RECOMMENDED)
-    >>> imputer = Imputer(strategy="mad-clip", threshold=3.5)
+    >>> imputer = Imputer(strategy="mad-clip", threshold=5.0)
     >>> imputed = imputer.apply(flagged)
     >>>
     >>> # Verify outliers were imputed
@@ -193,10 +193,9 @@ def soft_clip(
 
     # Apply soft clipping: c + (U-L)/2 * tanh(k * (x - c))
     # tanh is numerically stable for all finite inputs
+    # Note: tanh output is in (-1, 1), so result is mathematically in (lower, upper)
+    # No hard clipping needed - that would defeat the purpose of soft clipping
     result = center + half_range * np.tanh(sharpness * (x - center))
-
-    # Clamp to exact bounds (handles numerical precision edge cases)
-    result = np.clip(result, lower, upper)
 
     return result
 
@@ -289,11 +288,9 @@ def soft_clip_per_feature(
 
     # Apply vectorized soft clip: c + (U-L)/2 * tanh(k * (x - c))
     # Broadcasting handles per-feature parameters
+    # Note: tanh output is in (-1, 1), so result is mathematically in (lower, upper)
+    # No hard clipping needed - that would defeat the purpose of soft clipping
     result = centers + half_ranges * np.tanh(k * (data - centers))
-
-    # Clamp to exact bounds (handles numerical precision edge cases)
-    # Broadcast bounds to matrix shape
-    result = np.clip(result, lower_bounds[:, None], upper_bounds[:, None])
 
     return result
 
@@ -354,7 +351,7 @@ class Imputer(Transform):
 
     Args:
         strategy: Imputation method ("mad-clip", "soft-clip", or "median")
-        threshold: MAD-Z threshold for clipping (default 3.5, must match detection threshold)
+        threshold: MAD-Z threshold for clipping (default 5.0, should match detection threshold)
             Applies to both mad-clip and soft-clip strategies.
         sharpness: Sharpness parameter for soft-clip (default: None = 2/(upper-lower))
             - None: Gentle compression (recommended for correlation analysis)
@@ -368,7 +365,7 @@ class Imputer(Transform):
 
     Examples:
         >>> # Recommended: MAD-clip (consistent with detection threshold)
-        >>> imputer = Imputer(strategy="mad-clip", threshold=3.5)
+        >>> imputer = Imputer(strategy="mad-clip", threshold=5.0)
         >>> imputed = imputer.apply(flagged_matrix)
         >>>
         >>> # Fallback: Simple median imputation
@@ -389,16 +386,17 @@ class Imputer(Transform):
     def __init__(
         self,
         strategy: str = "mad-clip",
-        threshold: float = 3.5,
+        threshold: float = 5.0,
         sharpness: Optional[float] = None,
-        group_cols: str | list[str] | None = None
+        group_cols: str | list[str] | None = None,
+        max_upper_bound: Optional[float] = None
     ):
         """
         Initialize imputer.
 
         Args:
             strategy: Imputation method ("mad-clip", "soft-clip", or "median")
-            threshold: MAD-Z threshold for clipping (default 3.5, must match detection threshold)
+            threshold: MAD-Z threshold for clipping (default 5.0, less aggressive).
                 Applies to both mad-clip and soft-clip strategies.
             sharpness: Sharpness parameter for soft-clip (default: None = 2/(upper-lower))
                 - None: Gentle compression (recommended for correlation analysis)
@@ -412,6 +410,10 @@ class Imputer(Transform):
                 When specified, median and MAD are computed within each group separately.
                 This preserves group-specific expression patterns and prevents cross-group
                 contamination.
+            max_upper_bound: Maximum allowed upper bound for clipping (default: None = no limit).
+                When specified, enforces a hard ceiling on all upper bounds, ensuring no
+                imputed value exceeds this threshold. Useful when global cap detection
+                flags values above a percentile but MAD-based bounds would be higher.
 
         Raises:
             ValueError: If parameters are invalid
@@ -448,6 +450,7 @@ class Imputer(Transform):
                 "threshold": threshold,
                 "sharpness": sharpness,
                 "group_cols": group_cols,
+                "max_upper_bound": max_upper_bound,
             }
         )
 
@@ -455,6 +458,7 @@ class Imputer(Transform):
         self.threshold = threshold
         self.sharpness = sharpness
         self.group_cols = group_cols
+        self.max_upper_bound = max_upper_bound
 
     def apply(self, matrix: BioMatrix) -> BioMatrix:
         """
@@ -463,14 +467,33 @@ class Imputer(Transform):
         Updates both data AND quality flags. Imputed values are marked with
         QualityFlag.IMPUTED for provenance tracking.
 
+        Fully-Flagged Feature Handling:
+            Features where ALL values are flagged (e.g., saturated mass spec signals)
+            cannot be imputed because there are no reference values to compute
+            statistics from. These features are:
+            1. Automatically excluded from the output matrix
+            2. Stored in self.excluded_features_ for reporting
+            3. Logged with a warning
+
+            This is scientifically appropriate because:
+            - Saturated/fully-outlier measurements provide no reliable information
+            - There is no statistical basis for imputation without reference values
+            - Standard practice is to exclude such features with documentation
+            - The exclusion is tracked for reproducibility and methods reporting
+
         Args:
             matrix: Input BioMatrix (typically after outlier detection)
 
         Returns:
-            New BioMatrix with imputed values and updated flags
+            New BioMatrix with imputed values and updated flags.
+            May have fewer features than input if fully-flagged features were excluded.
+
+        Attributes Set:
+            excluded_features_: list of (feature_id, reason) tuples for excluded features
+            n_excluded_: count of excluded features
 
         Raises:
-            ValueError: If validation fails or no values need imputation
+            ValueError: If validation fails
         """
         # Validate preconditions
         errors = self.validate(matrix)
@@ -486,6 +509,9 @@ class Imputer(Transform):
             ((matrix.quality_flags & QualityFlag.MISSING_ORIGINAL) > 0)
         )
 
+        # Initialize tracking for fully-flagged features (using global bounds)
+        self.fully_flagged_features_ = []
+
         if not np.any(to_impute):
             # Nothing to impute - return copy
             warnings.warn(
@@ -494,6 +520,46 @@ class Imputer(Transform):
                 UserWarning
             )
             return matrix.copy()
+
+        # Identify fully-flagged features (no reference values for per-feature statistics)
+        # These will use global bounds as fallback instead of being excluded
+        fully_flagged = np.all(to_impute, axis=1)
+        n_fully_flagged = np.sum(fully_flagged)
+
+        if n_fully_flagged > 0:
+            # Record which features are fully flagged (for reporting)
+            flagged_ids = matrix.feature_ids[fully_flagged].tolist()
+            for feat_id in flagged_ids:
+                self.fully_flagged_features_.append((feat_id, "all_values_flagged_using_global_bounds"))
+
+            # Warn but continue with global bounds
+            if n_fully_flagged <= 10:
+                feat_list = ", ".join(flagged_ids)
+            else:
+                feat_list = ", ".join(flagged_ids[:10]) + f", ... (+{n_fully_flagged - 10} more)"
+
+            warnings.warn(
+                f"Found {n_fully_flagged} feature(s) with all values flagged "
+                f"(no per-feature reference values): {feat_list}. "
+                f"Using global bounds for imputation. "
+                f"These are likely saturated measurements or systematic artifacts.",
+                UserWarning
+            )
+
+        # Compute global bounds for fallback (used for fully-flagged features)
+        # Use percentiles from non-flagged values across entire matrix
+        non_flagged_values = matrix.data[~to_impute]
+        if len(non_flagged_values) > 0:
+            self.global_lower_ = np.percentile(non_flagged_values, 0.1)
+            self.global_upper_ = np.percentile(non_flagged_values, 99.9)
+        else:
+            # Extreme edge case: everything is flagged
+            self.global_lower_ = np.percentile(matrix.data, 0.1)
+            self.global_upper_ = np.percentile(matrix.data, 99.9)
+
+        # Enforce max_upper_bound on global bounds
+        if self.max_upper_bound is not None:
+            self.global_upper_ = min(self.global_upper_, self.max_upper_bound)
 
         # Warn if imputing too many values (>50% unreliable)
         impute_fraction = np.mean(to_impute)
@@ -551,15 +617,8 @@ class Imputer(Transform):
         # Don't add error if nothing to impute - we'll just warn and return copy
         # This makes it safe to always include imputation in pipelines
 
-        # Check for features with all missing values (can't impute)
-        if np.any(to_impute):
-            all_missing_per_feature = np.all(to_impute, axis=1)
-            n_all_missing = np.sum(all_missing_per_feature)
-            if n_all_missing > 0:
-                errors.append(
-                    f"Found {n_all_missing} features with all values flagged for imputation. "
-                    f"Cannot impute (no reference values). Filter these features first."
-                )
+        # Fully-flagged features are handled gracefully in apply() - no error here
+        # They will be automatically excluded and reported
 
         return errors
 
@@ -644,6 +703,10 @@ class Imputer(Transform):
             lower_bound = median - self.threshold * scaled_mad
             upper_bound = median + self.threshold * scaled_mad
 
+            # Enforce max_upper_bound if specified
+            if self.max_upper_bound is not None:
+                upper_bound = min(upper_bound, self.max_upper_bound)
+
             # Clip flagged positions to bounds
             for sample_idx in np.where(gene_mask)[0]:
                 val = gene_row[sample_idx]
@@ -715,19 +778,27 @@ class Imputer(Transform):
                     median = np.median(clean_values_in_group)
                     mad = np.median(np.abs(clean_values_in_group - median))
                     if mad == 0:
-                        continue  # Skip if all clean values identical
-                    scaled_mad = mad / 0.6745
+                        # All clean values identical - use global bounds as fallback
+                        lower_bound = self.global_lower_
+                        upper_bound = self.global_upper_
+                    else:
+                        scaled_mad = mad / 0.6745
+                        lower_bound = median - self.threshold * scaled_mad
+                        upper_bound = median + self.threshold * scaled_mad
                 elif not np.isnan(global_medians[gene_idx]) and not np.isnan(global_mads[gene_idx]):
                     # Fall back to global statistics for small groups
                     median = global_medians[gene_idx]
                     scaled_mad = global_mads[gene_idx]
+                    lower_bound = median - self.threshold * scaled_mad
+                    upper_bound = median + self.threshold * scaled_mad
                 else:
-                    # No valid statistics available, skip this gene
-                    continue
+                    # No valid per-gene statistics - use global bounds (respects max_upper_bound)
+                    lower_bound = self.global_lower_
+                    upper_bound = self.global_upper_
 
-                # Compute bounds: median ± threshold × MAD
-                lower_bound = median - self.threshold * scaled_mad
-                upper_bound = median + self.threshold * scaled_mad
+                # Enforce max_upper_bound if specified
+                if self.max_upper_bound is not None:
+                    upper_bound = min(upper_bound, self.max_upper_bound)
 
                 # Apply clipping to outliers in this group
                 for sample_idx in np.where(gene_outliers_in_group)[0]:
@@ -782,6 +853,7 @@ class Imputer(Transform):
         Apply global soft-clip (bounds computed across all samples per gene).
 
         Modifies data in-place. Uses vectorized operations for efficiency.
+        For features with no clean values (fully-flagged), uses global bounds.
         """
         # Compute per-gene bounds from non-outlier values
         n_features = data.shape[0]
@@ -798,13 +870,19 @@ class Imputer(Transform):
             # Compute median and MAD from non-outlier values
             clean_values = gene_row[~gene_mask]
             if len(clean_values) < 2:
-                continue  # Not enough clean values
+                # Use global bounds as fallback for fully-flagged features
+                lower_bounds[gene_idx] = self.global_lower_
+                upper_bounds[gene_idx] = self.global_upper_
+                continue
 
             median = np.median(clean_values)
             mad = np.median(np.abs(clean_values - median))
 
             # Avoid division by zero
             if mad == 0:
+                # Use global bounds as fallback
+                lower_bounds[gene_idx] = self.global_lower_
+                upper_bounds[gene_idx] = self.global_upper_
                 continue
 
             # Scale MAD to be consistent with std for normal data
@@ -813,6 +891,10 @@ class Imputer(Transform):
             # Compute bounds: median ± threshold × MAD
             lower_bounds[gene_idx] = median - self.threshold * scaled_mad
             upper_bounds[gene_idx] = median + self.threshold * scaled_mad
+
+        # Enforce max_upper_bound if specified
+        if self.max_upper_bound is not None:
+            upper_bounds = np.minimum(upper_bounds, self.max_upper_bound)
 
         # Apply soft clipping to rows with valid bounds
         valid_features = ~np.isnan(lower_bounds) & ~np.isnan(upper_bounds)
@@ -904,6 +986,10 @@ class Imputer(Transform):
                 else:
                     # No valid bounds available, skip
                     continue
+
+                # Enforce max_upper_bound if specified
+                if self.max_upper_bound is not None:
+                    upper_bound = min(upper_bound, self.max_upper_bound)
 
                 # Apply soft clipping to this gene's values in this group
                 group_indices = np.where(group_mask)[0]
