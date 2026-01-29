@@ -69,6 +69,19 @@ class CliqueDefinition:
         condition: Condition where clique was identified
         coherence: Mean pairwise correlation in discovery condition
         n_indra_targets: Number of INDRA-validated targets
+        direction: Classification of correlation signs in clique.
+            POSITIVE = all edges have r > 0 (co-activation)
+            NEGATIVE = all edges have r < 0 (anti-correlation/repression)
+            MIXED = edges have both positive and negative correlations
+        signed_mean_correlation: Mean correlation preserving sign. Unlike
+            coherence (which may use absolute values), this can be negative
+            for anti-correlated cliques.
+        signed_min_correlation: Minimum signed correlation (most negative or
+            least positive).
+        signed_max_correlation: Maximum signed correlation (most positive or
+            least negative).
+        n_positive_edges: Number of edges with r > 0.
+        n_negative_edges: Number of edges with r < 0.
     """
 
     clique_id: str
@@ -77,6 +90,12 @@ class CliqueDefinition:
     condition: str | None = None
     coherence: float | None = None
     n_indra_targets: int | None = None
+    direction: str = "unknown"
+    signed_mean_correlation: float | None = None
+    signed_min_correlation: float | None = None
+    signed_max_correlation: float | None = None
+    n_positive_edges: int = 0
+    n_negative_edges: int = 0
 
 
 @dataclass
@@ -102,6 +121,19 @@ class CliqueDifferentialResult:
         contrast: Contrast tested
         model_type: Fixed or mixed model
         issue: Warning/error message if any
+        direction: Classification of correlation signs in clique.
+            POSITIVE = all edges have r > 0 (co-activation)
+            NEGATIVE = all edges have r < 0 (anti-correlation/repression)
+            MIXED = edges have both positive and negative correlations
+        signed_mean_correlation: Mean correlation preserving sign. Unlike
+            coherence (which may use absolute values), this can be negative
+            for anti-correlated cliques.
+        signed_min_correlation: Minimum signed correlation (most negative or
+            least positive).
+        signed_max_correlation: Maximum signed correlation (most positive or
+            least negative).
+        n_positive_edges: Number of edges with r > 0.
+        n_negative_edges: Number of edges with r < 0.
     """
 
     clique_id: str
@@ -122,6 +154,12 @@ class CliqueDifferentialResult:
     contrast: str
     model_type: str
     issue: str | None = None
+    direction: str = "unknown"
+    signed_mean_correlation: float | None = None
+    signed_min_correlation: float | None = None
+    signed_max_correlation: float | None = None
+    n_positive_edges: int = 0
+    n_negative_edges: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -143,6 +181,12 @@ class CliqueDifferentialResult:
             'model_type': self.model_type,
             'issue': self.issue,
             'proteins': ','.join(self.protein_ids),
+            'direction': self.direction,
+            'signed_mean_correlation': self.signed_mean_correlation,
+            'signed_min_correlation': self.signed_min_correlation,
+            'signed_max_correlation': self.signed_max_correlation,
+            'n_positive_edges': self.n_positive_edges,
+            'n_negative_edges': self.n_negative_edges,
         }
 
 
@@ -233,6 +277,32 @@ def load_clique_definitions(
         if len(proteins) < min_proteins:
             continue
 
+        # Extract new signed correlation fields with backward compatibility
+        direction = 'unknown'
+        signed_mean_correlation = None
+        signed_min_correlation = None
+        signed_max_correlation = None
+        n_positive_edges = 0
+        n_negative_edges = 0
+
+        if 'direction' in group.columns:
+            direction = str(group['direction'].iloc[0])
+        if 'signed_mean_correlation' in group.columns:
+            val = group['signed_mean_correlation'].iloc[0]
+            signed_mean_correlation = float(val) if pd.notna(val) else None
+        if 'signed_min_correlation' in group.columns:
+            val = group['signed_min_correlation'].iloc[0]
+            signed_min_correlation = float(val) if pd.notna(val) else None
+        if 'signed_max_correlation' in group.columns:
+            val = group['signed_max_correlation'].iloc[0]
+            signed_max_correlation = float(val) if pd.notna(val) else None
+        if 'n_positive_edges' in group.columns:
+            val = group['n_positive_edges'].iloc[0]
+            n_positive_edges = int(val) if pd.notna(val) else 0
+        if 'n_negative_edges' in group.columns:
+            val = group['n_negative_edges'].iloc[0]
+            n_negative_edges = int(val) if pd.notna(val) else 0
+
         clique = CliqueDefinition(
             clique_id=str(clique_id),
             protein_ids=proteins,
@@ -240,6 +310,12 @@ def load_clique_definitions(
             condition=group['condition'].iloc[0] if 'condition' in group.columns else None,
             coherence=float(group['coherence'].iloc[0]) if 'coherence' in group.columns else None,
             n_indra_targets=int(group['n_indra_targets'].iloc[0]) if 'n_indra_targets' in group.columns else None,
+            direction=direction,
+            signed_mean_correlation=signed_mean_correlation,
+            signed_min_correlation=signed_min_correlation,
+            signed_max_correlation=signed_max_correlation,
+            n_positive_edges=n_positive_edges,
+            n_negative_edges=n_negative_edges,
         )
         cliques.append(clique)
 
@@ -359,7 +435,7 @@ def run_clique_differential_analysis(
     feature_ids: list[str],
     sample_metadata: pd.DataFrame,
     clique_definitions: list[CliqueDefinition],
-    condition_col: str = "phenotype",
+    condition_col: str,
     subject_col: str | None = "subject_id",
     contrasts: dict[str, tuple[str, str]] | None = None,
     summarization_method: SummarizationMethod | str = SummarizationMethod.TUKEY_MEDIAN_POLISH,
@@ -395,7 +471,7 @@ def run_clique_differential_analysis(
         feature_ids: List of protein identifiers.
         sample_metadata: DataFrame with sample information.
         clique_definitions: List of cliques to analyze.
-        condition_col: Metadata column for condition labels.
+        condition_col: Metadata column for condition labels (REQUIRED - must be specified by user).
         subject_col: Metadata column for subject IDs (None for no random effects).
         contrasts: Dict of contrasts to test (None for all pairwise).
         summarization_method: How to aggregate proteins within clique.
@@ -419,9 +495,9 @@ def run_clique_differential_analysis(
         ...     feature_ids=list(matrix.feature_ids),
         ...     sample_metadata=matrix.sample_metadata,
         ...     clique_definitions=cliques,
-        ...     condition_col="phenotype",
+        ...     condition_col="treatment_group",
         ...     subject_col="subject_id",
-        ...     contrasts={"CASE_vs_CTRL": ("CASE", "CTRL")},
+        ...     contrasts={"treatment_vs_control": ("treatment", "control")},
         ... )
         >>> print(result.summary())
         >>> result.to_dataframe().to_csv("clique_differential.csv")
@@ -528,6 +604,20 @@ def run_clique_differential_analysis(
         # Extract clique protein data
         clique_data = work_data[protein_indices, :]
 
+        # Warn if clique has mixed correlation signs
+        # Tukey Median Polish assumes additive structure (all features moving together)
+        # Mixed-sign cliques (some positive, some negative edges) violate this assumption
+        if clique.direction == "mixed":
+            warnings.warn(
+                f"Clique '{clique.clique_id}' has mixed correlation signs "
+                f"({clique.n_positive_edges} positive, {clique.n_negative_edges} negative edges). "
+                f"Tukey Median Polish summarization assumes co-directional features. "
+                f"Results for this clique may be unreliable. Consider filtering by "
+                f"direction='positive' or direction='negative' for robust analysis.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Summarize to clique level
         summary = summarize_clique(
             clique_data,
@@ -577,6 +667,12 @@ def run_clique_differential_analysis(
                 contrast=contrast_result.contrast_name,
                 model_type=result.model_type.value,
                 issue=result.issue,
+                direction=clique.direction,
+                signed_mean_correlation=clique.signed_mean_correlation,
+                signed_min_correlation=clique.signed_min_correlation,
+                signed_max_correlation=clique.signed_max_correlation,
+                n_positive_edges=clique.n_positive_edges,
+                n_negative_edges=clique.n_negative_edges,
             ))
 
     # Apply FDR correction per contrast
@@ -752,9 +848,9 @@ def run_permutation_clique_test(
     feature_ids: list[str],
     sample_metadata: pd.DataFrame,
     clique_definitions: list[CliqueDefinition],
-    condition_col: str = "phenotype",
+    condition_col: str,
+    contrast: tuple[str, str],
     subject_col: str | None = "subject_id",
-    contrast: tuple[str, str] = ("CASE", "CTRL"),
     summarization_method: SummarizationMethod | str = SummarizationMethod.TUKEY_MEDIAN_POLISH,
     n_permutations: int = 1000,
     use_mixed_model: bool = True,
@@ -788,9 +884,9 @@ def run_permutation_clique_test(
         feature_ids: List of protein identifiers
         sample_metadata: DataFrame with sample information
         clique_definitions: List of TF cliques to test
-        condition_col: Metadata column for condition labels
+        condition_col: Metadata column for condition labels (REQUIRED - must be specified by user)
+        contrast: Tuple of (test_condition, reference_condition) (REQUIRED - must be specified by user)
         subject_col: Metadata column for subject IDs
-        contrast: Tuple of (test_condition, reference_condition)
         summarization_method: How to aggregate proteins within clique
         n_permutations: Number of permutations for null distribution
         use_mixed_model: Whether to use mixed models
@@ -808,7 +904,8 @@ def run_permutation_clique_test(
         ...     feature_ids=list(matrix.feature_ids),
         ...     sample_metadata=matrix.sample_metadata,
         ...     clique_definitions=cliques,
-        ...     contrast=("CASE", "CTRL"),
+        ...     condition_col="treatment_group",
+        ...     contrast=("treatment", "control"),
         ...     n_permutations=1000,
         ... )
         >>> sig_cliques = [r for r in results if r.is_significant]
@@ -1067,9 +1164,9 @@ def run_matched_single_gene_comparison(
     feature_ids: list[str],
     sample_metadata: pd.DataFrame,
     clique_definitions: list[CliqueDefinition],
-    condition_col: str = "phenotype",
+    condition_col: str,
+    contrast: tuple[str, str],
     subject_col: str | None = "subject_id",
-    contrast: tuple[str, str] = ("CASE", "CTRL"),
     n_random_samples: int = 100,
     use_mixed_model: bool = True,
     random_state: int | None = None,
@@ -1091,9 +1188,9 @@ def run_matched_single_gene_comparison(
         feature_ids: List of protein identifiers
         sample_metadata: DataFrame with sample information
         clique_definitions: List of TF cliques
-        condition_col: Metadata column for condition labels
+        condition_col: Metadata column for condition labels (REQUIRED - must be specified by user)
+        contrast: Tuple of (test_condition, reference_condition) (REQUIRED - must be specified by user)
         subject_col: Metadata column for subject IDs
-        contrast: Tuple of (test_condition, reference_condition)
         n_random_samples: Number of random gene samples to compare
         use_mixed_model: Whether to use mixed models
         random_state: Random seed
@@ -1109,7 +1206,8 @@ def run_matched_single_gene_comparison(
     Example:
         >>> comparison_df = run_matched_single_gene_comparison(
         ...     data, feature_ids, metadata, cliques,
-        ...     contrast=("CASE", "CTRL"),
+        ...     condition_col="treatment_group",
+        ...     contrast=("group_a", "group_b"),
         ... )
         >>> clique_df = comparison_df[comparison_df['analysis_type'] == 'clique']
         >>> gene_df = comparison_df[comparison_df['analysis_type'] == 'single_gene']
@@ -1159,6 +1257,16 @@ def run_matched_single_gene_comparison(
 
         indices = [feature_to_idx[p] for p in present_proteins]
         protein_data = data[indices, :]
+
+        # Warn if clique has mixed correlation signs
+        if clique.direction == "mixed":
+            warnings.warn(
+                f"Clique '{clique.clique_id}' has mixed correlation signs "
+                f"({clique.n_positive_edges} positive, {clique.n_negative_edges} negative edges). "
+                f"Summarization results may be unreliable.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         summary = summarize_clique(
             protein_data,
@@ -1265,5 +1373,385 @@ def run_matched_single_gene_comparison(
                 alternative='greater'
             )
             print(f"\n  Mann-Whitney U (cliques > genes): p={pval:.4f}")
+
+    return df
+
+
+# =============================================================================
+# ROAST-Based Clique Analysis
+# =============================================================================
+
+def run_clique_roast_analysis(
+    data: NDArray[np.float64],
+    feature_ids: list[str],
+    sample_metadata: pd.DataFrame,
+    clique_definitions: list[CliqueDefinition],
+    condition_column: str,
+    conditions: list[str],
+    contrast: tuple[str, str],
+    n_rotations: int = 9999,
+    seed: int | None = 42,
+    use_gpu: bool = True,
+    map_ids: bool = True,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Run ROAST rotation-based gene set test on cliques.
+
+    ROAST (Rotation Gene Set Tests) is a self-contained gene set test that
+    preserves inter-gene correlation structure. Unlike the MSstats-style
+    approach (run_clique_differential_analysis), ROAST:
+
+    - Tests gene sets directly without summarization
+    - Detects bidirectional regulation (genes going UP and DOWN)
+    - Produces exact p-values via rotation
+    - Does NOT require FDR correction (raw p-values are valid)
+
+    Statistical Foundation:
+        ROAST projects expression data onto residual space via QR decomposition,
+        then generates null distributions by rotating residual vectors on a
+        hypersphere. This preserves the correlation structure among genes.
+
+        The MSQ statistic is direction-agnostic, detecting sets where genes
+        are differentially expressed regardless of direction - critical for
+        transcription factors that both activate AND repress targets.
+
+    Args:
+        data: Expression matrix (n_features, n_samples), log2-transformed.
+        feature_ids: Feature identifiers (UniProt IDs or gene symbols).
+        sample_metadata: Sample metadata DataFrame.
+        clique_definitions: List of CliqueDefinition objects.
+        condition_column: Metadata column with condition labels.
+        conditions: Two condition labels (e.g., ['CASE', 'CTRL']).
+        contrast: Contrast to test (e.g., ('CASE', 'CTRL')).
+        n_rotations: Number of rotations (higher = more precise p-values).
+        seed: Random seed for reproducibility.
+        use_gpu: Use GPU acceleration (requires MLX on Apple Silicon).
+        map_ids: Map UniProt IDs to gene symbols if needed.
+        verbose: Print progress.
+
+    Returns:
+        DataFrame with raw p-values (no FDR) for each clique:
+        - feature_set_id: Clique regulator name
+        - clique_genes: Comma-separated gene symbols
+        - n_genes, n_genes_found: Clique size and matched genes
+        - pvalue_{stat}_{alt}: Raw p-values for each statistic/alternative
+        - observed_{stat}: Observed test statistics
+
+    Example:
+        >>> from cliquefinder.stats import run_clique_roast_analysis
+        >>> results = run_clique_roast_analysis(
+        ...     data=expression_matrix,
+        ...     feature_ids=gene_ids,
+        ...     sample_metadata=metadata,
+        ...     clique_definitions=cliques,
+        ...     condition_column='phenotype',
+        ...     conditions=['CASE', 'CTRL'],
+        ...     contrast=('CASE', 'CTRL'),
+        ... )
+        >>> # Top hits by bidirectional regulation
+        >>> top = results.nsmallest(20, 'pvalue_msq_mixed')
+        >>> # Candidates for follow-up (raw p < 0.01)
+        >>> candidates = results[results['pvalue_msq_mixed'] < 0.01]
+
+    References:
+        Wu D et al. (2010) ROAST: rotation gene set tests for complex
+        microarray experiments. Bioinformatics 26(17):2176-82.
+    """
+    from .rotation import RotationTestEngine, RotationTestConfig
+
+    if len(conditions) != 2:
+        raise ValueError(
+            f"ROAST requires exactly 2 conditions, got {len(conditions)}: {conditions}"
+        )
+
+    if verbose:
+        print("ROAST Clique Analysis")
+        print("=" * 50)
+        print(f"  Features: {len(feature_ids)}")
+        print(f"  Samples: {data.shape[1]}")
+        print(f"  Cliques: {len(clique_definitions)}")
+        print(f"  Contrast: {contrast[0]} vs {contrast[1]}")
+        print(f"  Rotations: {n_rotations}")
+        print()
+
+    # Build gene set dict from clique definitions
+    clique_gene_symbols = {}
+    for clique in clique_definitions:
+        clique_gene_symbols[clique.regulator] = list(clique.protein_ids)
+
+    # Handle ID mapping if feature_ids are UniProt
+    if map_ids:
+        # Check if IDs look like UniProt (not gene symbols)
+        sample_ids = feature_ids[:100]
+        looks_like_uniprot = sum(
+            1 for fid in sample_ids
+            if len(fid) == 6 and fid[0].isupper() and fid[1:].isalnum()
+        ) > len(sample_ids) * 0.5
+
+        if looks_like_uniprot:
+            if verbose:
+                print("Mapping UniProt IDs to gene symbols...")
+
+            symbol_to_uniprot = map_feature_ids_to_symbols(feature_ids, verbose=verbose)
+
+            # Convert clique genes (symbols) to UniProt IDs
+            clique_uniprot = {}
+            unmapped = set()
+            for regulator, genes in clique_gene_symbols.items():
+                mapped = []
+                for gene in genes:
+                    if gene in symbol_to_uniprot:
+                        mapped.append(symbol_to_uniprot[gene])
+                    else:
+                        unmapped.add(gene)
+                if mapped:
+                    clique_uniprot[regulator] = mapped
+
+            if verbose:
+                print(f"  Cliques with mapped genes: {len(clique_uniprot)}/{len(clique_gene_symbols)}")
+                print(f"  Unmapped genes: {len(unmapped)}")
+                print()
+
+            gene_sets = clique_uniprot
+        else:
+            gene_sets = clique_gene_symbols
+    else:
+        gene_sets = clique_gene_symbols
+
+    # Initialize ROAST engine
+    engine = RotationTestEngine(data, feature_ids, sample_metadata)
+
+    if verbose:
+        print("Fitting rotation model...")
+
+    engine.fit(
+        conditions=conditions,
+        contrast=contrast,
+        condition_column=condition_column,
+    )
+
+    if verbose:
+        eb_d0 = engine._precomputed.eb_d0
+        if eb_d0 and not np.isinf(eb_d0):
+            print(f"  Empirical Bayes prior df: {eb_d0:.1f}")
+        print()
+
+    # Configure and run tests
+    config = RotationTestConfig(
+        n_rotations=n_rotations,
+        use_gpu=use_gpu,
+        seed=seed,
+    )
+
+    if verbose:
+        print(f"Testing {len(gene_sets)} cliques...")
+
+    results = engine.test_gene_sets(gene_sets, config=config, verbose=verbose)
+    df = engine.results_to_dataframe(results)
+
+    # Add original gene symbols for interpretability
+    df['clique_genes'] = df['feature_set_id'].map(
+        lambda x: ','.join(clique_gene_symbols.get(x, []))
+    )
+
+    # Reorder columns
+    cols_first = ['feature_set_id', 'clique_genes', 'n_genes', 'n_genes_found']
+    cols_rest = [c for c in df.columns if c not in cols_first]
+    df = df[cols_first + cols_rest]
+
+    # Sort by MSQ p-value
+    df = df.sort_values('pvalue_msq_mixed', na_position='last')
+
+    if verbose:
+        n_p01 = (df['pvalue_msq_mixed'] < 0.01).sum() if 'pvalue_msq_mixed' in df.columns else 0
+        min_p = df['pvalue_msq_mixed'].min() if 'pvalue_msq_mixed' in df.columns else float('nan')
+        print()
+        print("Results (raw p-values, no FDR):")
+        print(f"  Cliques with p < 0.01 (MSQ mixed): {n_p01}")
+        print(f"  Minimum p-value: {min_p:.4f}")
+
+    return df
+
+
+def run_clique_roast_interaction_analysis(
+    data: NDArray[np.float64],
+    feature_ids: list[str],
+    sample_metadata: pd.DataFrame,
+    clique_definitions: list[CliqueDefinition],
+    factor1_column: str,
+    factor2_column: str,
+    n_rotations: int = 9999,
+    seed: int | None = 42,
+    use_gpu: bool = True,
+    map_ids: bool = True,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Run ROAST rotation-based gene set test for 2×2 factorial interaction.
+
+    Tests whether the effect of factor2 differs across levels of factor1.
+    For example, with Sex × Disease:
+        (Male_CASE - Male_CTRL) - (Female_CASE - Female_CTRL)
+
+    This tests whether the disease effect is different between males and females,
+    which is the definition of a Sex × Disease interaction.
+
+    Args:
+        data: Expression matrix (n_features, n_samples), log2-transformed.
+        feature_ids: Feature identifiers (UniProt IDs or gene symbols).
+        sample_metadata: Sample metadata DataFrame.
+        clique_definitions: List of CliqueDefinition objects.
+        factor1_column: Metadata column for first factor (e.g., 'sex').
+        factor2_column: Metadata column for second factor (e.g., 'phenotype').
+        n_rotations: Number of rotations (higher = more precise p-values).
+        seed: Random seed for reproducibility.
+        use_gpu: Use GPU acceleration (requires MLX on Apple Silicon).
+        map_ids: Map UniProt IDs to gene symbols if needed.
+        verbose: Print progress.
+
+    Returns:
+        DataFrame with raw p-values (no FDR) for each clique.
+        Columns are same as run_clique_roast_analysis.
+
+    Example:
+        >>> results = run_clique_roast_interaction_analysis(
+        ...     data=expression_matrix,
+        ...     feature_ids=gene_ids,
+        ...     sample_metadata=metadata,
+        ...     clique_definitions=cliques,
+        ...     factor1_column='sex',
+        ...     factor2_column='phenotype',
+        ... )
+        >>> # Top interaction effects
+        >>> top = results.nsmallest(20, 'pvalue_msq_mixed')
+    """
+    from .rotation import RotationTestEngine, RotationTestConfig
+
+    # Get factor labels
+    factor1_labels = sample_metadata[factor1_column].values
+    factor2_labels = sample_metadata[factor2_column].values
+
+    # Validate 2×2 design
+    levels1 = sorted(set(factor1_labels))
+    levels2 = sorted(set(factor2_labels))
+
+    if len(levels1) != 2:
+        raise ValueError(
+            f"Factor '{factor1_column}' must have exactly 2 levels, "
+            f"got {len(levels1)}: {levels1}"
+        )
+    if len(levels2) != 2:
+        raise ValueError(
+            f"Factor '{factor2_column}' must have exactly 2 levels, "
+            f"got {len(levels2)}: {levels2}"
+        )
+
+    if verbose:
+        print("ROAST Interaction Analysis")
+        print("=" * 50)
+        print(f"  Features: {len(feature_ids)}")
+        print(f"  Samples: {data.shape[1]}")
+        print(f"  Cliques: {len(clique_definitions)}")
+        print(f"  Factor 1: {factor1_column} ({levels1[0]} vs {levels1[1]})")
+        print(f"  Factor 2: {factor2_column} ({levels2[0]} vs {levels2[1]})")
+        print(f"  Testing: ({levels1[0]}_{levels2[0]} - {levels1[0]}_{levels2[1]}) - "
+              f"({levels1[1]}_{levels2[0]} - {levels1[1]}_{levels2[1]})")
+        print(f"  Rotations: {n_rotations}")
+        print()
+
+    # Build gene set dict from clique definitions
+    clique_gene_symbols = {}
+    for clique in clique_definitions:
+        clique_gene_symbols[clique.regulator] = list(clique.protein_ids)
+
+    # Handle ID mapping if feature_ids are UniProt
+    if map_ids:
+        sample_ids = feature_ids[:100]
+        looks_like_uniprot = sum(
+            1 for fid in sample_ids
+            if len(fid) == 6 and fid[0].isupper() and fid[1:].isalnum()
+        ) > len(sample_ids) * 0.5
+
+        if looks_like_uniprot:
+            if verbose:
+                print("Mapping UniProt IDs to gene symbols...")
+
+            symbol_to_uniprot = map_feature_ids_to_symbols(feature_ids, verbose=verbose)
+
+            clique_uniprot = {}
+            unmapped = set()
+            for regulator, genes in clique_gene_symbols.items():
+                mapped = []
+                for gene in genes:
+                    if gene in symbol_to_uniprot:
+                        mapped.append(symbol_to_uniprot[gene])
+                    else:
+                        unmapped.add(gene)
+                if mapped:
+                    clique_uniprot[regulator] = mapped
+
+            if verbose:
+                print(f"  Cliques with mapped genes: {len(clique_uniprot)}/{len(clique_gene_symbols)}")
+                print(f"  Unmapped genes: {len(unmapped)}")
+                print()
+
+            gene_sets = clique_uniprot
+        else:
+            gene_sets = clique_gene_symbols
+    else:
+        gene_sets = clique_gene_symbols
+
+    # Initialize ROAST engine
+    engine = RotationTestEngine(data, feature_ids, sample_metadata)
+
+    if verbose:
+        print("Fitting interaction model...")
+
+    # Use fit_interaction for 2×2 factorial design
+    engine.fit_interaction(
+        factor1_column=factor1_column,
+        factor2_column=factor2_column,
+    )
+
+    if verbose:
+        eb_d0 = engine._precomputed.eb_d0
+        if eb_d0 and not np.isinf(eb_d0):
+            print(f"  Empirical Bayes prior df: {eb_d0:.1f}")
+        print()
+
+    # Configure and run tests
+    config = RotationTestConfig(
+        n_rotations=n_rotations,
+        use_gpu=use_gpu,
+        seed=seed,
+    )
+
+    if verbose:
+        print(f"Testing {len(gene_sets)} cliques...")
+
+    results = engine.test_gene_sets(gene_sets, config=config, verbose=verbose)
+    df = engine.results_to_dataframe(results)
+
+    # Add original gene symbols for interpretability
+    df['clique_genes'] = df['feature_set_id'].map(
+        lambda x: ','.join(clique_gene_symbols.get(x, []))
+    )
+
+    # Reorder columns
+    cols_first = ['feature_set_id', 'clique_genes', 'n_genes', 'n_genes_found']
+    cols_rest = [c for c in df.columns if c not in cols_first]
+    df = df[cols_first + cols_rest]
+
+    # Sort by MSQ p-value
+    df = df.sort_values('pvalue_msq_mixed', na_position='last')
+
+    if verbose:
+        n_p01 = (df['pvalue_msq_mixed'] < 0.01).sum() if 'pvalue_msq_mixed' in df.columns else 0
+        min_p = df['pvalue_msq_mixed'].min() if 'pvalue_msq_mixed' in df.columns else float('nan')
+        print()
+        print("Results (raw p-values, no FDR):")
+        print(f"  Cliques with p < 0.01 (MSQ mixed): {n_p01}")
+        print(f"  Minimum p-value: {min_p:.4f}")
 
     return df

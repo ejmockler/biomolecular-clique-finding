@@ -39,6 +39,94 @@ class PhenotypeConfig:
 
 
 @dataclass
+class CliqueAnalysisConfig:
+    """
+    Clique-based regulatory coherence analysis configuration.
+
+    These parameters control the correlation-based clique finding used to identify
+    coherent regulatory modules from knowledge graph targets.
+    """
+    min_correlation: float = 0.7
+    """
+    Minimum absolute correlation for clique membership (default: 0.7).
+
+    This threshold determines which gene pairs are considered "co-expressed" and
+    included in correlation cliques. The default of 0.7 is the standard cutoff
+    widely used in co-expression network analysis and WGCNA.
+
+    **Why 0.7?**
+    - r² = 0.49 → 49% shared variance between genes
+    - Strong correlation indicating shared regulation or pathway membership
+    - Balances sensitivity (detecting co-expression) vs. specificity (avoiding noise)
+
+    **Tuning guidance:**
+    - Lower values (0.5-0.6): Use for noisy data or small sample sizes
+    - Higher values (0.8-0.9): Use for high-quality data or tight co-regulation
+    - Always validate on your specific dataset
+
+    References:
+        Langfelder, P., & Horvath, S. (2008). WGCNA: an R package for weighted
+        correlation network analysis. BMC Bioinformatics, 9, 559.
+    """
+
+    soft_threshold_power: float = 6.0
+    """
+    WGCNA-style soft thresholding power (default: 6.0).
+
+    Transforms correlations as: weight = |correlation|^β where β is this parameter.
+    This preserves the continuous nature of correlations while emphasizing strong
+    connections.
+
+    **Why 6.0?**
+    This is the WGCNA default starting point. The optimal power satisfies:
+    1. Scale-free topology: Network degree distribution follows power law
+    2. High mean connectivity: Sufficient connections for module detection
+
+    **IMPORTANT:** This should be tuned via the scale-free topology criterion
+    for optimal network properties. The optimal β typically ranges from 4-20 for
+    biological networks. Use WGCNA's pickSoftThreshold() or equivalent analysis
+    to determine the best value for your data.
+
+    References:
+        Zhang, B., & Horvath, S. (2005). A general framework for weighted gene
+        co-expression network analysis. Statistical Applications in Genetics and
+        Molecular Biology, 4(1), Article17.
+    """
+
+    min_expression_percentile: float = 20.0
+    """
+    Percentile threshold for expression filtering (default: 20.0).
+
+    Genes with mean expression below this percentile are filtered before analysis.
+    This removes lowly expressed genes that may represent noise or artifacts.
+
+    **Common defaults:**
+    - Bulk RNA-seq: 10-25th percentile typical
+    - Single-cell: 30-50th percentile (higher due to sparsity)
+    - High-quality datasets: 5-10th percentile (less aggressive)
+
+    **Note:** This is a commonly used default but should be validated for your data.
+    Too aggressive filtering may remove biologically relevant genes.
+    """
+
+    min_variance_percentile: float = 10.0
+    """
+    Percentile threshold for variance filtering (default: 10.0).
+
+    Genes with variance below this percentile are filtered before analysis.
+    This removes genes with minimal variation across samples, which provide
+    little information for co-expression analysis.
+
+    **Tuning guidance:**
+    - Highly variable data: 20-30th percentile
+    - Stable expression expected: 5-10th percentile
+
+    **Note:** Too aggressive filtering may remove constitutively expressed
+    housekeeping genes that may still be biologically relevant.
+    """
+
+
+@dataclass
 class ConfigSchema:
     """
     Complete configuration schema for cliquefinder impute command.
@@ -51,6 +139,7 @@ class ConfigSchema:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     imputation: ImputationConfig = field(default_factory=ImputationConfig)
     phenotype: Optional[PhenotypeConfig] = None
+    clique_analysis: Optional[CliqueAnalysisConfig] = None
 
 
 def load_config(config_path: Path) -> Dict[str, Any]:

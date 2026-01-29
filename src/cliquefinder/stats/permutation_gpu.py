@@ -293,9 +293,9 @@ def precompute_ols_matrices(
         OLSPrecomputedMatrices with all precomputed components
 
     Example:
-        >>> conditions = ["CASE", "CTRL"]
-        >>> contrast = ("CASE", "CTRL")
-        >>> matrices = precompute_ols_matrices(metadata['phenotype'], conditions, contrast)
+        >>> conditions = ["treatment", "control"]
+        >>> contrast = ("treatment", "control")
+        >>> matrices = precompute_ols_matrices(metadata['treatment_group'], conditions, contrast)
         >>> # Now reuse matrices for all permutations
     """
     import statsmodels.api as sm
@@ -1115,9 +1115,9 @@ def run_permutation_test_gpu(
     feature_ids: list[str],
     sample_metadata: pd.DataFrame,
     clique_definitions: list,
-    condition_col: str = "phenotype",
+    condition_col: str,
+    contrast: tuple[str, str],
     subject_col: str | None = "subject_id",
-    contrast: tuple[str, str] = ("CASE", "CTRL"),
     summarization_method = None,
     n_permutations: int = 1000,
     use_mixed_model: bool = True,
@@ -1145,9 +1145,9 @@ def run_permutation_test_gpu(
         feature_ids: List of protein identifiers
         sample_metadata: DataFrame with sample information
         clique_definitions: List of TF cliques to test
-        condition_col: Metadata column for condition labels
+        condition_col: Metadata column for condition labels (REQUIRED - must be specified by user)
+        contrast: Tuple of (test_condition, reference_condition) (REQUIRED - must be specified by user)
         subject_col: Metadata column for subject IDs
-        contrast: Tuple of (test_condition, reference_condition)
         summarization_method: How to aggregate proteins within clique (unused, for API compat)
         n_permutations: Number of permutations for null distribution
         use_mixed_model: Whether to use mixed models

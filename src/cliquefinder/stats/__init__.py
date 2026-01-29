@@ -26,7 +26,7 @@ Example:
     ...     feature_ids=protein_ids,
     ...     sample_metadata=metadata,
     ...     clique_definitions=cliques,
-    ...     condition_col="phenotype",
+    ...     condition_col="treatment_group",
     ... )
     >>> df = result.to_dataframe()
 
@@ -105,6 +105,7 @@ from .clique_analysis import (
     CliqueAnalysisResult,
     load_clique_definitions,
     run_clique_differential_analysis,
+    run_clique_roast_analysis,  # ROAST rotation-based gene set test
     compare_protein_vs_clique_results,
     # Permutation-based significance testing (original)
     PermutationTestResult,
@@ -113,6 +114,7 @@ from .clique_analysis import (
 )
 
 # Generalized permutation framework (protocol-based)
+# Note: create_c9_vs_sporadic_design moved to examples/ (experiment-specific)
 from .permutation_framework import (
     FeatureSet,
     ExperimentalDesign,
@@ -122,7 +124,42 @@ from .permutation_framework import (
     MetadataDerivedDesign,
     PermutationTestEngine,
     PermutationResult,
-    create_c9_vs_sporadic_design,
+)
+
+# ROAST: Rotation-based gene set testing
+# Self-contained tests that preserve inter-gene correlation
+from .rotation import (
+    SetStatistic,
+    Alternative,
+    RotationPrecomputed,
+    GeneEffects,
+    RotationResult,
+    RotationTestConfig,
+    RotationTestEngine,
+    run_rotation_test,
+    compute_rotation_matrices,
+    extract_gene_effects,
+    generate_rotation_vectors,
+    apply_rotations_batched,
+    compute_set_statistics,
+)
+
+# Method comparison framework (cross-method concordance analysis)
+from .method_comparison import (
+    MethodName,
+    UnifiedCliqueResult,
+    ConcordanceMetrics,
+    MethodComparisonResult,
+    PreparedCliqueExperiment,
+    run_method_comparison,
+    prepare_experiment,
+)
+
+# Bootstrap subsampling for imbalanced designs
+from .bootstrap_comparison import (
+    BootstrapConfig,
+    BootstrapCliqueResult,
+    run_bootstrap_comparison,
 )
 
 __all__ = [
@@ -194,5 +231,30 @@ __all__ = [
     "MetadataDerivedDesign",
     "PermutationTestEngine",
     "PermutationResult",
-    "create_c9_vs_sporadic_design",
+    # ROAST: Rotation-based gene set testing
+    "SetStatistic",
+    "Alternative",
+    "RotationPrecomputed",
+    "GeneEffects",
+    "RotationResult",
+    "RotationTestConfig",
+    "RotationTestEngine",
+    "run_rotation_test",
+    "compute_rotation_matrices",
+    "extract_gene_effects",
+    "generate_rotation_vectors",
+    "apply_rotations_batched",
+    "compute_set_statistics",
+    # Method comparison framework (cross-method concordance analysis)
+    "MethodName",
+    "UnifiedCliqueResult",
+    "ConcordanceMetrics",
+    "MethodComparisonResult",
+    "PreparedCliqueExperiment",
+    "run_method_comparison",
+    "prepare_experiment",
+    # Bootstrap subsampling for imbalanced designs
+    "BootstrapConfig",
+    "BootstrapCliqueResult",
+    "run_bootstrap_comparison",
 ]

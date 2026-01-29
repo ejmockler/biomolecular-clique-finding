@@ -81,8 +81,8 @@ class ExperimentalDesign(Protocol):
     """Protocol specifying an experimental comparison.
 
     This abstraction works for:
-    - CASE vs CTRL (current ALS analysis)
-    - C9orf72 vs Sporadic ALS (collaborator's request)
+    - Treatment vs Control
+    - Disease subtype comparisons
     - Treatment vs Vehicle
     - Timepoint comparisons
     - Multi-factor designs
@@ -249,21 +249,21 @@ class TwoGroupDesign:
     """Simple two-group experimental design.
 
     Examples:
-        # CASE vs CTRL (current analysis)
+        # Treatment vs Control
         design = TwoGroupDesign(
-            condition_column="phenotype",
-            test_condition="CASE",
-            reference_condition="CTRL",
+            condition_column="treatment_group",
+            test_condition="treatment",
+            reference_condition="control",
             blocking_column="subject_id",
         )
 
-        # C9 vs Sporadic (collaborator's request)
+        # Disease subtype comparison
         design = TwoGroupDesign(
-            condition_column="genetic_subtype",  # derived column
-            test_condition="C9orf72",
-            reference_condition="Sporadic",
+            condition_column="disease_subtype",
+            test_condition="subtype_A",
+            reference_condition="subtype_B",
             blocking_column="subject_id",
-            sample_filter=lambda df: df['phenotype'] == 'CASE',  # ALS only
+            sample_filter=lambda df: df['disease_status'] == 'affected',  # affected only
         )
     """
 
@@ -704,6 +704,11 @@ def create_c9_vs_sporadic_design(blocking_column: str = "subject_id") -> Metadat
     """
     Create experimental design for C9orf72 vs Sporadic ALS comparison.
 
+    .. deprecated:: 0.1.0
+        This function is experiment-specific and will be removed in a future version.
+        Users should copy this implementation to their own code or use the generic
+        ``MetadataDerivedDesign`` directly. See examples/ directory for usage patterns.
+
     Based on AnswerALS metadata structure:
     - C9orf72 carriers: ClinReport_Mutations_Details contains "C9orf72"
     - Sporadic ALS: CASE with no known mutations
@@ -711,6 +716,14 @@ def create_c9_vs_sporadic_design(blocking_column: str = "subject_id") -> Metadat
     Returns:
         MetadataDerivedDesign for C9 vs Sporadic comparison
     """
+    import warnings
+    warnings.warn(
+        "create_c9_vs_sporadic_design is experiment-specific and will be removed in a future version. "
+        "Please copy this implementation to your own code or use MetadataDerivedDesign directly. "
+        "See examples/ directory for usage patterns.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     def derive_genetic_subtype(row: pd.Series) -> str | None:
         # C9orf72 carrier
         mutations = str(row.get('ClinReport_Mutations_Details', ''))

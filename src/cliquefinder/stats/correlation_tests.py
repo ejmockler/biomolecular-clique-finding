@@ -118,7 +118,19 @@ def fisher_z_standard_error(n: int, method: str = 'pearson') -> float:
 
     if method == 'spearman':
         # Spearman's rho has inflated variance due to rank transformation
-        # Factor 1.06 is the asymptotic correction (1 + 6/(n+1) approaches 1.06)
+        # Factor 1.06 is the asymptotic correction factor derived from the
+        # variance inflation of rank-based correlations relative to Pearson.
+        #
+        # The correction (1 + 6/(n+1)) → 1.06 as n → ∞ and is typically
+        # approximated as 1.06 for moderate to large samples (n ≥ 20).
+        #
+        # Reference:
+        #     Bonett, D.G., & Wright, T.A. (2000). Sample size requirements for
+        #     estimating Pearson, Kendall and Spearman correlations.
+        #     Psychometrika, 65(1), 23-28.
+        #
+        #     Fieller, E.C., Hartley, H.O., & Pearson, E.S. (1957). Tests for
+        #     rank correlation coefficients. I. Biometrika, 44(3/4), 470-481.
         return 1.06 * base_se
     elif method == 'pearson':
         return base_se
@@ -181,7 +193,7 @@ def test_correlation_difference(
     """
     Test if two correlations differ significantly (Fisher's Z-test).
 
-    Used for testing CASE vs CTRL differential co-expression.
+    Used for testing differential co-expression between two conditions.
     Assumes independent samples from bivariate normal distributions.
 
     H0: ρ1 = ρ2 (population correlations are equal)

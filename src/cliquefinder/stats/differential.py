@@ -50,7 +50,7 @@ class ContrastResult:
     """Result of a single contrast test.
 
     Attributes:
-        contrast_name: Name/label of the contrast (e.g., "CASE_vs_CTRL")
+        contrast_name: Name/label of the contrast (e.g., "treatment_vs_control")
         log2_fc: Log2 fold change (effect size)
         se: Standard error of the estimate
         t_value: t-statistic
@@ -985,8 +985,8 @@ def run_protein_differential(
         >>> result = run_protein_differential(
         ...     data=protein_matrix,
         ...     feature_ids=protein_ids,
-        ...     sample_condition=metadata['phenotype'],
-        ...     contrast=('CASE', 'CTRL'),
+        ...     sample_condition=metadata['treatment_group'],
+        ...     contrast=('treatment', 'control'),
         ...     eb_moderation=True,
         ... )
         >>> # Get significant proteins
@@ -1369,13 +1369,13 @@ def run_differential_analysis(
         DifferentialResult with all test results.
 
     Example:
-        >>> # Simple case-control comparison with GPU acceleration
+        >>> # Simple two-group comparison with GPU acceleration
         >>> result = run_differential_analysis(
         ...     data=log2_intensities,
         ...     feature_ids=protein_ids,
-        ...     sample_condition=metadata['phenotype'],
+        ...     sample_condition=metadata['treatment_group'],
         ...     sample_subject=metadata['subject_id'],
-        ...     contrasts={'CASE_vs_CTRL': ('CASE', 'CTRL')},
+        ...     contrasts={'treatment_vs_control': ('treatment', 'control')},
         ...     use_gpu=True,
         ... )
         >>> df = result.to_dataframe()

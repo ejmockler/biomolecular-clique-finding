@@ -297,6 +297,26 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.set_defaults(gpu=True)  # GPU is default if available
 
+    # ROAST rotation-based gene set testing
+    parser.add_argument(
+        "--roast",
+        action="store_true",
+        help="Use ROAST rotation-based gene set test (detects bidirectional regulation, no FDR)",
+    )
+    parser.add_argument(
+        "--n-rotations",
+        type=int,
+        default=9999,
+        help="Number of rotations for ROAST (default: 9999)",
+    )
+    parser.add_argument(
+        "--interaction",
+        nargs=2,
+        metavar=("FACTOR1_COL", "FACTOR2_COL"),
+        help="Test interaction between two factors (e.g., --interaction sex phenotype). "
+             "Requires --roast. Tests: (F1_L1×F2_L1 - F1_L1×F2_L2) - (F1_L2×F2_L1 - F1_L2×F2_L2)",
+    )
+
     # Empirical Bayes moderation (limma-style)
     parser.add_argument(
         "--eb-moderation",
@@ -558,12 +578,20 @@ def run_differential(args: argparse.Namespace) -> int:
     print(f"  Normalization: {normalization.value}")
     print(f"  Imputation: {imputation.value}")
     print(f"  Model: {'Mixed (with subject random effects)' if not args.no_mixed_model and args.subject_col else 'Fixed effects'}")
-    if args.permutation_test:
+    if args.roast:
+        if args.interaction:
+            print(f"  Method: ROAST interaction test ({args.n_rotations} rotations)")
+            print(f"  Interaction: {args.interaction[0]} × {args.interaction[1]}")
+        else:
+            print(f"  Method: ROAST rotation-based gene set test ({args.n_rotations} rotations)")
+        print(f"  Significance: Raw p-values (no FDR - statistically valid for ROAST)")
+    elif args.permutation_test:
         print(f"  Significance testing: Competitive permutation ({args.n_permutations} permutations)")
         print(f"  Permutation seed: {args.permutation_seed or 'random'}")
     else:
         print(f"  FDR method: {args.fdr_method}")
-    print(f"  Significance threshold: {args.fdr_threshold}")
+    if not args.roast:
+        print(f"  Significance threshold: {args.fdr_threshold}")
 
     # Create output directory
     args.output.mkdir(parents=True, exist_ok=True)
@@ -758,7 +786,138 @@ def run_differential(args: argparse.Namespace) -> int:
         return 0
 
     # Clique-level analysis
-    if args.permutation_test:
+    if args.roast:
+        # ROAST rotation-based gene set testing
+        import time
+        start_time = time.time()
+
+        if args.interaction:
+            # Interaction analysis (2×2 factorial)
+            from cliquefinder.stats.clique_analysis import run_clique_roast_interaction_analysis
+
+            factor1_col, factor2_col = args.interaction
+
+            print(f"Running ROAST interaction analysis: {factor1_col} × {factor2_col}")
+            print("  (Tests whether effect of factor2 differs across levels of factor1)")
+            print("=" * 70)
+
+            clique_df = run_clique_roast_interaction_analysis(
+                data=data,
+                feature_ids=feature_ids,
+                sample_metadata=metadata,
+                clique_definitions=cliques,
+                factor1_column=factor1_col,
+                factor2_column=factor2_col,
+                n_rotations=args.n_rotations,
+                seed=args.permutation_seed,
+                use_gpu=args.gpu,
+                map_ids=True,
+                verbose=True,
+            )
+
+            contrast_tuple = (factor1_col, factor2_col)  # For params
+        else:
+            # Standard two-group comparison
+            from cliquefinder.stats.clique_analysis import run_clique_roast_analysis
+
+            print("Running ROAST rotation-based clique analysis...")
+            print("  (Exact p-values via rotation, detects bidirectional regulation)")
+            print("=" * 70)
+
+            # Parse the first contrast for ROAST
+            contrast_tuple = list(contrasts.values())[0]
+            conditions = list(contrast_tuple)
+
+            clique_df = run_clique_roast_analysis(
+                data=data,
+                feature_ids=feature_ids,
+                sample_metadata=metadata,
+                clique_definitions=cliques,
+                condition_column=condition_col,
+                conditions=conditions,
+                contrast=contrast_tuple,
+                n_rotations=args.n_rotations,
+                seed=args.permutation_seed,  # Reuse seed arg
+                use_gpu=args.gpu,
+                map_ids=True,
+                verbose=True,
+            )
+
+        elapsed_time = time.time() - start_time
+        print(f"\nROAST analysis completed in {elapsed_time:.2f}s")
+
+        # Save results
+        clique_output = args.output / "roast_clique_results.csv"
+        clique_df.to_csv(clique_output, index=False)
+        print(f"\nROAST results: {clique_output}")
+
+        # Save top hits (p < 0.05)
+        top_hits = clique_df[clique_df['pvalue_msq_mixed'] < 0.05]
+        n_top_hits = len(top_hits)
+        if n_top_hits > 0:
+            top_output = args.output / "roast_top_hits.csv"
+            top_hits.to_csv(top_output, index=False)
+            print(f"Top hits (p < 0.05): {top_output}")
+
+        # Save bidirectional candidates (MSQ p < 0.05, MEAN not significant)
+        bidir = clique_df[
+            (clique_df['pvalue_msq_mixed'] < 0.05) &
+            (clique_df['pvalue_mean_up'] >= 0.05) &
+            (clique_df['pvalue_mean_down'] >= 0.05)
+        ]
+        if len(bidir) > 0:
+            bidir_output = args.output / "roast_bidirectional_candidates.csv"
+            bidir.to_csv(bidir_output, index=False)
+            print(f"Bidirectional candidates: {bidir_output}")
+
+        # Save parameters
+        n_cliques_tested = len(clique_df)
+        params = {
+            "timestamp": datetime.now().isoformat(),
+            "mode": "clique",
+            "method": "ROAST" if not args.interaction else "ROAST_interaction",
+            "data": str(args.data),
+            "metadata": str(args.metadata),
+            "cliques": str(args.cliques),
+            "n_rotations": args.n_rotations,
+            "seed": args.permutation_seed,
+            "use_gpu": args.gpu,
+            "n_cliques_tested": n_cliques_tested,
+            "n_top_hits_p05": n_top_hits,
+            "n_bidirectional": len(bidir),
+            "min_pvalue_msq": float(clique_df['pvalue_msq_mixed'].min()) if 'pvalue_msq_mixed' in clique_df.columns else None,
+        }
+        if args.interaction:
+            params["interaction"] = {
+                "factor1": args.interaction[0],
+                "factor2": args.interaction[1],
+            }
+        else:
+            params["condition_col"] = condition_col
+            params["contrast"] = contrast_tuple
+        params_output = args.output / "analysis_parameters.json"
+        with open(params_output, "w") as f:
+            json.dump(params, f, indent=2)
+        print(f"Parameters: {params_output}")
+
+        # Print summary
+        print(f"\n{'=' * 70}")
+        print("SUMMARY (ROAST Rotation Gene Set Test)")
+        print("=" * 70)
+        print(f"Cliques tested: {n_cliques_tested}")
+        print(f"Top hits (p < 0.05): {n_top_hits}")
+        print(f"Bidirectional candidates: {len(bidir)}")
+        if 'pvalue_msq_mixed' in clique_df.columns:
+            print(f"Minimum p-value (MSQ): {clique_df['pvalue_msq_mixed'].min():.4f}")
+
+        if n_top_hits > 0:
+            print(f"\nTop cliques by MSQ p-value:")
+            top = clique_df.nsmallest(10, 'pvalue_msq_mixed')[['feature_set_id', 'clique_genes', 'n_genes_found', 'pvalue_msq_mixed', 'pvalue_mean_down']]
+            for _, row in top.iterrows():
+                genes = row['clique_genes'][:40] + '...' if len(str(row['clique_genes'])) > 40 else row['clique_genes']
+                print(f"  {row['feature_set_id']}: p_msq={row['pvalue_msq_mixed']:.4f}, p_down={row['pvalue_mean_down']:.4f}, genes={genes}")
+
+    elif args.permutation_test:
         # Competitive permutation testing
         print("Running competitive permutation clique analysis...")
         print("  (Random protein sets of same cardinality as null)")

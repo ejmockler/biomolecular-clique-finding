@@ -6,6 +6,7 @@ Commands:
     cliquefinder analyze       - Regulatory validation with INDRA CoGEx (knowledge-guided)
     cliquefinder discover      - De novo co-expression discovery (data-driven)
     cliquefinder differential  - Clique-level differential abundance (MSstats-inspired)
+    cliquefinder compare       - Cross-method differential abundance comparison
     cliquefinder sensitivity   - MAD-Z threshold sensitivity analysis (methodological rigor)
     cliquefinder viz           - Generate visualizations and reports
 """
@@ -27,6 +28,7 @@ Commands:
   analyze       Regulatory validation with INDRA CoGEx (knowledge-guided)
   discover      De novo co-expression module discovery (data-driven)
   differential  Clique-level differential abundance (MSstats-inspired)
+  compare       Cross-method differential abundance comparison
   sensitivity   MAD-Z threshold sensitivity analysis (methodological rigor)
   viz           Generate visualizations and reports
 
@@ -47,11 +49,12 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Import and register subcommands
-    from cliquefinder.cli import impute, analyze, discover, differential, sensitivity, viz
+    from cliquefinder.cli import impute, analyze, discover, differential, compare, sensitivity, viz
     impute.register_parser(subparsers)
     analyze.register_parser(subparsers)
     discover.register_parser(subparsers)
     differential.setup_parser(subparsers)
+    compare.setup_parser(subparsers)
     sensitivity.register_parser(subparsers)
     viz.register_parser(subparsers)
 
