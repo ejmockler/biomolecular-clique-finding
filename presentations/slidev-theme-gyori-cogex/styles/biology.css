@@ -1,0 +1,357 @@
+/**
+ * Biology-specific styles for INDRA CoGEx presentations
+ *
+ * Conventions:
+ * - Gene symbols: italic, cyan
+ * - Protein names: monospace, purple
+ * - Pathways: bold, green
+ * - Statement types: color-coded by INDRA convention
+ */
+
+/* Gene symbols - italic per biological convention */
+.gene,
+[data-gene] {
+  font-style: italic;
+  color: var(--gyori-primary);
+  font-weight: 500;
+}
+
+html.dark .gene,
+html.dark [data-gene] {
+  color: var(--gyori-primary-light);
+}
+
+/* Protein identifiers - monospace */
+.protein,
+[data-protein] {
+  font-family: var(--font-mono);
+  color: var(--cogex-purple);
+  font-size: 0.95em;
+}
+
+html.dark .protein,
+html.dark [data-protein] {
+  color: var(--cogex-purple-light);
+}
+
+/* Pathway names - bold emphasis */
+.pathway,
+[data-pathway] {
+  font-weight: 700;
+  color: var(--bio-green);
+}
+
+/* INDRA Statement Type Colors */
+.stmt-activation,
+[data-stmt="activation"] {
+  color: var(--color-activation);
+  border-color: var(--color-activation);
+}
+
+.stmt-inhibition,
+[data-stmt="inhibition"] {
+  color: var(--color-inhibition);
+  border-color: var(--color-inhibition);
+}
+
+.stmt-complex,
+[data-stmt="complex"] {
+  color: var(--color-complex);
+  border-color: var(--color-complex);
+}
+
+.stmt-modification,
+[data-stmt="modification"],
+[data-stmt="phosphorylation"],
+[data-stmt="ubiquitination"] {
+  color: var(--color-modification);
+  border-color: var(--color-modification);
+}
+
+/* Statement badges */
+.stmt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stmt-badge.activation {
+  background: rgba(91, 185, 0, 0.15);
+  color: var(--bio-green);
+  border: 1px solid var(--bio-green);
+}
+
+.stmt-badge.inhibition {
+  background: rgba(220, 53, 69, 0.15);
+  color: var(--color-inhibition);
+  border: 1px solid var(--color-inhibition);
+}
+
+.stmt-badge.complex {
+  background: rgba(23, 162, 184, 0.15);
+  color: var(--gyori-primary);
+  border: 1px solid var(--gyori-primary);
+}
+
+.stmt-badge.modification {
+  background: rgba(191, 64, 191, 0.15);
+  color: var(--cogex-purple);
+  border: 1px solid var(--cogex-purple);
+}
+
+/* Evidence count badge */
+.evidence-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  background: var(--gyori-primary);
+  color: white;
+  border-radius: 50%;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* Clique visualization colors */
+.clique-up {
+  color: var(--color-clique-up);
+}
+
+.clique-down {
+  color: var(--color-clique-down);
+}
+
+.clique-bidirectional {
+  color: var(--color-clique-bi);
+}
+
+.clique-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.clique-badge.up {
+  background: rgba(13, 148, 136, 0.15);
+  color: var(--color-clique-up);
+}
+
+.clique-badge.down {
+  background: rgba(249, 115, 22, 0.15);
+  color: var(--color-clique-down);
+}
+
+.clique-badge.bidirectional {
+  background: rgba(124, 58, 237, 0.15);
+  color: var(--color-clique-bi);
+}
+
+/* Causal arrow indicators */
+.causal-arrow {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1.25rem;
+  margin: 0 4px;
+}
+
+.causal-arrow.positive::after {
+  content: '→';
+  color: var(--bio-green);
+}
+
+.causal-arrow.negative::after {
+  content: '⊣';
+  color: var(--color-inhibition);
+}
+
+/* Network node styling */
+.network-node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.85rem;
+  border: 3px solid;
+  background: white;
+  box-shadow: var(--shadow-md);
+}
+
+html.dark .network-node {
+  background: #1e293b;
+}
+
+.network-node.gene {
+  border-color: var(--gyori-primary);
+  color: var(--gyori-primary);
+}
+
+.network-node.protein {
+  border-color: var(--cogex-purple);
+  color: var(--cogex-purple);
+}
+
+.network-node.pathway {
+  border-color: var(--bio-green);
+  color: var(--bio-green);
+  border-radius: 12px;
+  width: auto;
+  padding: 0 16px;
+}
+
+/* Statistical significance indicators */
+.pvalue {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.pvalue.significant {
+  color: var(--bio-green);
+  font-weight: 700;
+}
+
+.pvalue.not-significant {
+  color: #6b7280;
+}
+
+/* Log fold change indicators */
+.lfc {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.lfc.positive {
+  color: var(--color-clique-up);
+}
+
+.lfc.positive::before {
+  content: '+';
+}
+
+.lfc.negative {
+  color: var(--color-clique-down);
+}
+
+/* Publication reference styling */
+.citation {
+  font-size: 0.85rem;
+  color: #6b7280;
+  font-style: normal;
+}
+
+.citation a {
+  color: var(--gyori-primary);
+}
+
+/* Ontology term badges */
+.ontology-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+html.dark .ontology-badge {
+  background: #1e293b;
+  color: #94a3b8;
+  border-color: #334155;
+}
+
+.ontology-badge.go {
+  background: rgba(23, 162, 184, 0.1);
+  color: var(--gyori-primary);
+  border-color: var(--gyori-primary);
+}
+
+.ontology-badge.kegg {
+  background: rgba(191, 64, 191, 0.1);
+  color: var(--cogex-purple);
+  border-color: var(--cogex-purple);
+}
+
+.ontology-badge.reactome {
+  background: rgba(91, 185, 0, 0.1);
+  color: var(--bio-green);
+  border-color: var(--bio-green);
+}
+
+/* Data source badges */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.source-badge.indra {
+  background: var(--gyori-primary);
+  color: white;
+}
+
+.source-badge.cogex {
+  background: var(--cogex-purple);
+  color: white;
+}
+
+.source-badge.pubmed {
+  background: #1e40af;
+  color: white;
+}
+
+/* Mechanism diagrams */
+.mechanism-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 2px dashed #e2e8f0;
+}
+
+html.dark .mechanism-diagram {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+.mechanism-entity {
+  text-align: center;
+}
+
+.mechanism-entity .entity-name {
+  font-weight: 700;
+  margin-top: var(--space-2);
+}
+
+.mechanism-arrow {
+  font-size: 2rem;
+  color: var(--gyori-primary);
+}
+
+.mechanism-arrow.inhibit {
+  color: var(--color-inhibition);
+}

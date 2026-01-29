@@ -1,0 +1,199 @@
+/**
+ * Code block styling for Gyori Lab theme
+ * Optimized for computational biology code examples
+ */
+
+/* Inline code */
+.slidev-layout code:not(pre code) {
+  background: rgba(23, 162, 184, 0.1);
+  color: var(--gyori-primary-dark);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+html.dark .slidev-layout code:not(pre code) {
+  background: rgba(102, 207, 225, 0.15);
+  color: var(--gyori-primary-light);
+}
+
+/* Code blocks */
+.slidev-layout pre {
+  background: #1e293b;
+  border-radius: 12px;
+  padding: var(--space-6);
+  margin: var(--space-4) 0;
+  overflow-x: auto;
+  box-shadow: var(--shadow-lg);
+  border: 1px solid rgba(23, 162, 184, 0.2);
+}
+
+html.dark .slidev-layout pre {
+  background: #0f172a;
+  border-color: rgba(102, 207, 225, 0.2);
+}
+
+.slidev-layout pre code {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: #e2e8f0;
+}
+
+/* Line numbers */
+.slidev-layout pre .line-numbers {
+  color: #64748b;
+  padding-right: var(--space-4);
+  border-right: 1px solid #334155;
+  margin-right: var(--space-4);
+  user-select: none;
+}
+
+/* Code highlighting - Python/scientific computing focus */
+.slidev-layout pre .token.comment,
+.slidev-layout pre .token.prolog,
+.slidev-layout pre .token.doctype {
+  color: #64748b;
+  font-style: italic;
+}
+
+.slidev-layout pre .token.keyword {
+  color: var(--cogex-purple-light);
+  font-weight: 600;
+}
+
+.slidev-layout pre .token.function {
+  color: var(--gyori-primary-light);
+}
+
+.slidev-layout pre .token.class-name,
+.slidev-layout pre .token.builtin {
+  color: var(--bio-green-light);
+}
+
+.slidev-layout pre .token.string {
+  color: #fcd34d;
+}
+
+.slidev-layout pre .token.number {
+  color: #f472b6;
+}
+
+.slidev-layout pre .token.boolean {
+  color: #fb923c;
+}
+
+.slidev-layout pre .token.operator {
+  color: #94a3b8;
+}
+
+.slidev-layout pre .token.punctuation {
+  color: #94a3b8;
+}
+
+/* Special highlighting for bio-specific tokens */
+.slidev-layout pre .token.gene-symbol {
+  color: var(--gyori-primary-light);
+  font-style: italic;
+}
+
+.slidev-layout pre .token.protein-id {
+  color: var(--cogex-purple-light);
+  font-family: var(--font-mono);
+}
+
+/* Code block with title */
+.code-block-title {
+  background: var(--gyori-primary);
+  color: white;
+  padding: var(--space-2) var(--space-4);
+  border-radius: 12px 12px 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: -8px;
+  position: relative;
+  z-index: 1;
+}
+
+.code-block-title + pre {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* Terminal/REPL styling */
+.slidev-layout pre.terminal {
+  background: #0a0a0a;
+  border-color: #333;
+}
+
+.slidev-layout pre.terminal::before {
+  content: '$ ';
+  color: var(--bio-green);
+  font-weight: bold;
+}
+
+.slidev-layout pre.terminal .output {
+  color: #a1a1aa;
+}
+
+/* Python REPL styling */
+.slidev-layout pre.python-repl::before {
+  content: '>>> ';
+  color: var(--bio-green);
+  font-weight: bold;
+}
+
+/* Diff styling */
+.slidev-layout pre .diff-add {
+  background: rgba(91, 185, 0, 0.2);
+  display: block;
+  margin: 0 calc(-1 * var(--space-6));
+  padding: 0 var(--space-6);
+}
+
+.slidev-layout pre .diff-remove {
+  background: rgba(220, 53, 69, 0.2);
+  display: block;
+  margin: 0 calc(-1 * var(--space-6));
+  padding: 0 var(--space-6);
+}
+
+/* Highlighted lines */
+.slidev-layout pre .highlight-line {
+  background: rgba(23, 162, 184, 0.15);
+  display: block;
+  margin: 0 calc(-1 * var(--space-6));
+  padding: 0 var(--space-6);
+  border-left: 3px solid var(--gyori-primary);
+}
+
+/* Code comparison (side by side) */
+.code-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.code-comparison pre {
+  margin: 0;
+}
+
+.code-comparison .before::before {
+  content: 'Before';
+  display: block;
+  color: #ef4444;
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+  font-size: 0.85rem;
+}
+
+.code-comparison .after::before {
+  content: 'After';
+  display: block;
+  color: var(--bio-green);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+  font-size: 0.85rem;
+}

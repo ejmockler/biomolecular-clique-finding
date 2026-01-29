@@ -1,0 +1,102 @@
+# ============================================================================
+# Example: AnswerALS Proteomics Configuration
+# ============================================================================
+#
+# This is an EXAMPLE configuration file demonstrating optimal parameters
+# for proteomics outlier detection and imputation in AnswerALS ALS cohort studies.
+#
+# Study: AnswerALS Cohorts 1-6
+# Modality: TMT Proteomics
+# Organism: Human
+# Platform: Orbitrap Fusion Lumos
+#
+# This configuration demonstrates:
+# - Adjusted-boxplot detection for skewed proteomics distributions
+# - Multi-pass outlier detection (within-group + residual + global cap)
+# - Soft-clip imputation preserving rank order
+# - Phenotype-stratified analysis
+#
+# Usage:
+#   cliquefinder impute --config configs/examples/als_proteomics.yaml
+#
+# You can override any parameter via CLI:
+#   cliquefinder impute --config configs/examples/als_proteomics.yaml --threshold 2.0
+# ============================================================================
+
+# Input/Output Configuration
+input: "data/raw_proteomics.csv"
+output: "results/imputed"
+metadata: null  # Optional external metadata CSV
+
+# Outlier Detection Configuration
+detection:
+  # Method: adjusted-boxplot handles skewed proteomics data better than MAD-Z
+  # - adjusted-boxplot: Asymmetric, accounts for skewness (RECOMMENDED for proteomics)
+  # - mad-z: Symmetric, assumes normal distribution
+  # - iqr: Symmetric, robust to outliers
+  method: "adjusted-boxplot"
+
+  # Threshold: IQR multiplier for adjusted-boxplot (1.5 = standard boxplot whiskers)
+  # Lower values = more aggressive outlier detection
+  # Typical range: 1.5 (standard) to 2.0 (conservative)
+  threshold: 1.5
+
+  # Stratification: Detect outliers within phenotype groups
+  # This ensures case/control differences aren't flagged as outliers
+  stratify_by:
+    - phenotype
+
+  # Residual-based detection (Pass 2) - FUTURE EXTENSION
+  # Detects outliers that remain after initial imputation
+  residual:
+    enabled: true
+    threshold: 4.25  # MAD-Z threshold for residuals (stricter than Pass 1)
+    high_end_only: true  # Only flag abnormally high residuals
+
+  # Global percentile cap (Pass 3) - FUTURE EXTENSION
+  # Caps extreme values at percentile threshold
+  global_cap:
+    enabled: true
+    percentile: 99.95  # Cap at 99.95th percentile
+
+# Imputation Configuration
+imputation:
+  # Strategy: How to replace detected outliers
+  # - soft-clip: Smooth sigmoid clipping, preserves rank order (RECOMMENDED)
+  # - mad-clip: Hard threshold at MAD-Z limit
+  # - median: Replace with group median
+  # - knn: K-nearest neighbors imputation
+  strategy: "soft-clip"
+
+  # Sharpness: Controls soft-clip transition steepness
+  # Higher values = closer to hard clipping
+  # Auto-computed if not specified (recommended)
+  sharpness: 5.0
+
+# Phenotype Mapping Configuration
+# Maps clinical metadata to case/control labels
+phenotype:
+  # Clinical column containing phenotype/diagnosis
+  source_col: "SUBJECT_GROUP"
+
+  # Values that map to CASE phenotype
+  case_values:
+    - "ALS"
+    - "ALS-FTD"  # Include ALS-frontotemporal dementia if present
+
+  # Values that map to CTRL (control) phenotype
+  ctrl_values:
+    - "Healthy Control"
+    - "Control"
+    - "HC"
+
+# Additional Options (not yet in config schema, but documented here)
+# These would need to be specified via CLI args:
+#
+# --clinical-metadata: Path to clinical metadata CSV
+# --clinical-id-col: Column with participant IDs (default: Participant_ID)
+# --sample-id-fallback: Extract phenotype from sample ID prefix if clinical missing
+# --log-transform: Apply log1p before detection (default: true)
+# --classify-sex: Enable sex classification from expression data
+# --sex-labels-col: Column with known sex labels
+# --phenotype-filter: Only process specific phenotypes (e.g., CASE or CTRL)

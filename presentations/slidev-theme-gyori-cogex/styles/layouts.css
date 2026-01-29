@@ -1,0 +1,222 @@
+/**
+ * Layout-specific styles for Gyori Lab theme
+ */
+
+/* Cover layout */
+.slidev-layout.cover {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  background: linear-gradient(135deg, #0a1628 0%, #1e3a5f 50%, #0e626e 100%);
+  color: white;
+}
+
+.slidev-layout.cover h1 {
+  font-size: 3.5rem;
+  color: white;
+  margin-bottom: var(--space-4);
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.3);
+}
+
+.slidev-layout.cover h2 {
+  font-size: 1.5rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: var(--space-8);
+}
+
+.slidev-layout.cover p {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 1.1rem;
+}
+
+/* Background decoration removed - conflicts with semantic network visualization
+   Depth is now handled through intentional atmospheric elements in cover.vue */
+
+/* Section layout */
+.slidev-layout.section {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  background: linear-gradient(135deg, var(--gyori-primary) 0%, var(--cogex-purple) 100%);
+  color: white;
+}
+
+.slidev-layout.section h1 {
+  font-size: 3rem;
+  color: white;
+  margin-bottom: var(--space-4);
+}
+
+.slidev-layout.section hr {
+  width: 120px;
+  height: 4px;
+  background: white;
+  margin: var(--space-6) auto;
+}
+
+.slidev-layout.section p {
+  font-size: 1.25rem;
+  max-width: 600px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Side-title layout */
+.slidev-layout.side-title {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 0;
+  padding: 0;
+}
+
+.slidev-layout.side-title .side-title-panel {
+  background: linear-gradient(180deg, var(--gyori-primary) 0%, var(--gyori-primary-dark) 100%);
+  color: white;
+  padding: var(--space-10) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.slidev-layout.side-title .side-title-panel h1 {
+  font-size: 1.75rem;
+  color: white;
+  line-height: 1.3;
+}
+
+.slidev-layout.side-title .side-content {
+  padding: var(--space-10) var(--space-8);
+  overflow-y: auto;
+}
+
+/* Two-column layout */
+.slidev-layout.two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-8);
+}
+
+.slidev-layout.two-cols > .col-left,
+.slidev-layout.two-cols > .col-right {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Intro layout (for speaker/lab introduction) */
+.slidev-layout.intro {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: var(--space-10);
+  align-items: center;
+}
+
+.slidev-layout.intro .intro-image {
+  display: flex;
+  justify-content: center;
+}
+
+.slidev-layout.intro .intro-image img {
+  width: 250px;
+  height: 250px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 4px solid var(--gyori-primary);
+  box-shadow: var(--shadow-xl);
+}
+
+/* Quote layout - dark by default */
+.slidev-layout.quote {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+}
+
+.slidev-layout.quote blockquote {
+  border: none;
+  font-size: 1.75rem;
+  font-style: italic;
+  max-width: 800px;
+  padding: 0;
+  color: #e2e8f0;
+  position: relative;
+}
+
+.slidev-layout.quote blockquote::before {
+  content: '"';
+  font-size: 6rem;
+  position: absolute;
+  top: -40px;
+  left: -40px;
+  color: var(--gyori-primary);
+  opacity: 0.3;
+  font-family: Georgia, serif;
+}
+
+.slidev-layout.quote cite {
+  display: block;
+  margin-top: var(--space-6);
+  font-size: 1rem;
+  color: var(--gyori-primary);
+  font-style: normal;
+  font-weight: 600;
+}
+
+/* Statement/emphasis layout */
+.slidev-layout.statement {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.slidev-layout.statement h1 {
+  font-size: 2.5rem;
+  max-width: 800px;
+  background: linear-gradient(135deg, var(--gyori-primary) 0%, var(--cogex-purple) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* End/thank you layout */
+.slidev-layout.end {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  background: linear-gradient(135deg, #0a1628 0%, #1e3a5f 50%, #0e626e 100%);
+  color: white;
+}
+
+.slidev-layout.end h1 {
+  font-size: 3rem;
+  color: white;
+  margin-bottom: var(--space-6);
+}
+
+.slidev-layout.end .contact-info {
+  display: flex;
+  gap: var(--space-8);
+  margin-top: var(--space-8);
+}
+
+.slidev-layout.end .contact-info a {
+  color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 1.1rem;
+  transition: color var(--transition-fast);
+}
+
+.slidev-layout.end .contact-info a:hover {
+  color: white;
+}

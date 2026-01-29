@@ -1,0 +1,461 @@
+# ============================================================================
+# CliqueFinder Configuration Schema
+# ============================================================================
+#
+# This file documents the complete configuration schema for CliqueFinder.
+# Use this as a reference when creating study-specific configuration files.
+#
+# Schema Version: 1.0
+# Last Updated: 2026-01-21
+# ============================================================================
+
+# ============================================================================
+# STUDY METADATA
+# ============================================================================
+# General information about the study/analysis
+study:
+  # Study name/identifier
+  name: string  # e.g., "ALS_Proteomics_Cohort1-6"
+
+  # Brief description of the study
+  description: string  # e.g., "AnswerALS proteomics analysis for ALS cohorts 1-6"
+
+  # Organism/species
+  organism: string  # e.g., "human", "mouse", "rat"
+
+  # Data modality
+  modality: string  # e.g., "proteomics", "transcriptomics", "metabolomics"
+
+  # Study version or cohort identifier (optional)
+  version: string  # e.g., "v1.0", "cohort1-6"
+
+
+# ============================================================================
+# INPUT/OUTPUT CONFIGURATION
+# ============================================================================
+# File paths for input data and output results
+input: string  # Path to input expression matrix (CSV format)
+output: string  # Output base path (without extension)
+metadata: string|null  # Optional external metadata CSV
+
+
+# ============================================================================
+# SAMPLE ID PARSING
+# ============================================================================
+# Configuration for extracting structured information from sample IDs
+# Used when phenotype/subject info is encoded in sample identifiers
+sample_parsing:
+  # Regex pattern for extracting sample components
+  # Must use named capture groups for extraction
+  id_pattern: string  # e.g., "^(?P<phenotype>CASE|CTRL)_(?P<subject_id>[A-Z0-9]+)"
+
+  # Named group for phenotype (CASE/CTRL)
+  phenotype_group: string  # e.g., "phenotype"
+
+  # Named group for subject/participant ID
+  subject_group: string  # e.g., "subject_id"
+
+  # Enable fallback to sample ID pattern if metadata missing
+  enable_fallback: boolean  # default: false
+
+
+# ============================================================================
+# METADATA CONFIGURATION
+# ============================================================================
+# Column mappings for clinical/sample metadata
+metadata:
+  # Primary sample identifier column
+  sample_id_column: string  # e.g., "sample_id", "Sample_ID"
+
+  # Subject/participant identifier column
+  subject_id_column: string  # e.g., "Participant_ID", "GUID", "Subject_ID"
+
+  # Column containing phenotype/condition information
+  # This is the SOURCE column before mapping to CASE/CTRL
+  condition_column: string  # e.g., "SUBJECT_GROUP", "disease_status", "phenotype"
+
+  # Source column for phenotype derivation (alias for condition_column)
+  phenotype_source_column: string  # e.g., "SUBJECT_GROUP"
+
+  # Biological sex column (optional, for sex-stratified analysis)
+  sex_column: string|null  # e.g., "SEX", "Sex", "Gender"
+
+  # Age column (optional, for age-stratified analysis)
+  age_column: string|null  # e.g., "Age", "AGE_AT_DIAGNOSIS"
+
+  # Additional stratification columns
+  stratification_columns: list[string]  # e.g., ["site", "batch", "tissue_type"]
+
+
+# ============================================================================
+# PHENOTYPE MAPPING
+# ============================================================================
+# Maps raw metadata values to standardized phenotypes (CASE/CTRL/EXCLUDE)
+phenotype_mapping:
+  # Values that map to CASE phenotype (disease/treatment/condition of interest)
+  case_values:
+    - string  # e.g., ["ALS", "ALS-FTD", "Parkinson's", "tumor"]
+
+  # Values that map to CTRL phenotype (healthy controls/reference)
+  control_values:
+    - string  # e.g., ["Healthy Control", "Control", "HC", "normal"]
+
+  # Values to explicitly exclude from analysis (optional)
+  # Any value not in case_values or control_values is excluded by default
+  exclude_values:
+    - string  # e.g., ["Non-ALS MND", "Asymptomatic", "Unknown"]
+
+
+# ============================================================================
+# OUTLIER DETECTION CONFIGURATION
+# ============================================================================
+detection:
+  # Outlier detection method
+  # - "mad-z": MAD-based Z-score (symmetric, assumes normal distribution)
+  # - "iqr": Interquartile range method (symmetric, robust)
+  # - "adjusted-boxplot": Asymmetric boxplot (handles skewness, RECOMMENDED for proteomics)
+  # - "kde-adaptive": KDE-based adaptive thresholding (finds optimal threshold per stratum)
+  method: string  # default: "adjusted-boxplot"
+
+  # Detection threshold
+  # - For mad-z: MAD-Z score threshold (e.g., 5.0 = 5 MADs from median)
+  # - For iqr/adjusted-boxplot: IQR multiplier (e.g., 1.5 = standard boxplot whiskers)
+  # - For kde-adaptive: minimum threshold (max is auto-determined)
+  threshold: float  # default: 1.5 for IQR methods, 5.0 for MAD-Z
+
+  # Upper-tail threshold (optional, overrides threshold for upper tail)
+  upper_threshold: float|null  # e.g., 2.0 for more lenient upper detection
+
+  # Lower-tail threshold (optional, overrides threshold for lower tail)
+  lower_threshold: float|null  # e.g., 1.0 for stricter lower detection
+
+  # Detect only upper-tail outliers (disable lower-tail detection)
+  # Recommended for proteomics where low values are often real biology
+  upper_only: boolean  # default: false
+
+  # Detection mode
+  # - "within_group": Detect outliers within stratified groups (RECOMMENDED)
+  # - "per_feature": Detect outliers per feature (gene/protein) globally
+  # - "global": Detect outliers across entire matrix
+  mode: string  # default: "within_group"
+
+  # Metadata columns for stratification (only for within_group mode)
+  # Outliers are detected separately within each stratum combination
+  # Example: ["phenotype"] or ["phenotype", "Sex"] or ["phenotype", "Sex", "batch"]
+  stratify_by:
+    - string  # default: ["phenotype"]
+
+  # Scoring method for outlier probability
+  # - "binary": Classic threshold-based scoring (0 or 1)
+  # - "student_t": Probabilistic scoring using Student's t-distribution
+  #   (better for heavy-tailed distributions like proteomics)
+  scoring_method: string  # default: "binary"
+
+  # ===== Multi-Pass Detection (Advanced) =====
+
+  # Pass 2: Residual-based outlier detection
+  # Detects outliers that remain after initial imputation
+  residual:
+    enabled: boolean  # default: true
+    threshold: float  # MAD-Z threshold for residuals (e.g., 4.25, stricter than Pass 1)
+    high_end_only: boolean  # Only flag abnormally high residuals (default: true)
+
+  # Pass 3: Global percentile cap
+  # Caps extreme values at global percentile threshold
+  global_cap:
+    enabled: boolean  # default: true
+    percentile: float  # Percentile threshold (e.g., 99.95 = 99.95th percentile)
+
+
+# ============================================================================
+# IMPUTATION CONFIGURATION
+# ============================================================================
+imputation:
+  # Imputation strategy for replacing outliers
+  # - "mad-clip": Hard threshold clipping at MAD-Z limit
+  # - "median": Replace with group median
+  # - "soft-clip": Smooth sigmoid clipping (preserves rank order, RECOMMENDED)
+  # - "knn": K-nearest neighbors imputation
+  strategy: string  # default: "soft-clip"
+
+  # Soft-clip sharpness parameter (only for soft-clip strategy)
+  # Higher values → closer to hard clipping
+  # If null, auto-computed from data distribution (recommended)
+  sharpness: float|null  # e.g., 5.0, or null for auto
+
+  # MAD-Z threshold for clipping (only for mad-clip strategy)
+  # Should typically match detection threshold
+  clip_threshold: float  # default: 5.0
+
+  # K value for KNN imputation (only for knn strategy)
+  k_neighbors: int  # default: 5
+
+  # Stratify imputation by metadata columns
+  # Imputation uses group-specific statistics
+  stratify_by:
+    - string  # default: ["phenotype"]
+
+
+# ============================================================================
+# DATA PREPROCESSING
+# ============================================================================
+preprocessing:
+  # Log transformation
+  # Apply log1p (log(x + 1)) transformation BEFORE outlier detection
+  # Recommended for count-based data (RNA-seq, proteomics)
+  log_transform: boolean  # default: true
+
+  # Auto-detect if data is already log-transformed
+  # Checks metadata sidecar (.params.json) or uses heuristics
+  auto_detect_log: boolean  # default: true
+
+  # Filter genes/proteins with low mean expression
+  # Threshold is applied AFTER log transformation
+  filter_low_expression: float|null  # e.g., 0.1, or null to disable
+
+  # Expression filtering (for cross-modal RNA/protein analysis)
+  expression_filter:
+    # Minimum CPM (counts per million) for a gene to be considered expressed
+    min_cpm: float  # default: 1.0
+
+    # Minimum fraction of samples where gene must be expressed
+    min_prevalence: float  # default: 0.10 (10% of samples)
+
+    # Stratify expression filtering by metadata columns
+    stratify_by:
+      - string  # default: ["phenotype"]
+
+    # Minimum samples per stratum for filtering
+    min_group_size: int  # default: 10
+
+
+# ============================================================================
+# SEX CLASSIFICATION (Optional)
+# ============================================================================
+# Data-driven biological sex imputation from expression data
+sex_classification:
+  # Enable sex classification
+  enabled: boolean  # default: false
+
+  # Metadata column with known sex labels for training
+  # Values should be M/F, Male/Female, or 1/0
+  labels_column: string|null  # e.g., "SEX", "Sex"
+
+  # Output column name for predicted sex
+  output_column: string  # default: "Sex_predicted"
+
+  # Classification mode
+  # - "unified": Train on all labeled samples, impute unknowns (RECOMMENDED)
+  # - "within_phenotype": Train separate models per phenotype (avoids disease confounding)
+  mode: string  # default: "unified"
+
+  # Only impute unknown sex labels (preserve ground truth)
+  # If false, overwrites all labels with predictions
+  impute_only: boolean  # default: true
+
+  # Phenotype filter for imputation
+  # Only impute sex for samples matching these phenotypes
+  # Training uses ALL labeled samples regardless of this filter
+  phenotype_filter:
+    - string|null  # e.g., ["CASE"], or null to impute all
+
+
+# ============================================================================
+# CLIQUE ANALYSIS CONFIGURATION
+# ============================================================================
+analysis:
+  # Correlation-based clique detection
+  correlation:
+    # Correlation method
+    # - "pearson": Linear correlation
+    # - "spearman": Rank-based correlation
+    # - "max": max(Pearson, Spearman) for each pair (RECOMMENDED)
+    method: string  # default: "max"
+
+    # Minimum correlation threshold for clique edges
+    min_threshold: float  # default: 0.7
+
+    # Maximum correlation for filtering (optional)
+    max_threshold: float|null  # e.g., 0.99 to exclude near-perfect correlations
+
+  # Statistical significance testing
+  significance:
+    # Significance level (alpha) for hypothesis testing
+    alpha: float  # default: 0.05
+
+    # False discovery rate correction method
+    # - "fdr_bh": Benjamini-Hochberg FDR
+    # - "bonferroni": Bonferroni correction
+    # - "fdr_by": Benjamini-Yekutieli FDR
+    fdr_method: string  # default: "fdr_bh"
+
+    # Permutation testing
+    permutations:
+      # Number of permutations for null distribution
+      n_permutations: int  # default: 1000
+
+      # Random seed for reproducibility
+      seed: int|null  # e.g., 42
+
+  # Clique discovery parameters
+  cliques:
+    # Minimum genes per clique
+    min_size: int  # default: 3
+
+    # Maximum genes per clique (optional, for computational efficiency)
+    max_size: int|null  # e.g., 20
+
+    # Clique algorithm
+    # - "greedy": Fast greedy approximation (RECOMMENDED for large networks)
+    # - "exact": Exact clique enumeration (slow but complete)
+    algorithm: string  # default: "greedy"
+
+  # Stratified analysis parameters
+  stratification:
+    # Metadata columns for stratification
+    stratify_by:
+      - string  # default: ["phenotype", "Sex"]
+
+    # Minimum samples per stratum
+    min_samples: int  # default: 20
+
+  # Knowledge graph integration (INDRA CoGEx)
+  knowledge:
+    # Minimum evidence count for regulatory relationships
+    min_evidence: int  # default: 2
+
+    # Evidence source types to include
+    evidence_sources:
+      - string  # e.g., ["signor", "phosphosite", "drugbank"]
+
+    # CoGEx connection configuration
+    cogex:
+      env_file: string  # Path to .env file with credentials
+
+  # Regulator discovery
+  discovery:
+    # Enable auto-discovery mode (find regulators from knowledge graph)
+    enabled: boolean  # default: false
+
+    # Minimum target genes in dataset for a regulator to be considered
+    min_targets: int  # default: 10
+
+    # Maximum target genes (exclude hub regulators with too many targets)
+    max_targets: int  # default: 100
+
+    # Maximum number of regulators to analyze (for computational efficiency)
+    max_regulators: int|null  # e.g., 50
+
+    # Pre-defined regulators to analyze (if discovery disabled)
+    regulators:
+      - string  # e.g., ["TP53", "MYC", "SOD1", "TARDBP", "FUS"]
+
+
+# ============================================================================
+# CROSS-MODAL INTEGRATION (RNA + Protein)
+# ============================================================================
+# Optional: Filter protein targets by RNA expression
+cross_modal:
+  # Enable cross-modal filtering
+  enabled: boolean  # default: false
+
+  # Path to RNA-seq data for filtering
+  rna_data_path: string|null  # e.g., "data/rna_counts.csv"
+
+  # Path to RNA gene annotation (if RNA uses numeric indices)
+  rna_annotation_path: string|null  # e.g., "data/gene_annotation.csv"
+
+  # Require sample alignment (only analyze shared samples)
+  require_sample_alignment: boolean  # default: false
+
+  # Skip expression-based filtering (use ID overlap only)
+  skip_expression_filter: boolean  # default: false
+
+
+# ============================================================================
+# PARALLELIZATION
+# ============================================================================
+parallelization:
+  # Number of parallel workers
+  # - 1: Serial execution (no parallelism)
+  # - >1: Parallel execution with N workers
+  # - -1: Use all available CPU cores
+  workers: int  # default: 1
+
+  # Parallelization mode
+  # - "threads": Thread-based parallelism (low overhead, GIL-limited)
+  # - "processes": Process-based parallelism (high overhead, no GIL)
+  # - "hybrid": Adaptive strategy based on task characteristics
+  mode: string  # default: "threads"
+
+
+# ============================================================================
+# OUTPUT CONFIGURATION
+# ============================================================================
+output:
+  # Write quality flags file (outlier/imputation annotations)
+  write_quality_flags: boolean  # default: true
+
+  # Convert Ensembl IDs to gene symbols in output
+  use_gene_symbols: boolean  # default: false
+
+  # Cache directory for ID mappings
+  cache_dir: string|null  # e.g., ".cache/id_mapping"
+
+  # Output format
+  # - "csv": Comma-separated values (default)
+  # - "tsv": Tab-separated values
+  # - "parquet": Apache Parquet (compressed, efficient)
+  format: string  # default: "csv"
+
+  # Compression for output files
+  # - null: No compression
+  # - "gzip": Gzip compression
+  # - "bz2": Bzip2 compression
+  compression: string|null  # default: null
+
+
+# ============================================================================
+# REUSABLE YAML ANCHORS
+# ============================================================================
+# Define common configuration blocks that can be reused via aliases
+
+# Common stratification: phenotype only
+.stratify_phenotype: &stratify_phenotype
+  - phenotype
+
+# Common stratification: phenotype + sex
+.stratify_phenotype_sex: &stratify_phenotype_sex
+  - phenotype
+  - Sex
+
+# Common ALS case values
+.als_case_values: &als_case_values
+  - ALS
+  - ALS-FTD
+
+# Common control values
+.control_values: &control_values
+  - Healthy Control
+  - Control
+  - HC
+
+# Proteomics-optimized outlier detection
+.proteomics_detection: &proteomics_detection
+  method: adjusted-boxplot
+  threshold: 1.5
+  upper_only: false
+  mode: within_group
+  scoring_method: binary
+  residual:
+    enabled: true
+    threshold: 4.25
+    high_end_only: true
+  global_cap:
+    enabled: true
+    percentile: 99.95
+
+# Recommended soft-clip imputation
+.soft_clip_imputation: &soft_clip_imputation
+  strategy: soft-clip
+  sharpness: null  # auto-compute

@@ -1,0 +1,176 @@
+# ============================================================================
+# CliqueFinder Generic Configuration Template
+# ============================================================================
+#
+# This is a minimal configuration template for study-agnostic analysis.
+# Copy this file and customize for your specific study/dataset.
+#
+# Usage:
+#   cliquefinder impute --config configs/my_study.yaml
+#   cliquefinder analyze --config configs/my_study.yaml
+#
+# See configs/schema.yaml for complete documentation of all parameters.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Study Metadata
+# ----------------------------------------------------------------------------
+study:
+  name: "MyStudy"  # Replace with your study name
+  description: "Brief description of the study and analysis goals"
+  organism: "human"  # Options: "human", "mouse", "rat", etc.
+  modality: "proteomics"  # Options: "proteomics", "transcriptomics", "metabolomics"
+
+# ----------------------------------------------------------------------------
+# Input/Output Paths
+# ----------------------------------------------------------------------------
+input: "data/raw_expression.csv"  # Path to input expression matrix
+output: "results/processed"  # Output base path (without extension)
+metadata: null  # Optional: Path to external metadata CSV
+
+# ----------------------------------------------------------------------------
+# Metadata Configuration
+# ----------------------------------------------------------------------------
+# Define how to extract phenotype information from your data
+metadata:
+  # Column names in your metadata file
+  subject_id_column: "Participant_ID"  # Subject/participant identifier
+  condition_column: "disease_status"  # Column with phenotype/condition info
+  phenotype_source_column: "disease_status"  # Alias for condition_column
+  sex_column: "Sex"  # Optional: biological sex column
+
+# Phenotype mapping: define which metadata values correspond to CASE/CTRL
+phenotype_mapping:
+  case_values:
+    - "disease"  # Replace with your case values (e.g., "ALS", "tumor")
+  control_values:
+    - "healthy"  # Replace with your control values (e.g., "Control", "normal")
+  exclude_values: []  # Optional: values to explicitly exclude
+
+# ----------------------------------------------------------------------------
+# Outlier Detection
+# ----------------------------------------------------------------------------
+detection:
+  # Method: "adjusted-boxplot" recommended for proteomics (handles skewness)
+  #         "mad-z" for more symmetric data
+  #         "kde-adaptive" for automatic threshold optimization
+  method: "adjusted-boxplot"
+
+  # Threshold: 1.5 for IQR-based methods, 5.0 for MAD-Z
+  threshold: 1.5
+
+  # Detect only upper-tail outliers (recommended for proteomics)
+  # Low values are often real biology, not artifacts
+  upper_only: false
+
+  # Stratification: detect outliers within phenotype groups
+  stratify_by:
+    - phenotype
+
+  # Advanced: Multi-pass detection
+  residual:
+    enabled: true  # Enable residual-based detection (Pass 2)
+    threshold: 4.25
+    high_end_only: true
+
+  global_cap:
+    enabled: true  # Enable global percentile capping (Pass 3)
+    percentile: 99.95
+
+# ----------------------------------------------------------------------------
+# Imputation
+# ----------------------------------------------------------------------------
+imputation:
+  # Strategy: "soft-clip" preserves rank order (RECOMMENDED)
+  #           "mad-clip" for hard threshold clipping
+  #           "median" for simple median replacement
+  #           "knn" for K-nearest neighbors
+  strategy: "soft-clip"
+
+  # Sharpness for soft-clip (null = auto-compute from data)
+  sharpness: null
+
+  # Stratify imputation by phenotype
+  stratify_by:
+    - phenotype
+
+# ----------------------------------------------------------------------------
+# Data Preprocessing
+# ----------------------------------------------------------------------------
+preprocessing:
+  # Apply log1p transformation before outlier detection
+  log_transform: true
+
+  # Auto-detect if data is already log-transformed
+  auto_detect_log: true
+
+  # Filter low-expression genes (optional, applied after log transform)
+  filter_low_expression: null  # e.g., 0.1 or null to disable
+
+# ----------------------------------------------------------------------------
+# Sex Classification (Optional)
+# ----------------------------------------------------------------------------
+# Enable if you want to impute biological sex from expression data
+sex_classification:
+  enabled: false  # Set to true to enable
+  labels_column: "Sex"  # Column with known M/F labels for training
+  output_column: "Sex_predicted"
+  mode: "unified"  # Options: "unified", "within_phenotype"
+  impute_only: true  # Only impute unknowns, preserve ground truth
+
+# ----------------------------------------------------------------------------
+# Clique Analysis (for 'analyze' command)
+# ----------------------------------------------------------------------------
+analysis:
+  # Correlation settings
+  correlation:
+    method: "max"  # Options: "pearson", "spearman", "max"
+    min_threshold: 0.7
+
+  # Significance testing
+  significance:
+    alpha: 0.05
+    fdr_method: "fdr_bh"  # Options: "fdr_bh", "bonferroni", "fdr_by"
+
+  # Clique parameters
+  cliques:
+    min_size: 3
+    algorithm: "greedy"  # Options: "greedy", "exact"
+
+  # Stratification for analysis
+  stratification:
+    stratify_by:
+      - phenotype
+    min_samples: 20
+
+  # Knowledge graph integration (INDRA CoGEx)
+  knowledge:
+    min_evidence: 2
+    cogex:
+      env_file: ".env"
+
+  # Regulator discovery
+  discovery:
+    enabled: false  # Set to true for auto-discovery mode
+    min_targets: 10
+    max_targets: 100
+    regulators:
+      # Pre-defined regulators (if discovery disabled)
+      - TP53
+      - MYC
+
+# ----------------------------------------------------------------------------
+# Parallelization
+# ----------------------------------------------------------------------------
+parallelization:
+  workers: 1  # Number of parallel workers (1 = serial, -1 = all cores)
+  mode: "threads"  # Options: "threads", "processes", "hybrid"
+
+# ----------------------------------------------------------------------------
+# Output Settings
+# ----------------------------------------------------------------------------
+output:
+  write_quality_flags: true
+  use_gene_symbols: false
+  format: "csv"  # Options: "csv", "tsv", "parquet"
+  compression: null  # Options: null, "gzip", "bz2"
