@@ -108,7 +108,7 @@ class PhenotypeInferencer(ABC):
 
 class AnswerALSPhenotypeInferencer(PhenotypeInferencer):
     """
-    ALS AnswerALS study-specific phenotype inference.
+    AnswerALS study-specific phenotype inference.
 
     Implements the following logic:
     1. Extract participant GUID from sample ID using regex pattern
@@ -119,22 +119,41 @@ class AnswerALSPhenotypeInferencer(PhenotypeInferencer):
 
     Args:
         subject_group_col: Column name for subject group in clinical metadata
-        case_values: Subject group values to map to CASE
-        ctrl_values: Subject group values to map to CTRL
-        exclude_values: Subject group values to explicitly exclude
+            (default: "SUBJECT_GROUP" for AnswerALS)
+        case_values: Subject group values to map to CASE (default: ["ALS"]
+            for AnswerALS, customize for other studies)
+        ctrl_values: Subject group values to map to CTRL (default: ["Healthy Control"]
+            for AnswerALS, customize for other studies)
+        exclude_values: Subject group values to explicitly exclude (default:
+            ["Non-ALS MND", "Asymptomatic"] for AnswerALS, customize for other studies)
         sample_id_pattern: Regex pattern for extracting participant ID (GUID)
-            from sample ID. If None, uses default AnswerALS pattern.
-            The pattern should have one capture group for the GUID.
+            from sample ID. If None, uses default AnswerALS pattern
+            r"^(?:CASE|CTRL)_([A-Z0-9]+)". The pattern should have one capture
+            group for the subject ID.
         subject_id_col: Column name for subject/participant ID in clinical metadata
+            (default: "GUID" for AnswerALS, customize for other studies)
+
+    Note:
+        This class is designed for AnswerALS and uses ALS-specific defaults.
+        For other studies, either:
+        1. Provide all parameters explicitly to match your study
+        2. Use GenericPhenotypeInferencer for simpler phenotype mapping
+        3. Subclass PhenotypeInferencer for complex custom logic
 
     Example:
-        >>> inferencer = AnswerALSPhenotypeInferencer(
-        ...     subject_group_col="SUBJECT_GROUP",
-        ...     case_values=["ALS"],
-        ...     ctrl_values=["Healthy Control"],
-        ...     exclude_values=["Non-ALS MND", "Asymptomatic"],
-        ... )
+        >>> # AnswerALS with defaults
+        >>> inferencer = AnswerALSPhenotypeInferencer()
         >>> phenotypes = inferencer.infer(sample_ids, clinical_df)
+        >>>
+        >>> # Custom study with explicit parameters
+        >>> inferencer = AnswerALSPhenotypeInferencer(
+        ...     subject_group_col="disease_type",
+        ...     case_values=["Parkinsons", "PD"],
+        ...     ctrl_values=["Control", "Healthy"],
+        ...     exclude_values=["Other"],
+        ...     sample_id_pattern=r"SAMPLE_(\d+)",
+        ...     subject_id_col="patient_id",
+        ... )
     """
 
     def __init__(
@@ -146,6 +165,19 @@ class AnswerALSPhenotypeInferencer(PhenotypeInferencer):
         sample_id_pattern: str | None = None,
         subject_id_col: str = "GUID",
     ):
+        """
+        Initialize AnswerALS phenotype inferencer.
+
+        Note:
+            All default values are AnswerALS-specific:
+            - case_values: ["ALS"] (ALS-specific disease group)
+            - ctrl_values: ["Healthy Control"] (ALS-specific control group)
+            - exclude_values: ["Non-ALS MND", "Asymptomatic"] (ALS-specific exclusions)
+            - subject_id_col: "GUID" (AnswerALS subject identifier column)
+            - sample_id_pattern: r"^(?:CASE|CTRL)_([A-Z0-9]+)" (AnswerALS sample ID format)
+
+            For other studies, explicitly provide these parameters to match your data.
+        """
         self.subject_group_col = subject_group_col
         self.case_values = case_values or ["ALS"]
         self.ctrl_values = ctrl_values or ["Healthy Control"]
@@ -311,18 +343,34 @@ class GenericPhenotypeInferencer(PhenotypeInferencer):
 
     Args:
         phenotype_col: Column name in clinical metadata containing phenotype info
-        case_values: Values to map to CASE
-        ctrl_values: Values to map to CTRL
-        exclude_values: Values to explicitly exclude (default: all other values)
-        sample_id_col: Column name for sample ID in clinical metadata (default: "sample_id")
+        case_values: Values to map to CASE (required, study-specific)
+        ctrl_values: Values to map to CTRL (required, study-specific)
+        exclude_values: Values to explicitly exclude (default: all other values
+            are marked as EXCLUDE)
+        sample_id_col: Column name for sample ID in clinical metadata
+            (default: "sample_id", customize if your data uses different naming)
+
+    Note:
+        Unlike AnswerALSPhenotypeInferencer, this class has no study-specific
+        defaults. You must explicitly provide case_values and ctrl_values that
+        match your study's phenotype column values.
 
     Example:
+        >>> # Cancer study
         >>> inferencer = GenericPhenotypeInferencer(
         ...     phenotype_col="disease_status",
         ...     case_values=["tumor", "cancer"],
         ...     ctrl_values=["normal", "healthy"],
         ... )
         >>> phenotypes = inferencer.infer(sample_ids, clinical_df)
+        >>>
+        >>> # Neurological study with custom sample ID column
+        >>> inferencer = GenericPhenotypeInferencer(
+        ...     phenotype_col="diagnosis",
+        ...     case_values=["AD", "Alzheimers"],
+        ...     ctrl_values=["Control"],
+        ...     sample_id_col="specimen_id",
+        ... )
     """
 
     def __init__(

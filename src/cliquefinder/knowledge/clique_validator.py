@@ -64,6 +64,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Set, Optional, Tuple, Literal, Dict
 import itertools
 import logging
@@ -89,6 +90,7 @@ from cliquefinder.knowledge.clique_algorithms import (
 )
 
 __all__ = [
+    'CorrelationDirection',
     'CorrelationClique',
     'ChildSetType2',
     'DifferentialCliqueResult',
@@ -109,6 +111,18 @@ class GeneNotFoundError(Exception):
     pass
 
 
+class CorrelationDirection(Enum):
+    """Direction of correlations within a clique.
+
+    Classifies whether all edges in a correlation clique have the same sign
+    or are mixed (both positive and negative correlations present).
+    """
+    POSITIVE = "positive"      # All edges r > 0
+    NEGATIVE = "negative"      # All edges r < 0
+    MIXED = "mixed"           # Both positive and negative edges
+    UNKNOWN = "unknown"       # Not computed
+
+
 @dataclass
 class CorrelationClique:
     """
@@ -124,6 +138,19 @@ class CorrelationClique:
         mean_correlation: Mean absolute correlation across all gene pairs in clique
         min_correlation: Minimum absolute correlation across all gene pairs
         size: Number of genes in clique (len(genes))
+        direction: Classification of correlation signs in clique.
+            POSITIVE = all edges have r > 0 (co-activation)
+            NEGATIVE = all edges have r < 0 (anti-correlation/repression)
+            MIXED = edges have both positive and negative correlations
+        signed_mean_correlation: Mean correlation preserving sign. Unlike
+            mean_correlation (which uses absolute values), this can be negative
+            for anti-correlated cliques.
+        signed_min_correlation: Minimum signed correlation (most negative or
+            least positive).
+        signed_max_correlation: Maximum signed correlation (most positive or
+            least negative).
+        n_positive_edges: Number of edges with r > 0.
+        n_negative_edges: Number of edges with r < 0.
 
     Examples:
         >>> clique = CorrelationClique(
@@ -140,6 +167,12 @@ class CorrelationClique:
     mean_correlation: float
     min_correlation: float
     size: int
+    direction: CorrelationDirection = CorrelationDirection.UNKNOWN
+    signed_mean_correlation: float | None = None
+    signed_min_correlation: float | None = None
+    signed_max_correlation: float | None = None
+    n_positive_edges: int = 0
+    n_negative_edges: int = 0
 
 
 @dataclass
@@ -164,6 +197,19 @@ class ChildSetType2:
         condition: Condition under which coherent module was derived
         correlation_threshold: Minimum correlation used for clique finding
         mean_correlation: Mean correlation within coherent module
+        direction: Classification of correlation signs in clique.
+            POSITIVE = all edges have r > 0 (co-activation)
+            NEGATIVE = all edges have r < 0 (anti-correlation/repression)
+            MIXED = edges have both positive and negative correlations
+        signed_mean_correlation: Mean correlation preserving sign. Unlike
+            mean_correlation (which uses absolute values), this can be negative
+            for anti-correlated cliques.
+        signed_min_correlation: Minimum signed correlation (most negative or
+            least positive).
+        signed_max_correlation: Maximum signed correlation (most positive or
+            least negative).
+        n_positive_edges: Number of edges with r > 0.
+        n_negative_edges: Number of edges with r < 0.
 
     Examples:
         >>> coherent = ChildSetType2(
@@ -182,6 +228,12 @@ class ChildSetType2:
     condition: str
     correlation_threshold: float
     mean_correlation: float
+    direction: CorrelationDirection = CorrelationDirection.UNKNOWN
+    signed_mean_correlation: float | None = None
+    signed_min_correlation: float | None = None
+    signed_max_correlation: float | None = None
+    n_positive_edges: int = 0
+    n_negative_edges: int = 0
 
 
 @dataclass
@@ -874,6 +926,29 @@ class CliqueValidator:
         with absolute correlation >= min_correlation. This graph representation enables
         efficient clique finding via NetworkX algorithms.
 
+        **Default min_correlation = 0.7:**
+            The threshold of 0.7 is the standard cutoff widely used in co-expression
+            network analysis and gene regulatory studies. This represents a strong
+            correlation that is likely biologically meaningful:
+
+            - r² = 0.49 → 49% shared variance between genes
+            - Strong enough to suggest shared regulation or pathway membership
+            - Commonly used in WGCNA (Weighted Gene Co-expression Network Analysis)
+            - Balances sensitivity (detecting co-expression) with specificity
+              (avoiding spurious correlations)
+
+            References:
+                - Langfelder, P., & Horvath, S. (2008). WGCNA: an R package for
+                  weighted correlation network analysis. BMC Bioinformatics, 9, 559.
+                - van Dam, S., Võsa, U., van der Graaf, A., Franke, L., & de Magalhães,
+                  J. P. (2018). Gene co-expression analysis for functional classification
+                  and gene-disease predictions. Briefings in Bioinformatics, 19(4), 575-592.
+
+            This threshold should be validated for your specific dataset. Lower values
+            (0.5-0.6) may be appropriate for noisy data or small sample sizes. Higher
+            values (0.8-0.9) may be used for high-quality data or when seeking very
+            tightly co-regulated modules.
+
         **Performance Optimization (OPT-5):**
             By default (use_vectorized=True), uses NumPy vectorization for 10-50x speedup
             over the original Python loop approach. For 1000 genes (~500K pairs):
@@ -1094,7 +1169,9 @@ class CliqueValidator:
                 (default: 4). Set to 1 for sequential processing.
 
         Returns:
-            List of CorrelationClique objects, sorted by size (largest first).
+            List of CorrelationClique objects, sorted by size (largest first),
+            including signed correlation statistics (direction, signed_mean_correlation,
+            etc.) to distinguish co-activation (positive) from anti-correlation (negative).
             May be incomplete if enumeration was truncated at max_cliques limit
             (when exact=False) or timeout was reached.
 
@@ -1110,6 +1187,7 @@ class CliqueValidator:
             >>> for clique in cliques:
             ...     print(f"Clique of {clique.size}: {clique.genes}")
             ...     print(f"  Mean r={clique.mean_correlation:.3f}")
+            ...     print(f"  Direction={clique.direction.value}")
             >>>
             >>> # Sequential processing
             >>> cliques = validator.find_cliques(genes, condition='CASE_Male',
@@ -1166,16 +1244,42 @@ class CliqueValidator:
 
                 if len(clique_nodes) >= min_clique_size:
                     clique_genes = set(clique_nodes)
-                    edge_corrs = [
-                        abs(G[u][v]['weight'])
+
+                    # Extract SIGNED correlations (preserve sign)
+                    signed_edge_corrs = [
+                        G[u][v]['weight']
                         for u, v in itertools.combinations(clique_nodes, 2)
                     ]
+
+                    # Compute absolute values for backward-compatible fields
+                    abs_edge_corrs = [abs(r) for r in signed_edge_corrs]
+
+                    # Count positive and negative edges
+                    n_pos = sum(1 for r in signed_edge_corrs if r > 0)
+                    n_neg = sum(1 for r in signed_edge_corrs if r < 0)
+
+                    # Determine direction
+                    if n_neg == 0:
+                        direction = CorrelationDirection.POSITIVE
+                    elif n_pos == 0:
+                        direction = CorrelationDirection.NEGATIVE
+                    else:
+                        direction = CorrelationDirection.MIXED
+
                     component_cliques.append(CorrelationClique(
                         genes=clique_genes,
                         condition=condition,
-                        mean_correlation=float(np.mean(edge_corrs)),
-                        min_correlation=float(np.min(edge_corrs)),
+                        # Backward-compatible fields (absolute values)
+                        mean_correlation=float(np.mean(abs_edge_corrs)),
+                        min_correlation=float(np.min(abs_edge_corrs)),
                         size=len(clique_genes),
+                        # NEW signed fields
+                        direction=direction,
+                        signed_mean_correlation=float(np.mean(signed_edge_corrs)),
+                        signed_min_correlation=float(np.min(signed_edge_corrs)),
+                        signed_max_correlation=float(np.max(signed_edge_corrs)),
+                        n_positive_edges=n_pos,
+                        n_negative_edges=n_neg,
                     ))
 
             return component_cliques
@@ -1305,13 +1409,16 @@ class CliqueValidator:
             n_restarts: Number of greedy restarts (default: 10)
 
         Returns:
-            CorrelationClique for the largest clique found, or None if empty graph
+            CorrelationClique for the largest clique found (including signed correlation
+            statistics to distinguish co-activation from anti-correlation), or None
+            if empty graph
 
         Examples:
             >>> genes = {'SOD1', 'TARDBP', 'FUS', 'OPTN', 'TBK1'}
             >>> max_clique = validator.find_maximum_clique(genes, 'CASE_Male')
             >>> if max_clique:
             ...     print(f"Maximum clique: {max_clique.genes}")
+            ...     print(f"Direction: {max_clique.direction.value}")
         """
         # Build correlation graph
         G = self.build_correlation_graph(list(genes), condition, min_correlation, method)
@@ -1366,17 +1473,42 @@ class CliqueValidator:
 
         # Compute correlation statistics for the clique
         clique_list = list(best_clique)
-        edge_corrs = [
-            abs(G[u][v]['weight'])
+
+        # Extract SIGNED correlations (preserve sign)
+        signed_edge_corrs = [
+            G[u][v]['weight']
             for u, v in itertools.combinations(clique_list, 2)
         ]
+
+        # Compute absolute values for backward-compatible fields
+        abs_edge_corrs = [abs(r) for r in signed_edge_corrs]
+
+        # Count positive and negative edges
+        n_pos = sum(1 for r in signed_edge_corrs if r > 0)
+        n_neg = sum(1 for r in signed_edge_corrs if r < 0)
+
+        # Determine direction
+        if n_neg == 0:
+            direction = CorrelationDirection.POSITIVE
+        elif n_pos == 0:
+            direction = CorrelationDirection.NEGATIVE
+        else:
+            direction = CorrelationDirection.MIXED
 
         return CorrelationClique(
             genes=best_clique,
             condition=condition,
-            mean_correlation=float(np.mean(edge_corrs)),
-            min_correlation=float(np.min(edge_corrs)),
+            # Backward-compatible fields (absolute values)
+            mean_correlation=float(np.mean(abs_edge_corrs)),
+            min_correlation=float(np.min(abs_edge_corrs)),
             size=len(best_clique),
+            # NEW signed fields
+            direction=direction,
+            signed_mean_correlation=float(np.mean(signed_edge_corrs)),
+            signed_min_correlation=float(np.min(signed_edge_corrs)),
+            signed_max_correlation=float(np.max(signed_edge_corrs)),
+            n_positive_edges=n_pos,
+            n_negative_edges=n_neg,
         )
 
     def get_child_set_type2(
@@ -1454,6 +1586,13 @@ class CliqueValidator:
             condition=condition,
             correlation_threshold=min_correlation,
             mean_correlation=largest_clique.mean_correlation,
+            # NEW: propagate signed stats
+            direction=largest_clique.direction,
+            signed_mean_correlation=largest_clique.signed_mean_correlation,
+            signed_min_correlation=largest_clique.signed_min_correlation,
+            signed_max_correlation=largest_clique.signed_max_correlation,
+            n_positive_edges=largest_clique.n_positive_edges,
+            n_negative_edges=largest_clique.n_negative_edges,
         )
 
     def find_differential_cliques(

@@ -1,8 +1,13 @@
 """
-CliqueFinder - Regulatory Clique Discovery for ALS Transcriptomics
+CliqueFinder - Regulatory Clique Discovery in Biomolecular Data
 
-A pipeline for discovering regulatory cliques in expression data using
-INDRA CoGEx knowledge graphs. Designed for ALS transcriptomics analysis.
+A framework for discovering regulatory cliques in expression data using
+knowledge graphs. Applicable to any biomolecular dataset with expression
+measurements and regulatory annotations.
+
+Integrates expression data (proteomics, transcriptomics, metabolomics) with
+regulatory knowledge (INDRA, pathway databases) to identify co-regulated
+feature sets and test for differential abundance across experimental conditions.
 """
 
 __version__ = "0.1.0"

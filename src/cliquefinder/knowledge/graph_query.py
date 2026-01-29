@@ -697,6 +697,12 @@ def get_c9orf72_neighbor_sets(
     """
     Get C9orf72 neighbors split by relationship type.
 
+    .. deprecated:: 0.1.0
+        This function is experiment-specific and will be removed in a future version.
+        Users should copy this implementation to their own code or use the generic
+        ``GraphQuery.neighbors()`` API directly. See examples/als/graph_queries.py
+        for a generic ``get_gene_neighbor_sets()`` function that works with any gene.
+
     This implements the collaborator's request:
     "Grab all 1hop neighbors of c9orf72 that are inc/dec/act/inh"
 
@@ -717,6 +723,14 @@ def get_c9orf72_neighbor_sets(
         >>> activated_set = neighbors["activated"].to_feature_set("C9_activated")
         >>> inhibited_set = neighbors["inhibited"].to_feature_set("C9_inhibited")
     """
+    import warnings
+    warnings.warn(
+        "get_c9orf72_neighbor_sets is experiment-specific and will be removed in a future version. "
+        "Please copy this implementation to your own code or use the generic GraphQuery.neighbors() API. "
+        "See examples/als/graph_queries.py for a generic get_gene_neighbor_sets() function.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     # Build queries
     base_query = GraphQuery.neighbors("C9orf72", direction="bidirectional")
 

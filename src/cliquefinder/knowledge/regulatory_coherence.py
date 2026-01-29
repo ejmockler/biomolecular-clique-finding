@@ -3,7 +3,7 @@
 Regulatory Coherence Analysis Module
 
 A statistically rigorous, computationally tractable approach to identifying
-coherent regulatory modules from TF→target relationships and expression data.
+coherent regulatory modules from TF->target relationships and expression data.
 
 Design Philosophy (informed by computational biology best practices):
 1. REPLACE cliques with community detection (Louvain/Leiden) - O(n log n)
@@ -239,16 +239,50 @@ class PermutationResult:
 
 @dataclass
 class CoherenceConfig:
-    """Configuration for coherence analysis."""
+    """
+    Configuration for coherence analysis.
+
+    Magic Number Documentation:
+    ---------------------------
+    soft_threshold_power (default: 6.0):
+        WGCNA-style soft thresholding power. This is the standard WGCNA default
+        and should be tuned via the scale-free topology criterion for optimal
+        network properties.
+
+        Why 6.0?
+        - WGCNA uses soft thresholding: weight = |correlation|^β
+        - Optimal β satisfies scale-free topology (power-law degree distribution)
+        - Typical range: β ∈ [4, 20] for biological networks
+        - β = 6 is a starting point; optimize using pickSoftThreshold() or similar
+
+        References:
+            Zhang, B., & Horvath, S. (2005). A general framework for weighted
+            gene co-expression network analysis. Statistical Applications in
+            Genetics and Molecular Biology, 4(1), Article17.
+
+    min_expression_percentile (default: 20.0):
+        Filters genes below 20th percentile of mean expression. Commonly used
+        default to remove lowly expressed noise. Validate for your data:
+        - Bulk RNA-seq: 10-25th percentile typical
+        - Single-cell: 30-50th percentile (higher due to sparsity)
+        - High-quality: 5-10th percentile (less aggressive)
+
+    min_variance_percentile (default: 10.0):
+        Filters genes below 10th percentile of variance. Removes genes with
+        minimal variation. Validate for your data:
+        - Highly variable data: 20-30th percentile
+        - Stable expression: 5-10th percentile
+        - Note: Too aggressive may remove housekeeping genes
+    """
     # Community detection
     method: CommunityMethod = CommunityMethod.LOUVAIN
     resolution: float = 1.0  # Louvain/Leiden resolution parameter
 
-    # Soft thresholding
-    soft_threshold_power: float = 6.0  # WGCNA-style soft threshold
+    # Soft thresholding (see docstring for rationale)
+    soft_threshold_power: float = 6.0  # WGCNA default, tune via scale-free topology
     min_edge_weight: float = 0.1  # Minimum weight to keep edge
 
-    # Filtering
+    # Filtering (see docstring for rationale)
     min_expression_percentile: float = 20.0  # Filter low-expression genes
     min_variance_percentile: float = 10.0    # Filter low-variance genes
 
@@ -581,7 +615,7 @@ class CoherenceAnalyzer:
         Detect communities using specified method.
 
         Returns:
-            Dict mapping gene → community_id
+            Dict mapping gene -> community_id
         """
         if len(G.nodes()) == 0:
             return {}
@@ -671,7 +705,7 @@ class CoherenceAnalyzer:
                           Default: (1.0, -0.5) to penalize negative edges
 
         Returns:
-            Dict mapping gene → community_id
+            Dict mapping gene -> community_id
 
         Key advantage: Communities are formed considering BOTH positive
         co-expression AND avoidance of negative correlations.
@@ -857,7 +891,7 @@ class CoherenceAnalyzer:
         Addresses brutalist critique: "Bootstrap your correlations"
 
         Returns:
-            Dict mapping community_id → stability (fraction of bootstraps)
+            Dict mapping community_id -> stability (fraction of bootstraps)
         """
         n_bootstrap = n_bootstrap or self.config.n_bootstrap
         sample_idx = self._sample_groups[condition]
@@ -872,7 +906,7 @@ class CoherenceAnalyzer:
         G_pos, _ = self.build_signed_graphs(corr_original, gene_list)
         original_partition = self.detect_communities(G_pos)
 
-        # Invert to get community → genes
+        # Invert to get community -> genes
         original_communities = {}
         for gene, comm_id in original_partition.items():
             if comm_id not in original_communities:
@@ -1150,7 +1184,7 @@ class CoherenceAnalyzer:
         Analyze coherence across all valid conditions.
 
         Returns:
-            Dict mapping condition → StratifiedCoherenceResult
+            Dict mapping condition -> StratifiedCoherenceResult
         """
         results = {}
         conditions = self.get_available_conditions()

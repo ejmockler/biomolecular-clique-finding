@@ -86,7 +86,9 @@ class CliqueVisualizer:
         figsize: tuple[float, float] = (10, 12),
         cluster_genes: bool = True,
         show_sample_counts: bool = True,
-        show_margin_annotations: bool = True
+        show_margin_annotations: bool = True,
+        phenotype_labels: Optional[dict[str, str]] = None,
+        condition_colors: Optional[dict[str, list[str]]] = None
     ) -> Figure:
         """
         Create a 2×2 stratum heatmap grid showing gene membership across conditions.
@@ -113,6 +115,13 @@ class CliqueVisualizer:
             Whether to show n_samples in subplot titles
         show_margin_annotations : bool, default True
             Whether to show CTRL-only/CASE-only/Stable gene counts
+        phenotype_labels : dict[str, str], optional
+            Mapping from phenotype codes (e.g., 'CTRL', 'CASE') to display labels
+            (e.g., 'Healthy', 'ALS'). If None, uses phenotype codes as-is.
+        condition_colors : dict[str, list[str]], optional
+            Custom color schemes for each condition. Keys are condition codes
+            (e.g., 'CTRL_F', 'CASE_M'), values are [light, dark] color pairs.
+            If None, uses default orange for first phenotype, blue for second.
 
         Returns
         -------
@@ -259,13 +268,24 @@ class CliqueVisualizer:
         for stratum, (row, col) in positions.items():
             axes[stratum] = fig.add_subplot(gs[row, col])
 
-        # Color schemes: orange tint for CTRL, blue tint for CASE
-        colors = {
-            'CTRL_F': ['#fff7ed', '#fb923c'],  # Orange: light → dark
-            'CTRL_M': ['#fff7ed', '#f97316'],  # Orange: light → dark (slightly darker)
-            'CASE_F': ['#eff6ff', '#60a5fa'],  # Blue: light → dark
-            'CASE_M': ['#eff6ff', '#2563eb'],  # Blue: light → dark (slightly darker)
-        }
+        # Color schemes: use custom colors if provided, otherwise defaults
+        if condition_colors is None:
+            # Default: orange tint for first phenotype, blue tint for second
+            # Infer phenotypes from data
+            phenotypes = sorted(set(cond.split('_')[0] for cond in stratum_order))
+            default_color_schemes = {
+                phenotypes[0]: ['#fff7ed', '#fb923c', '#f97316'],  # Orange: light → dark
+                phenotypes[1] if len(phenotypes) > 1 else 'OTHER': ['#eff6ff', '#60a5fa', '#2563eb'],  # Blue
+            }
+
+            colors = {}
+            for condition in stratum_order:
+                phenotype = condition.split('_')[0]
+                sex_idx = 0 if condition.endswith('_F') else 1
+                scheme = default_color_schemes.get(phenotype, ['#f3f4f6', '#9ca3af', '#6b7280'])
+                colors[condition] = [scheme[0], scheme[1 + sex_idx]]
+        else:
+            colors = condition_colors
 
         # Plot each stratum
         for stratum_idx, stratum in enumerate(stratum_order):
@@ -317,7 +337,11 @@ class CliqueVisualizer:
 
             # Add row label (phenotype) on left
             if stratum in ['CTRL_F', 'CASE_F']:
-                phenotype_label = 'Healthy' if phenotype == 'CTRL' else 'ALS'
+                # Use custom label if provided, otherwise use phenotype code
+                if phenotype_labels and phenotype in phenotype_labels:
+                    phenotype_label = phenotype_labels[phenotype]
+                else:
+                    phenotype_label = phenotype
                 ax.set_ylabel(
                     phenotype_label,
                     fontsize=11,
@@ -795,7 +819,8 @@ class CliqueVisualizer:
         df: pd.DataFrame,
         figsize: tuple[float, float] = (14, 10),
         show_sex_split: bool = False,
-        max_genes_per_flow: int = 15
+        max_genes_per_flow: int = 15,
+        phenotype_labels: Optional[dict[str, str]] = None
     ) -> Figure:
         """
         Create a gene flow diagram showing regulatory rewiring between conditions.
@@ -828,6 +853,9 @@ class CliqueVisualizer:
         max_genes_per_flow : int, default 15
             Maximum number of genes to show labels for in each flow category.
             If exceeded, shows "N genes" label instead.
+        phenotype_labels : dict[str, str], optional
+            Mapping from phenotype codes (e.g., 'CTRL', 'CASE') to display labels
+            (e.g., 'Healthy', 'ALS'). If None, uses phenotype codes as-is.
 
         Returns
         -------
@@ -1057,10 +1085,22 @@ class CliqueVisualizer:
             draw_flow(y_start, y_end, flow_width, color_gained, alpha=0.25)
 
         # Column headers
+        # Infer phenotypes from gene lists
+        phenotypes = []
+        for key in ['CTRL_F', 'CTRL_M', 'CASE_F', 'CASE_M']:
+            if key in gene_lists:
+                phenotype = key.split('_')[0]
+                if phenotype not in phenotypes:
+                    phenotypes.append(phenotype)
+
+        # Get labels for phenotypes
+        ctrl_label = phenotype_labels.get('CTRL', 'CTRL') if phenotype_labels else 'CTRL'
+        case_label = phenotype_labels.get('CASE', 'CASE') if phenotype_labels else 'CASE'
+
         ax.text(
             left_x + column_width / 2,
             0.95,
-            "CTRL\n(Healthy)",
+            f"CTRL\n({ctrl_label})" if ctrl_label != 'CTRL' else 'CTRL',
             ha='center',
             va='top',
             fontsize=12,
@@ -1071,7 +1111,7 @@ class CliqueVisualizer:
         ax.text(
             right_x - column_width / 2,
             0.95,
-            "CASE\n(ALS)",
+            f"CASE\n({case_label})" if case_label != 'CASE' else 'CASE',
             ha='center',
             va='top',
             fontsize=12,
@@ -1085,8 +1125,14 @@ class CliqueVisualizer:
         ax.axis('off')
 
         # Title
+        title_text = f"{italicize_gene(regulator)} Gene Flow: Regulatory Rewiring"
+        if phenotype_labels and 'CTRL' in phenotype_labels and 'CASE' in phenotype_labels:
+            title_text += f" from {phenotype_labels['CTRL']} to {phenotype_labels['CASE']}"
+        else:
+            title_text += " from CTRL to CASE"
+
         fig.suptitle(
-            f"{italicize_gene(regulator)} Gene Flow: Regulatory Rewiring from Healthy to ALS",
+            title_text,
             fontsize=14,
             fontweight='bold',
             y=0.98
@@ -1151,7 +1197,8 @@ class CliqueVisualizer:
         figsize: tuple[float, float] = (14, 10),
         min_rewiring_score: float = 0.0,
         label_top_n: int = 20,
-        point_alpha: float = 0.7
+        point_alpha: float = 0.7,
+        condition_label: Optional[str] = None
     ) -> Figure:
         """
         Create regulator overview scatter plot for identifying interesting regulators.
@@ -1188,6 +1235,9 @@ class CliqueVisualizer:
             Number of top regulators to label
         point_alpha : float, default 0.7
             Transparency for scatter points
+        condition_label : str, optional
+            Label for the disease/condition being studied (e.g., 'ALS', 'Disease').
+            Used in axis labels and titles. If None, uses 'CASE' as default.
 
         Returns
         -------
@@ -1430,8 +1480,9 @@ class CliqueVisualizer:
                 )
 
         # Axis labels
+        condition_name = condition_label if condition_label else 'CASE'
         ax.set_xlabel(
-            'Rewiring Score\n← Lost in ALS     |     Gained in ALS →',
+            f'Rewiring Score\n← Lost in {condition_name}     |     Gained in {condition_name} →',
             fontsize=11,
             fontweight='bold'
         )
@@ -1443,7 +1494,7 @@ class CliqueVisualizer:
 
         # Title
         ax.set_title(
-            'Regulator Rewiring Overview: Scan for ALS-Associated Changes',
+            f'Regulator Rewiring Overview: Scan for {condition_name}-Associated Changes',
             fontsize=13,
             fontweight='bold',
             pad=15
@@ -1503,7 +1554,7 @@ class CliqueVisualizer:
         # Add caption
         caption = (
             f"Showing {len(plot_df)} regulators with |rewiring_score| ≥ {min_rewiring_score}. "
-            f"Positive rewiring = cliques gained in ALS; negative = lost in ALS. "
+            f"Positive rewiring = cliques gained in {condition_name}; negative = lost in {condition_name}. "
             f"Coherence ratio measures regulatory quality."
         )
         fig.text(
@@ -1522,10 +1573,10 @@ class CliqueVisualizer:
             fig=fig,
             title="Regulator Rewiring Overview",
             description=(
-                "Overview scatter plot of all regulators showing rewiring patterns "
-                "in ALS disease. X-axis shows rewiring score (gained vs lost cliques), "
-                "Y-axis shows regulatory quality (coherence), point size shows clique size, "
-                "and color indicates sex-specific vs pan-sex effects."
+                f"Overview scatter plot of all regulators showing rewiring patterns "
+                f"in {condition_name} condition. X-axis shows rewiring score (gained vs lost cliques), "
+                f"Y-axis shows regulatory quality (coherence), point size shows clique size, "
+                f"and color indicates sex-specific vs pan-sex effects."
             ),
             figure_type="matplotlib",
             metadata={

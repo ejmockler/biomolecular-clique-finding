@@ -65,7 +65,7 @@ from cliquefinder.knowledge.graph_query import (
     QueryDirection,
     QueryResult,
     GraphQuery,
-    get_c9orf72_neighbor_sets,
+    get_c9orf72_neighbor_sets,  # Deprecated: use examples.als.graph_queries
     query_to_feature_sets,
 )
 

@@ -368,6 +368,19 @@ class CoexpressionModule:
         paradigm: 'regulatory_validation' or 'de_novo_discovery'
         universe_label: Label identifying the gene universe source
         regulator: For regulatory validation, the upstream regulator
+        direction: Classification of correlation signs in module.
+            POSITIVE = all edges have r > 0 (co-activation)
+            NEGATIVE = all edges have r < 0 (anti-correlation/repression)
+            MIXED = edges have both positive and negative correlations
+        signed_mean_correlation: Mean correlation preserving sign. Unlike
+            mean_correlation (which uses absolute values), this can be negative
+            for anti-correlated modules.
+        signed_min_correlation: Minimum signed correlation (most negative or
+            least positive).
+        signed_max_correlation: Maximum signed correlation (most positive or
+            least negative).
+        n_positive_edges: Number of edges with r > 0.
+        n_negative_edges: Number of edges with r < 0.
     """
     genes: Set[str]
     condition: str
@@ -377,6 +390,12 @@ class CoexpressionModule:
     paradigm: str
     universe_label: str
     regulator: Optional[str] = None
+    direction: str = "unknown"
+    signed_mean_correlation: float | None = None
+    signed_min_correlation: float | None = None
+    signed_max_correlation: float | None = None
+    n_positive_edges: int = 0
+    n_negative_edges: int = 0
 
     def to_dict(self) -> Dict:
         return {
@@ -388,6 +407,13 @@ class CoexpressionModule:
             'paradigm': self.paradigm,
             'universe_label': self.universe_label,
             'regulator': self.regulator or '',
+            # NEW fields
+            'direction': self.direction,
+            'signed_mean_correlation': self.signed_mean_correlation,
+            'signed_min_correlation': self.signed_min_correlation,
+            'signed_max_correlation': self.signed_max_correlation,
+            'n_positive_edges': self.n_positive_edges,
+            'n_negative_edges': self.n_negative_edges,
         }
 
 
@@ -533,6 +559,13 @@ class ModuleDiscovery:
                     if isinstance(universe, RegulatoryTargetUniverse)
                     else None
                 ),
+                # NEW: propagate signed stats
+                direction=clique.direction.value if hasattr(clique.direction, 'value') else str(clique.direction),
+                signed_mean_correlation=clique.signed_mean_correlation,
+                signed_min_correlation=clique.signed_min_correlation,
+                signed_max_correlation=clique.signed_max_correlation,
+                n_positive_edges=clique.n_positive_edges,
+                n_negative_edges=clique.n_negative_edges,
             )
             modules.append(module)
 

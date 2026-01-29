@@ -33,6 +33,14 @@ Clinical Variables:
     Each type may require different downstream handling (one-hot encoding,
     normalization, etc.).
 
+Study-Specific Configuration:
+    Default values (CLINICAL_COLUMNS, SubjectIdExtractor defaults, etc.) are
+    AnswerALS-specific. For other studies, provide custom parameters:
+    - subject_col: Column name for subject IDs in your clinical metadata
+    - extractor: Custom SubjectIdExtractor with your sample ID pattern
+    - column_mapping: Dict of clinical column groups for your study
+    - columns: Explicit list of columns to include
+
 Examples:
     >>> from cliquefinder.io.metadata import ClinicalMetadataEnricher
     >>> from cliquefinder.io.loaders import load_csv_matrix
@@ -40,8 +48,19 @@ Examples:
     >>> # Load expression data
     >>> matrix = load_csv_matrix("expression.csv")
     >>>
-    >>> # Enrich with clinical metadata
+    >>> # AnswerALS study (uses defaults)
     >>> enricher = ClinicalMetadataEnricher.from_csv("clinical.csv")
+    >>> enriched = enricher.enrich(matrix)
+    >>>
+    >>> # Custom study (explicit configuration)
+    >>> from cliquefinder.io.metadata import SubjectIdExtractor
+    >>> extractor = SubjectIdExtractor(pattern=r'(SUBJ\d+)')
+    >>> enricher = ClinicalMetadataEnricher.from_csv(
+    ...     "clinical.csv",
+    ...     subject_col="patient_id",
+    ...     extractor=extractor,
+    ...     columns=['age', 'sex', 'diagnosis']
+    ... )
     >>> enriched = enricher.enrich(matrix)
     >>>
     >>> # Check enrichment summary
@@ -63,8 +82,13 @@ from cliquefinder.core.biomatrix import BioMatrix
 __all__ = ['ClinicalMetadataEnricher', 'SubjectIdExtractor', 'CLINICAL_COLUMNS']
 
 
-# Curated clinical columns for ALS studies
-# Organized by biological/clinical relevance
+# Default clinical columns for AnswerALS study
+# These are study-specific defaults and should be customized for other datasets.
+# Organized by biological/clinical relevance.
+#
+# NOTE: These defaults are AnswerALS-specific. For other studies, either:
+#   1. Pass custom `columns` or `column_groups` to ClinicalMetadataEnricher
+#   2. Define your own column mapping dict and pass via `column_mapping` parameter
 CLINICAL_COLUMNS = {
     # Demographics
     'demographics': [
@@ -121,26 +145,35 @@ class SubjectIdExtractor:
     Sample ID formats vary by study. This class encapsulates the extraction
     logic and provides common patterns.
 
-    Default pattern for this study:
+    Default pattern for AnswerALS study:
         CASE-NEUVM674HUA-5257-T_P003 -> NEUVM674HUA
         Component index 1 (0-indexed), split by '-'
 
     Supports both regex-based and delimiter-based extraction:
         - If pattern is provided, uses regex to extract participant ID
         - Falls back to delimiter-based extraction if pattern doesn't match
-        - Default pattern r'(NEU[A-Z0-9]+)' handles both RNA and proteomics formats
+        - Default pattern r'(NEU[A-Z0-9]+)' is AnswerALS-specific
 
     Attributes:
         delimiter: Character(s) to split sample ID on
         component_index: Which component contains subject ID (0-indexed)
-        pattern: Optional regex pattern for extraction (default: r'(NEU[A-Z0-9]+)')
+        pattern: Optional regex pattern for extraction (default: r'(NEU[A-Z0-9]+)'
+            for AnswerALS, customize for other studies)
+
+    Note:
+        Default values are AnswerALS-specific. For other studies, provide custom
+        delimiter, component_index, and/or pattern.
 
     Examples:
+        >>> # AnswerALS default
         >>> extractor = SubjectIdExtractor(delimiter='-', component_index=1)
         >>> extractor.extract('CASE-NEUVM674HUA-5257-T_P003')
         'NEUVM674HUA'
-        >>> extractor.extract('CASE_NEUAA295HHE-9014-P_D3')
-        'NEUAA295HHE'
+        >>>
+        >>> # Custom pattern for different study
+        >>> extractor = SubjectIdExtractor(pattern=r'(SUBJ\d+)')
+        >>> extractor.extract('TUMOR_SUBJ001_batch1')
+        'SUBJ001'
     """
     delimiter: str = '-'
     component_index: int = 1
@@ -264,16 +297,24 @@ class ClinicalMetadataEnricher:
         extractor: Optional[SubjectIdExtractor] = None,
         columns: Optional[list[str]] = None,
         column_groups: Optional[list[str]] = None,
+        column_mapping: Optional[dict[str, list[str]]] = None,
     ):
         """
         Initialize enricher with clinical data.
 
         Args:
             clinical_df: Clinical metadata DataFrame
-            subject_col: Column containing subject IDs
-            extractor: Subject ID extractor (default: standard ALS format)
-            columns: Specific columns to include
-            column_groups: Column groups to include (from CLINICAL_COLUMNS)
+            subject_col: Column containing subject IDs (default: 'ExternalSubjectId'
+                for AnswerALS, customize for other studies)
+            extractor: Subject ID extractor (default: AnswerALS sample ID format)
+            columns: Specific columns to include (overrides column_groups and column_mapping)
+            column_groups: Column groups to include (from column_mapping)
+            column_mapping: Custom column group mapping (default: CLINICAL_COLUMNS which
+                is AnswerALS-specific). Only used if column_groups is provided.
+
+        Note:
+            Default values (subject_col, extractor, column_mapping) are AnswerALS-specific.
+            For other studies, explicitly provide these parameters.
         """
         if subject_col not in clinical_df.columns:
             raise ValueError(f"Subject column '{subject_col}' not in clinical data")
@@ -281,6 +322,10 @@ class ClinicalMetadataEnricher:
         self.clinical_df = clinical_df.copy()
         self.subject_col = subject_col
         self.extractor = extractor or SubjectIdExtractor()
+
+        # Use custom column mapping if provided, otherwise default to AnswerALS mapping
+        _column_mapping = column_mapping if column_mapping is not None else CLINICAL_COLUMNS
+        _all_columns = [col for cols in _column_mapping.values() for col in cols]
 
         # Determine columns to use
         if columns is not None:
@@ -291,17 +336,17 @@ class ClinicalMetadataEnricher:
         elif column_groups is not None:
             self.columns = []
             for group in column_groups:
-                if group in CLINICAL_COLUMNS:
+                if group in _column_mapping:
                     self.columns.extend([
-                        c for c in CLINICAL_COLUMNS[group]
+                        c for c in _column_mapping[group]
                         if c in clinical_df.columns
                     ])
                 else:
                     warnings.warn(f"Unknown column group: {group}")
             self.columns = list(dict.fromkeys(self.columns))  # Remove duplicates
         else:
-            # Default: all available curated columns
-            self.columns = [c for c in ALL_CLINICAL_COLUMNS if c in clinical_df.columns]
+            # Default: all available curated columns from mapping
+            self.columns = [c for c in _all_columns if c in clinical_df.columns]
 
         self._summary: Optional[EnrichmentSummary] = None
 
@@ -313,19 +358,26 @@ class ClinicalMetadataEnricher:
         extractor: Optional[SubjectIdExtractor] = None,
         columns: Optional[list[str]] = None,
         column_groups: Optional[list[str]] = None,
+        column_mapping: Optional[dict[str, list[str]]] = None,
     ) -> 'ClinicalMetadataEnricher':
         """
         Create enricher from CSV file.
 
         Args:
             path: Path to clinical metadata CSV
-            subject_col: Column containing subject IDs
-            extractor: Subject ID extractor
+            subject_col: Column containing subject IDs (default: 'ExternalSubjectId'
+                for AnswerALS, customize for other studies)
+            extractor: Subject ID extractor (default: AnswerALS sample ID format)
             columns: Specific columns to include
-            column_groups: Column groups to include
+            column_groups: Column groups to include (from column_mapping)
+            column_mapping: Custom column group mapping (default: AnswerALS-specific)
 
         Returns:
             Configured ClinicalMetadataEnricher
+
+        Note:
+            Default values are AnswerALS-specific. For other studies, explicitly
+            provide subject_col, extractor, and/or column_mapping.
         """
         path = Path(path)
         if not path.exists():
@@ -338,6 +390,7 @@ class ClinicalMetadataEnricher:
             extractor=extractor,
             columns=columns,
             column_groups=column_groups,
+            column_mapping=column_mapping,
         )
 
     def enrich(self, matrix: BioMatrix, drop_unmatched: bool = False) -> BioMatrix:
