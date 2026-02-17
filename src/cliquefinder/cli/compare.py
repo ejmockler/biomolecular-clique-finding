@@ -29,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from cliquefinder.cohort import resolve_cohort_from_args
+
 
 def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     """Add the compare subcommand to the parser."""
@@ -83,8 +85,25 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         type=str,
         nargs=3,
         metavar=("NAME", "COND1", "COND2"),
-        required=True,
-        help="Contrast to test: NAME CONDITION1 CONDITION2",
+        default=None,
+        help="Contrast to test: NAME CONDITION1 CONDITION2. "
+             "Required unless --cohort-config or --genetic-contrast is used.",
+    )
+
+    # Genetic subtype analysis
+    parser.add_argument(
+        "--genetic-contrast",
+        type=str,
+        metavar="MUTATION",
+        help="Genetic subtype contrast (e.g., 'C9orf72' for carriers vs sporadic ALS). "
+             "Auto-detects genomic columns for biologically accurate carrier definition.",
+    )
+    parser.add_argument(
+        "--cohort-config",
+        type=Path,
+        metavar="PATH",
+        help="YAML/JSON cohort definition file for declarative cohort assignment. "
+             "See cohorts/ directory for examples. Overrides --genetic-contrast.",
     )
 
     # Preprocessing options
@@ -114,8 +133,8 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--n-rotations",
         type=int,
-        default=999,
-        help="Number of rotations for ROAST methods (default: 999)",
+        default=499,
+        help="Number of rotations for ROAST methods (default: 499, sufficient for p<0.05)",
     )
     parser.add_argument(
         "--n-permutations",
@@ -199,6 +218,27 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         default=0.80,
         help="Fraction of bootstraps for 'stable' hit classification (default: 0.80)",
     )
+    parser.add_argument(
+        "--bootstrap-controls",
+        action="store_true",
+        dest="bootstrap_controls_flag",
+        help="Force bootstrap controls WITH replacement (default: auto-detect based on n_controls >= 50)",
+    )
+    parser.add_argument(
+        "--no-bootstrap-controls",
+        action="store_true",
+        dest="no_bootstrap_controls_flag",
+        help="Force fixed controls mode (all controls used every iteration)",
+    )
+    parser.add_argument(
+        "--mixed-criterion",
+        type=str,
+        choices=["roast_only", "exclude"],
+        default="roast_only",
+        help="Stability criterion for mixed-direction cliques: "
+             "'roast_only' (default) requires ROAST stable, "
+             "'exclude' excludes mixed cliques from stable hits",
+    )
 
     parser.set_defaults(func=run_compare)
 
@@ -226,6 +266,14 @@ def _run_bootstrap_comparison(
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Determine bootstrap_controls setting from CLI flags
+    # Priority: --no-bootstrap-controls > --bootstrap-controls > auto-detect (None)
+    bootstrap_controls = None  # Auto-detect by default
+    if getattr(args, 'no_bootstrap_controls_flag', False):
+        bootstrap_controls = False
+    elif getattr(args, 'bootstrap_controls_flag', False):
+        bootstrap_controls = True
+
     # Configure bootstrap
     config = BootstrapConfig(
         n_bootstraps=args.bootstrap_n,
@@ -237,6 +285,7 @@ def _run_bootstrap_comparison(
         use_gpu=args.gpu,
         seed=args.seed,
         verbose=True,
+        bootstrap_controls=bootstrap_controls,
     )
 
     print(f"\n{'=' * 70}")
@@ -264,9 +313,33 @@ def _run_bootstrap_comparison(
     elapsed_time = time.time() - start_time
     print(f"\nBootstrap analysis completed in {elapsed_time:.1f}s")
 
-    # Summary statistics
-    n_stable = bootstrap_df['is_stable'].sum() if 'is_stable' in bootstrap_df.columns else 0
-    mean_concordance = bootstrap_df['method_concordance'].mean() if 'method_concordance' in bootstrap_df.columns else np.nan
+    # Summary statistics with direction-aware counts
+    if len(bootstrap_df) > 0:
+        # Count by direction
+        n_coherent = bootstrap_df['direction'].isin(['positive', 'negative']).sum()
+        n_mixed = (bootstrap_df['direction'] == 'mixed').sum()
+        n_unknown = (bootstrap_df['direction'] == 'unknown').sum()
+
+        # Stable counts
+        coherent_mask = bootstrap_df['direction'].isin(['positive', 'negative'])
+        n_stable_coherent = int(bootstrap_df.loc[coherent_mask, 'is_robust'].sum()) if coherent_mask.any() else 0
+
+        mixed_mask = bootstrap_df['direction'] == 'mixed'
+        n_stable_mixed = int(bootstrap_df.loc[mixed_mask, 'is_robust'].sum()) if mixed_mask.any() else 0
+
+        n_robust_total = int(bootstrap_df['is_robust'].sum())
+
+        # Concordance for coherent cliques only
+        coherent_df = bootstrap_df[coherent_mask]
+        mean_concordance = float(coherent_df['method_concordance'].mean()) if len(coherent_df) > 0 else np.nan
+    else:
+        n_coherent = 0
+        n_mixed = 0
+        n_unknown = 0
+        n_stable_coherent = 0
+        n_stable_mixed = 0
+        n_robust_total = 0
+        mean_concordance = np.nan
 
     params = {
         "timestamp": datetime.now().isoformat(),
@@ -277,8 +350,16 @@ def _run_bootstrap_comparison(
         "target_ratio": config.target_ratio,
         "stability_threshold": config.stability_threshold,
         "n_cliques_tested": len(bootstrap_df),
-        "n_stable_hits": int(n_stable),
-        "mean_method_concordance": float(mean_concordance) if not np.isnan(mean_concordance) else None,
+        # Direction-aware stats
+        "n_coherent_cliques": int(n_coherent),
+        "n_mixed_cliques": int(n_mixed),
+        "n_unknown_cliques": int(n_unknown),
+        "n_stable_coherent": int(n_stable_coherent),
+        "n_stable_mixed": int(n_stable_mixed),
+        "n_robust": int(n_robust_total),
+        "mean_method_concordance_coherent": float(mean_concordance) if not np.isnan(mean_concordance) else None,
+        # Not computed in bootstrap mode, but included for schema consistency
+        "mean_spearman_rho": None,
         "elapsed_seconds": elapsed_time,
     }
 
@@ -286,17 +367,40 @@ def _run_bootstrap_comparison(
     with open(params_output, "w") as f:
         json.dump(params, f, indent=2)
 
-    # Print top stable cliques
-    if n_stable > 0:
+    # Print top stable cliques by direction
+    if n_robust_total > 0:
         print(f"\n{'=' * 70}")
-        print(f"TOP BOOTSTRAP-STABLE CLIQUES ({n_stable} total)")
+        print(f"TOP BOOTSTRAP-STABLE CLIQUES ({n_robust_total} total)")
         print("=" * 70)
-        stable_df = bootstrap_df[bootstrap_df['is_stable']].head(20)
-        for _, row in stable_df.iterrows():
-            print(f"  {row['clique_id']}: "
-                  f"sel_freq={row['selection_freq_both']:.2f}, "
-                  f"concordance={row['method_concordance']:.2f}, "
-                  f"effect={row['median_effect']:.3f}")
+
+        # Show coherent cliques
+        if n_stable_coherent > 0:
+            print(f"\nCoherent (both OLS & ROAST): {n_stable_coherent}")
+            coherent_stable = bootstrap_df[
+                bootstrap_df['direction'].isin(['positive', 'negative']) &
+                bootstrap_df['is_robust']
+            ].head(10)
+            for _, row in coherent_stable.iterrows():
+                direction_label = row['direction'].upper()
+                concordance_str = f"concordance={row['method_concordance']:.2f}" if row['method_concordance'] is not None else ""
+                print(f"  [{direction_label}] {row['clique_id']}: "
+                      f"OLS={row['selection_freq_ols']:.2f}, "
+                      f"ROAST={row['selection_freq_roast']:.2f}, "
+                      f"{concordance_str}, "
+                      f"effect={row['median_effect']:.3f}")
+
+        # Show mixed cliques
+        if n_stable_mixed > 0:
+            print(f"\nMixed (ROAST only): {n_stable_mixed}")
+            mixed_stable = bootstrap_df[
+                bootstrap_df['direction'].isin(['mixed', 'unknown']) &
+                bootstrap_df['is_robust']
+            ].head(10)
+            for _, row in mixed_stable.iterrows():
+                print(f"  [MIXED] {row['clique_id']}: "
+                      f"ROAST={row['selection_freq_roast']:.2f}, "
+                      f"OLS={row['selection_freq_ols']:.2f}, "
+                      f"effect={row['median_effect']:.3f}")
 
     return params
 
@@ -405,6 +509,7 @@ def _run_single_comparison(
         "timestamp": datetime.now().isoformat(),
         "stratum": stratum_name,
         "n_samples": len(metadata),
+        "analysis_type": "single",
         "data": str(args.data),
         "metadata": str(args.metadata),
         "cliques": str(args.cliques),
@@ -428,7 +533,7 @@ def _run_single_comparison(
         "methods_run": [m.value for m in comparison.methods_run],
         "mean_spearman_rho": float(comparison.mean_spearman_rho) if not np.isnan(comparison.mean_spearman_rho) else None,
         "mean_cohen_kappa": float(comparison.mean_cohen_kappa) if not np.isnan(comparison.mean_cohen_kappa) else None,
-        "n_robust_hits": len(robust_hits) if robust_hits else 0,
+        "n_robust": len(robust_hits) if robust_hits else 0,
         "elapsed_seconds": elapsed_time,
     }
     params_output = output_dir / "analysis_parameters.json"
@@ -489,6 +594,35 @@ def run_compare(args: argparse.Namespace) -> int:
     feature_ids = list(matrix.feature_ids)
 
     print(f"  Aligned: {len(common_samples)} samples")
+
+    # Handle cohort-based contrast (--cohort-config or --genetic-contrast)
+    cohort_config = getattr(args, 'cohort_config', None)
+    genetic_contrast = getattr(args, 'genetic_contrast', None)
+
+    metadata, resolved_condition_col, cohort_contrasts = resolve_cohort_from_args(
+        metadata=metadata,
+        cohort_config=cohort_config,
+        genetic_contrast=genetic_contrast,
+        condition_col=args.condition_col,
+    )
+
+    if cohort_contrasts is not None:
+        if args.contrast:
+            print(f"  Warning: Ignoring --contrast (overridden by cohort resolution)")
+        args.contrast = cohort_contrasts[0]  # compare expects a single triple
+        args.condition_col = resolved_condition_col
+
+        # Re-align after cohort filtering (metadata may have been filtered)
+        common_samples = [s for s in common_samples if s in metadata.index]
+        sample_indices = [list(matrix.sample_ids).index(s) for s in common_samples]
+        data = matrix.data[:, sample_indices]
+        metadata = metadata.loc[common_samples]
+        print(f"  After cohort resolution: {len(common_samples)} samples")
+
+    # Validate contrast is available
+    if args.contrast is None:
+        print("Error: --contrast is required (or use --cohort-config / --genetic-contrast)")
+        return 1
 
     # Load clique definitions
     print(f"\nLoading cliques: {args.cliques}")
@@ -626,12 +760,14 @@ def run_compare(args: argparse.Namespace) -> int:
         print("=" * 70)
         for p in all_params:
             print(f"\n  {p['stratum']}:")
-            print(f"    Samples: {p['n_samples']}")
-            print(f"    Robust hits: {p['n_robust_hits']}")
-            if p['mean_spearman_rho'] is not None:
+            print(f"    Samples: {p.get('n_samples', 'N/A')}")
+            print(f"    Robust cliques: {p.get('n_robust', 'N/A')}")
+            # mean_spearman_rho only exists in regular (non-bootstrap) mode
+            if 'mean_spearman_rho' in p and p['mean_spearman_rho'] is not None:
                 print(f"    Mean Spearman ρ: {p['mean_spearman_rho']:.3f}")
-            else:
-                print(f"    Mean Spearman ρ: N/A")
+            # Bootstrap mode has concordance metric instead
+            elif 'mean_method_concordance_coherent' in p and p['mean_method_concordance_coherent'] is not None:
+                print(f"    Mean concordance: {p['mean_method_concordance_coherent']:.3f}")
         print(f"\n  Summary saved: {summary_output}")
 
     # Run interaction analysis if requested (on full dataset, not stratified)

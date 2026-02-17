@@ -92,26 +92,23 @@ class MetadataRowFilter:
             >>> print(filtered)
             Index(['PROTEIN1', 'PROTEIN2'], dtype='object')
         """
-        # Create boolean mask for rows to keep (NOT matching patterns)
-        mask = pd.Series(True, index=feature_ids)
+        # Create boolean mask for rows that match any pattern
+        mask = pd.Series(False, index=feature_ids)
 
-        # Combine all patterns into a single regex
-        pattern = '|'.join(self.patterns)
-
-        # Apply pattern matching
-        matches = feature_ids.str.contains(
-            pattern,
-            case=self.case_sensitive,
-            na=False,
-            regex=False,  # Treat patterns as literal substrings, not regex
-        )
-
-        mask = ~matches  # Invert: keep rows that DON'T match
+        # Check each pattern individually and combine with OR logic
+        for pat in self.patterns:
+            mask |= feature_ids.str.contains(
+                pat,
+                case=self.case_sensitive,
+                na=False,
+                regex=False,  # Treat patterns as literal substrings, not regex
+            )
 
         # Track filtering statistics
-        self.n_filtered_ = (~mask).sum()
+        self.n_filtered_ = mask.sum()
 
-        return feature_ids[mask]
+        # Return IDs that DON'T match any pattern
+        return feature_ids[~mask]
 
     def get_filtered_ids(self, feature_ids: pd.Index) -> pd.Index:
         """
@@ -132,18 +129,19 @@ class MetadataRowFilter:
             >>> print(excluded)
             Index(['nFragment', 'nPeptide'], dtype='object')
         """
-        # Combine all patterns into a single regex
-        pattern = '|'.join(self.patterns)
+        # Create boolean mask for rows that match any pattern
+        mask = pd.Series(False, index=feature_ids)
 
-        # Apply pattern matching
-        matches = feature_ids.str.contains(
-            pattern,
-            case=self.case_sensitive,
-            na=False,
-            regex=False,
-        )
+        # Check each pattern individually and combine with OR logic
+        for pat in self.patterns:
+            mask |= feature_ids.str.contains(
+                pat,
+                case=self.case_sensitive,
+                na=False,
+                regex=False,
+            )
 
-        return feature_ids[matches]
+        return feature_ids[mask]
 
     def __repr__(self) -> str:
         """String representation of filter configuration."""

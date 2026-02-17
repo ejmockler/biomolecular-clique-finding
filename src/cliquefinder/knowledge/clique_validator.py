@@ -173,6 +173,8 @@ class CorrelationClique:
     signed_max_correlation: float | None = None
     n_positive_edges: int = 0
     n_negative_edges: int = 0
+    # Per-edge correlation values: list of (gene1, gene2, correlation) tuples
+    edge_correlations: list[tuple[str, str, float]] | None = None
 
 
 @dataclass
@@ -234,6 +236,9 @@ class ChildSetType2:
     signed_max_correlation: float | None = None
     n_positive_edges: int = 0
     n_negative_edges: int = 0
+    # Per-edge correlation values: list of (gene1, gene2, correlation) tuples
+    # Enables detailed analysis of clique structure and edge-level visualization
+    edge_correlations: list[tuple[str, str, float]] | None = None
 
 
 @dataclass
@@ -985,6 +990,14 @@ class CliqueValidator:
             >>> G_legacy = validator.build_correlation_graph(genes, condition='CASE',
             ...                                               use_vectorized=False)
         """
+        if not genes:
+            return nx.Graph()
+
+        if len(genes) == 1:
+            G = nx.Graph()
+            G.add_node(genes[0])
+            return G
+
         if use_vectorized:
             return self._build_correlation_graph_vectorized(
                 genes, condition, min_correlation, method
@@ -1245,11 +1258,12 @@ class CliqueValidator:
                 if len(clique_nodes) >= min_clique_size:
                     clique_genes = set(clique_nodes)
 
-                    # Extract SIGNED correlations (preserve sign)
-                    signed_edge_corrs = [
-                        G[u][v]['weight']
+                    # Extract SIGNED correlations (preserve sign) with gene pairs
+                    edge_correlations = [
+                        (u, v, G[u][v]['weight'])
                         for u, v in itertools.combinations(clique_nodes, 2)
                     ]
+                    signed_edge_corrs = [r for _, _, r in edge_correlations]
 
                     # Compute absolute values for backward-compatible fields
                     abs_edge_corrs = [abs(r) for r in signed_edge_corrs]
@@ -1273,13 +1287,15 @@ class CliqueValidator:
                         mean_correlation=float(np.mean(abs_edge_corrs)),
                         min_correlation=float(np.min(abs_edge_corrs)),
                         size=len(clique_genes),
-                        # NEW signed fields
+                        # Signed fields
                         direction=direction,
                         signed_mean_correlation=float(np.mean(signed_edge_corrs)),
                         signed_min_correlation=float(np.min(signed_edge_corrs)),
                         signed_max_correlation=float(np.max(signed_edge_corrs)),
                         n_positive_edges=n_pos,
                         n_negative_edges=n_neg,
+                        # Per-edge correlation values
+                        edge_correlations=edge_correlations,
                     ))
 
             return component_cliques
@@ -1436,8 +1452,8 @@ class CliqueValidator:
             start_node = nodes_by_degree[i]
             clique = {start_node}
 
-            # Get candidates: neighbors of start node
-            candidates = set(G.neighbors(start_node))
+            # Get candidates: sorted list for deterministic iteration
+            candidates = sorted(G.neighbors(start_node))
 
             # Greedily add nodes that connect to all current clique members
             while candidates:
@@ -1445,28 +1461,36 @@ class CliqueValidator:
                 # (increases chance of finding larger clique)
                 best_candidate = None
                 best_score = -1
+                best_corr = -float('inf')
 
                 for candidate in candidates:
                     # Check if candidate connects to ALL clique members
                     if all(G.has_edge(candidate, member) for member in clique):
                         # Score: number of remaining candidates this node connects to
                         score = sum(1 for c in candidates if G.has_edge(candidate, c))
-                        if score > best_score:
+                        # Tie-break: mean absolute correlation to current clique
+                        mean_corr = np.mean([abs(G[candidate][m]['weight']) for m in clique])
+                        if score > best_score or (score == best_score and mean_corr > best_corr):
                             best_score = score
+                            best_corr = mean_corr
                             best_candidate = candidate
 
                 if best_candidate is None:
                     break  # No candidate connects to all clique members
 
                 clique.add(best_candidate)
-                candidates.discard(best_candidate)
+                candidates = [c for c in candidates if c != best_candidate and G.has_edge(best_candidate, c)]
 
-                # Update candidates: keep only those connected to new member
-                candidates = {c for c in candidates if G.has_edge(best_candidate, c)}
-
-            # Update best if larger
+            # Update best if larger, or same size with higher mean correlation
             if len(clique) > len(best_clique):
                 best_clique = clique
+            elif len(clique) == len(best_clique) and len(clique) >= 2:
+                clique_corr = np.mean([abs(G[u][v]['weight'])
+                                       for u, v in itertools.combinations(clique, 2)])
+                best_corr_val = np.mean([abs(G[u][v]['weight'])
+                                         for u, v in itertools.combinations(best_clique, 2)])
+                if clique_corr > best_corr_val:
+                    best_clique = clique
 
         if len(best_clique) < 2:
             return None
@@ -1474,11 +1498,12 @@ class CliqueValidator:
         # Compute correlation statistics for the clique
         clique_list = list(best_clique)
 
-        # Extract SIGNED correlations (preserve sign)
-        signed_edge_corrs = [
-            G[u][v]['weight']
+        # Extract SIGNED correlations (preserve sign) with gene pairs
+        edge_correlations = [
+            (u, v, G[u][v]['weight'])
             for u, v in itertools.combinations(clique_list, 2)
         ]
+        signed_edge_corrs = [r for _, _, r in edge_correlations]
 
         # Compute absolute values for backward-compatible fields
         abs_edge_corrs = [abs(r) for r in signed_edge_corrs]
@@ -1502,13 +1527,15 @@ class CliqueValidator:
             mean_correlation=float(np.mean(abs_edge_corrs)),
             min_correlation=float(np.min(abs_edge_corrs)),
             size=len(best_clique),
-            # NEW signed fields
+            # Signed fields
             direction=direction,
             signed_mean_correlation=float(np.mean(signed_edge_corrs)),
             signed_min_correlation=float(np.min(signed_edge_corrs)),
             signed_max_correlation=float(np.max(signed_edge_corrs)),
             n_positive_edges=n_pos,
             n_negative_edges=n_neg,
+            # Per-edge correlation values
+            edge_correlations=edge_correlations,
         )
 
     def get_child_set_type2(
@@ -1586,13 +1613,15 @@ class CliqueValidator:
             condition=condition,
             correlation_threshold=min_correlation,
             mean_correlation=largest_clique.mean_correlation,
-            # NEW: propagate signed stats
+            # Signed stats
             direction=largest_clique.direction,
             signed_mean_correlation=largest_clique.signed_mean_correlation,
             signed_min_correlation=largest_clique.signed_min_correlation,
             signed_max_correlation=largest_clique.signed_max_correlation,
             n_positive_edges=largest_clique.n_positive_edges,
             n_negative_edges=largest_clique.n_negative_edges,
+            # Per-edge correlation values
+            edge_correlations=largest_clique.edge_correlations,
         )
 
     def find_differential_cliques(

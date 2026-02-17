@@ -420,12 +420,12 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Path to clinical metadata CSV for phenotype mapping")
     parser.add_argument("--clinical-id-col", type=str, default="Participant_ID",
                         help="Column in clinical metadata containing participant IDs (default: Participant_ID)")
-    parser.add_argument("--phenotype-source-col", type=str, default="SUBJECT_GROUP",
-                        help="Clinical column to derive phenotype from (default: SUBJECT_GROUP)")
-    parser.add_argument("--case-values", type=str, nargs="+", default=["ALS"],
-                        help="Values in phenotype-source-col that map to CASE (default: ALS)")
-    parser.add_argument("--ctrl-values", type=str, nargs="+", default=["Healthy Control"],
-                        help="Values in phenotype-source-col that map to CTRL (default: Healthy Control)")
+    parser.add_argument("--phenotype-source-col", type=str, default=None,
+                        help="Clinical column to derive phenotype from (required if --clinical-metadata provided)")
+    parser.add_argument("--case-values", type=str, nargs="+", default=None,
+                        help="Values in phenotype-source-col that map to CASE (required if --phenotype-source-col provided)")
+    parser.add_argument("--ctrl-values", type=str, nargs="+", default=None,
+                        help="Values in phenotype-source-col that map to CTRL (required if --phenotype-source-col provided)")
     parser.add_argument("--sample-id-fallback", action="store_true", default=False,
                         help="For samples without clinical metadata, fall back to extracting phenotype from sample ID prefix (CASE_/CTRL_)")
 

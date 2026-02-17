@@ -33,6 +33,8 @@ from cliquefinder.knowledge.cogex import (
     INDRAModuleExtractor,
     INDRAModule,
     GeneId,
+    RegulatorClass,
+    get_regulator_class_genes,
 )
 from cliquefinder.knowledge.clique_validator import (
     CliqueValidator,
@@ -396,6 +398,13 @@ def _analyze_single_condition(
                     condition=condition,
                     correlation_threshold=min_correlation,
                     mean_correlation=largest_clique.mean_correlation,
+                    direction=largest_clique.direction,
+                    signed_mean_correlation=largest_clique.signed_mean_correlation,
+                    signed_min_correlation=largest_clique.signed_min_correlation,
+                    signed_max_correlation=largest_clique.signed_max_correlation,
+                    n_positive_edges=largest_clique.n_positive_edges,
+                    n_negative_edges=largest_clique.n_negative_edges,
+                    edge_correlations=largest_clique.edge_correlations,
                 )
         else:
             # Use full clique enumeration (exponential but exact)
@@ -422,6 +431,13 @@ def _analyze_single_condition(
                     condition=condition,
                     correlation_threshold=min_correlation,
                     mean_correlation=largest_clique.mean_correlation,
+                    direction=largest_clique.direction,
+                    signed_mean_correlation=largest_clique.signed_mean_correlation,
+                    signed_min_correlation=largest_clique.signed_min_correlation,
+                    signed_max_correlation=largest_clique.signed_max_correlation,
+                    n_positive_edges=largest_clique.n_positive_edges,
+                    n_negative_edges=largest_clique.n_negative_edges,
+                    edge_correlations=largest_clique.edge_correlations,
                 )
 
         # Get sample count for this condition
@@ -641,7 +657,9 @@ def run_stratified_analysis(
     n_workers: int = 1,
     parallel_mode: str = "threads",
     correlation_method: str = "max",
-    rna_filter_genes: Optional[Set[str]] = None
+    rna_filter_genes: Optional[Set[str]] = None,
+    regulator_classes: Optional[Set[RegulatorClass]] = None,
+    stmt_types: Optional[List[str]] = None,
 ) -> List[RegulatorAnalysisResult]:
     """
     Run stratified regulatory module analysis with optional parallelism.
@@ -684,6 +702,10 @@ def run_stratified_analysis(
             Target genes are NOT filtered, only annotated for RNA presence.
             Biological rationale: Regulators not expressed in RNA are unlikely to be actively
             regulating in this experimental context.
+        regulator_classes: Optional set of RegulatorClass enum members to restrict
+            regulators by functional class (e.g., {RegulatorClass.TF} for transcription
+            factors only). Composes with rna_filter_genes — regulators must pass both.
+            Default: None (all functional classes).
 
     Returns:
         List of RegulatorAnalysisResult for each regulator
@@ -705,7 +727,9 @@ def run_stratified_analysis(
             min_evidence=min_evidence,
             min_targets=min_targets,
             max_targets=max_targets,
-            max_regulators=max_regulators
+            max_regulators=max_regulators,
+            regulator_classes=regulator_classes,
+            stmt_types=stmt_types,
         )
         logger.info(f"Discovered {len(modules)} regulators from INDRA")
 
@@ -728,9 +752,20 @@ def run_stratified_analysis(
         modules = extractor.get_regulator_modules(
             regulators=regulators,
             gene_universe=gene_universe,
-            min_evidence=min_evidence
+            min_evidence=min_evidence,
+            stmt_types=stmt_types,
         )
         logger.info(f"Extracted {len(modules)} INDRA modules from CoGEx")
+
+        # Apply regulator class filter in hand-picked mode
+        if regulator_classes is not None:
+            class_genes = get_regulator_class_genes(regulator_classes)
+            pre_filter = len(modules)
+            modules = [m for m in modules if m.regulator_name in class_genes]
+            logger.info(
+                f"Regulator class filter: {pre_filter} -> {len(modules)} modules "
+                f"(classes: {[c.value for c in regulator_classes]})"
+            )
 
     if not modules:
         logger.warning("No modules extracted - check regulator names and gene universe")
@@ -950,7 +985,8 @@ def save_results(
     stratified_rows = []
     differential_rows = []
     clique_gene_rows = []
-    gene_pair_rows = [] # NEW: for differential_gene_pairs.csv
+    gene_pair_rows = []  # For differential_gene_pairs.csv
+    edge_rows = []  # For clique_edges.csv - per-edge correlation values
 
     for result in results:
         regulator = result.regulator_name
@@ -976,6 +1012,15 @@ def save_results(
             n_rna_validated = len(sr.rna_validated_targets) if sr.rna_validated_targets else None
             rna_validation_ratio = sr.rna_validation_ratio
 
+            # Extract signed correlation fields from coherent_clique (ChildSetType2)
+            cc = sr.coherent_clique
+            direction = cc.direction.value if cc and hasattr(cc.direction, 'value') else 'unknown'
+            signed_mean_corr = cc.signed_mean_correlation if cc else None
+            signed_min_corr = cc.signed_min_correlation if cc else None
+            signed_max_corr = cc.signed_max_correlation if cc else None
+            n_pos_edges = cc.n_positive_edges if cc else 0
+            n_neg_edges = cc.n_negative_edges if cc else 0
+
             stratified_rows.append({
                 'regulator': regulator,
                 'condition': cond,
@@ -985,6 +1030,12 @@ def save_results(
                 'n_coherent_genes': n_coherent,
                 'coherence_ratio': round(coherence, 6),
                 'rna_validation_ratio': round(rna_validation_ratio, 4),  # Annotation: fraction of clique with RNA support
+                'direction': direction,  # POSITIVE, NEGATIVE, MIXED, or unknown
+                'signed_mean_correlation': round(signed_mean_corr, 6) if signed_mean_corr is not None else None,
+                'signed_min_correlation': round(signed_min_corr, 6) if signed_min_corr is not None else None,
+                'signed_max_correlation': round(signed_max_corr, 6) if signed_max_corr is not None else None,
+                'n_positive_edges': n_pos_edges,
+                'n_negative_edges': n_neg_edges,
                 'clique_genes': clique_genes_str
             })
 
@@ -998,6 +1049,17 @@ def save_results(
                     'gene': gene,
                     'rna_validated': is_rna_validated  # Annotation: does this gene have RNA support?
                 })
+
+            # Per-edge correlation values (for clique_edges.csv)
+            if cc and cc.edge_correlations:
+                for gene1, gene2, correlation in cc.edge_correlations:
+                    edge_rows.append({
+                        'regulator': regulator,
+                        'condition': cond,
+                        'gene1': gene1,
+                        'gene2': gene2,
+                        'correlation': round(correlation, 6),
+                    })
 
             # Track max
             if n_coherent > 0:
@@ -1129,7 +1191,13 @@ def save_results(
         genes_df.to_csv(output_dir / 'clique_genes.csv', index=False)
         logger.info(f"  clique_genes.csv: {len(clique_gene_rows)} gene memberships")
 
-    # 5. Gene Pair Stats (Detailed stats) - NEW
+    # 5. Clique edges (per-edge correlation values)
+    if edge_rows:
+        edges_df = pd.DataFrame(edge_rows)
+        edges_df.to_csv(output_dir / 'clique_edges.csv', index=False)
+        logger.info(f"  clique_edges.csv: {len(edge_rows)} edges with correlation values")
+
+    # 6. Gene Pair Stats (Detailed stats)
     # FILTER: Only include gene pairs from regulators with cliques
     if gene_pair_rows:
         pairs_df = pd.DataFrame(gene_pair_rows)

@@ -6,7 +6,7 @@ from typing import List, Set, Optional
 from cliquefinder.knowledge.base import (
     KnowledgeSource, KnowledgeEdge, KnowledgeModule, RelationshipType
 )
-from cliquefinder.knowledge.cogex import CoGExClient, INDRAModuleExtractor
+from cliquefinder.knowledge.cogex import CoGExClient, INDRAModuleExtractor, ALL_REGULATORY_TYPES
 
 
 class INDRAKnowledgeSource(KnowledgeSource):
@@ -32,6 +32,27 @@ class INDRAKnowledgeSource(KnowledgeSource):
             RelationshipType.REGULATES
         ]
 
+    def _relationship_types_to_stmt_types(
+        self, relationship_types: Optional[List[RelationshipType]]
+    ) -> Optional[List[str]]:
+        """Convert RelationshipType list to INDRA stmt_type strings for query-level filtering."""
+        if relationship_types is None:
+            return None
+
+        _REL_TO_STMT = {
+            RelationshipType.INCREASES_EXPRESSION: ["IncreaseAmount", "Activation"],
+            RelationshipType.DECREASES_EXPRESSION: ["DecreaseAmount", "Inhibition"],
+            RelationshipType.REGULATES: list(ALL_REGULATORY_TYPES),
+            RelationshipType.PHOSPHORYLATES: ["Phosphorylation"],
+        }
+
+        stmt_types: set = set()
+        for rel in relationship_types:
+            if rel in _REL_TO_STMT:
+                stmt_types.update(_REL_TO_STMT[rel])
+
+        return list(stmt_types) if stmt_types else None
+
     def get_edges(
         self,
         source_entity: str,
@@ -44,17 +65,19 @@ class INDRAKnowledgeSource(KnowledgeSource):
         if not gene_id:
             return []
 
-        # Query all downstream targets from INDRA
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        # Translate relationship_types to stmt_types for query-level filtering
+        stmt_types = self._relationship_types_to_stmt_types(relationship_types)
+
         indra_edges = self.client.get_downstream_targets(
             regulator=gene_id,
-            stmt_types=list(ALL_REGULATORY_TYPES),
+            stmt_types=stmt_types if stmt_types is not None else list(ALL_REGULATORY_TYPES),
             min_evidence=min_evidence
         )
 
         edges = []
         for indra_edge in indra_edges:
             rel_type = self._map_relationship(indra_edge.regulation_type)
+            # Post-filter as safety net for fine-grained RelationshipType matching
             if relationship_types and rel_type not in relationship_types:
                 continue
 
@@ -101,12 +124,16 @@ class INDRAKnowledgeSource(KnowledgeSource):
         # Convert set to list for INDRA extractor
         gene_universe = list(target_universe)
 
+        # Translate relationship_types to stmt_types for query-level filtering
+        stmt_types = self._relationship_types_to_stmt_types(relationship_types)
+
         # Use INDRA's discover_modules method
         indra_modules = self.extractor.discover_modules(
             gene_universe=gene_universe,
             min_evidence=min_evidence,
             min_targets=min_targets,
-            max_targets=max_targets
+            max_targets=max_targets,
+            stmt_types=stmt_types,
         )
 
         modules = []

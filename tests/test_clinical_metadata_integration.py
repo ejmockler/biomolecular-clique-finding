@@ -122,9 +122,9 @@ def test_clinical_metadata_integration():
 
         assert args.clinical_metadata is None, "Default clinical_metadata should be None"
         assert args.clinical_id_col == "Participant_ID", "Default clinical_id_col incorrect"
-        assert args.phenotype_source_col == "SUBJECT_GROUP", "Default phenotype_source_col incorrect"
-        assert args.case_values == ["ALS"], "Default case_values incorrect"
-        assert args.ctrl_values == ["Healthy Control"], "Default ctrl_values incorrect"
+        assert args.phenotype_source_col is None, "Default phenotype_source_col incorrect"
+        assert args.case_values is None, "Default case_values incorrect"
+        assert args.ctrl_values is None, "Default ctrl_values incorrect"
         print("  ✓ All default arguments correct")
 
         # Test 2: Check custom arguments

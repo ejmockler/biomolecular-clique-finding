@@ -426,7 +426,7 @@ class TestRotationEngine:
 
         assert len(df) == len(gene_sets)
         assert 'pvalue_msq_mixed' in df.columns
-        assert 'adj_pvalue_msq_mixed' in df.columns
+        assert 'pvalue_msq_mixed' in df.columns
 
 
 # =============================================================================
@@ -455,7 +455,7 @@ class TestConvenienceFunction:
 
         assert len(df) == len(gene_sets)
         assert 'feature_set_id' in df.columns
-        assert 'adj_pvalue_msq_mixed' in df.columns
+        assert 'pvalue_msq_mixed' in df.columns
 
 
 # =============================================================================

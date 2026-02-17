@@ -91,9 +91,9 @@ class TestAPISimplified:
         Good API design: minimal required parameters, sensible defaults.
         """
         # Should work with defaults
-        imputer1 = Imputer()  # Defaults to mad-clip with threshold=3.5
+        imputer1 = Imputer()  # Defaults to mad-clip with threshold=5.0
         assert imputer1.strategy == "mad-clip"
-        assert imputer1.threshold == 3.5
+        assert imputer1.threshold == 5.0
 
         # Should work with explicit strategy
         imputer2 = Imputer(strategy="mad-clip", threshold=3.5)

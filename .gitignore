@@ -21,10 +21,11 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
+.venv-freethreaded/
 venv/
 env/
 ENV/
-.venv
 
 # Testing
 .pytest_cache/
@@ -46,48 +47,31 @@ htmlcov/
 .ipynb_checkpoints/
 *.ipynb
 
-# Data files (keep CSVs out of git by default - they're large)
+# Data files (large, not for git)
 *.csv
 *.tsv
 *.h5
 *.h5ad
 *.hdf5
+*.txt
+!requirements.txt
+!tests/**/*.csv
+!tests/**/*.tsv
 
-# Except example/test data
-!tests/data/*.csv
-!tests/data/*.tsv
-
-# Output files
+# Output / results
 output/
 results/
 figures/
 
+# Credentials / secrets
+.env
+
 # Logs
 *.log
-.env
-# Data files (too large for git)
-*.txt
-!requirements.txt
-*.csv
-!tests/**/*.csv
-aals_*.csv
-Data_*.txt
-numeric__*.csv
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-.venv-freethreaded/
-*.egg-info/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# Cache
+# Cache / tooling
 .symbol_cache/
 .claude/
-presentations/
+.playwright-mcp/
 node_modules/
+presentations/

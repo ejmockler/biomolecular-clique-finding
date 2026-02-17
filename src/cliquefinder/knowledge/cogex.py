@@ -61,6 +61,7 @@ Examples:
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Tuple, List, Set, Optional, Dict, Literal
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,9 +85,14 @@ __all__ = [
     'INDRAModule',
     'CoGExClient',
     'INDRAModuleExtractor',
+    'RegulatorClass',
+    'get_regulator_class_genes',
     'ACTIVATION_TYPES',
     'REPRESSION_TYPES',
     'ALL_REGULATORY_TYPES',
+    'PHOSPHORYLATION_TYPES',
+    'STMT_TYPE_PRESETS',
+    'resolve_stmt_types',
 ]
 
 # Configure logging
@@ -112,6 +118,104 @@ REPRESSION_TYPES = {"DecreaseAmount", "Inhibition"}
 
 ALL_REGULATORY_TYPES = ACTIVATION_TYPES | REPRESSION_TYPES
 """All INDRA statement types for TF regulatory relationships."""
+
+PHOSPHORYLATION_TYPES = {"Phosphorylation"}
+"""INDRA statement types for phosphorylation (kinase-substrate) relationships."""
+
+STMT_TYPE_PRESETS: Dict[str, Set[str]] = {
+    "regulatory": ALL_REGULATORY_TYPES,
+    "activation": ACTIVATION_TYPES,
+    "repression": REPRESSION_TYPES,
+    "phosphorylation": PHOSPHORYLATION_TYPES,
+}
+"""Named presets for --stmt-types CLI argument."""
+
+
+def resolve_stmt_types(value: Optional[str] = None) -> List[str]:
+    """
+    Resolve a statement type specifier to a list of INDRA statement type strings.
+
+    Accepts named presets (case-insensitive) or comma-separated raw INDRA types.
+
+    Args:
+        value: Named preset ("regulatory", "activation", "repression",
+               "phosphorylation") or comma-separated raw INDRA types
+               (e.g., "IncreaseAmount,Phosphorylation").
+               None defaults to ALL_REGULATORY_TYPES.
+
+    Returns:
+        List of INDRA statement type strings.
+
+    Raises:
+        ValueError: If value is empty or cannot be parsed.
+    """
+    if value is None:
+        return list(ALL_REGULATORY_TYPES)
+
+    key = value.strip().lower()
+    if key in STMT_TYPE_PRESETS:
+        return list(STMT_TYPE_PRESETS[key])
+
+    raw = [t.strip() for t in value.split(",") if t.strip()]
+    if not raw:
+        raise ValueError(f"Could not parse stmt_types: '{value}'")
+    return raw
+
+
+class RegulatorClass(Enum):
+    """
+    Functional class of upstream regulators.
+
+    Each member maps to a curated gene list from INDRA's hgnc_client,
+    sourced from HUGO Gene Nomenclature Committee annotations:
+
+        TF          ~1,672 transcription factors
+        KINASE      protein kinases (phosphorylation writers)
+        PHOSPHATASE protein phosphatases (phosphorylation erasers)
+
+    Usage:
+        >>> genes = get_regulator_class_genes({RegulatorClass.TF})
+        >>> "TP53" in genes
+        True
+    """
+    TF = "tf"
+    KINASE = "kinase"
+    PHOSPHATASE = "phosphatase"
+
+
+def get_regulator_class_genes(classes: Set[RegulatorClass]) -> Set[str]:
+    """
+    Return union of gene symbols for the specified regulator classes.
+
+    Uses INDRA's hgnc_client curated lists (loaded from bundled CSV resources,
+    no Neo4j connection required).
+
+    Args:
+        classes: Set of RegulatorClass enum members.
+
+    Returns:
+        Set of gene symbols belonging to any of the specified classes.
+
+    Raises:
+        ImportError: If INDRA is not installed.
+    """
+    if not INDRA_AVAILABLE:
+        raise ImportError("INDRA package required for regulator class lists")
+
+    _CLASS_TO_LIST = {
+        RegulatorClass.TF: hgnc_client.tfs,
+        RegulatorClass.KINASE: hgnc_client.kinases,
+        RegulatorClass.PHOSPHATASE: hgnc_client.phosphatases,
+    }
+
+    result: Set[str] = set()
+    for cls in classes:
+        gene_list = _CLASS_TO_LIST[cls]
+        result.update(gene_list)
+        logger.info(f"RegulatorClass.{cls.name}: {len(gene_list)} genes")
+
+    logger.info(f"Combined regulator class filter: {len(result)} unique genes")
+    return result
 
 
 @dataclass(frozen=True)
@@ -799,7 +903,8 @@ class INDRAModuleExtractor:
         self,
         regulator: GeneId,
         gene_universe: Set[GeneId],
-        min_evidence: int = 2
+        min_evidence: int = 2,
+        stmt_types: Optional[List[str]] = None,
     ) -> Set[GeneId]:
         """
         Get INDRA targets: downstream genes within gene universe.
@@ -827,7 +932,7 @@ class INDRAModuleExtractor:
         # Query all downstream targets from INDRA
         edges = self.client.get_downstream_targets(
             regulator=regulator,
-            stmt_types=list(ALL_REGULATORY_TYPES),
+            stmt_types=stmt_types if stmt_types is not None else list(ALL_REGULATORY_TYPES),
             min_evidence=min_evidence
         )
 
@@ -843,7 +948,8 @@ class INDRAModuleExtractor:
         self,
         regulators: List[str],
         gene_universe: List[str],
-        min_evidence: int = 2
+        min_evidence: int = 2,
+        stmt_types: Optional[List[str]] = None,
     ) -> List[INDRAModule]:
         """
         Extract INDRA regulatory modules for multiple upstream regulators.
@@ -904,7 +1010,7 @@ class INDRAModuleExtractor:
             try:
                 edges = self.client.get_downstream_targets(
                     regulator=reg_id,
-                    stmt_types=list(ALL_REGULATORY_TYPES),
+                    stmt_types=stmt_types if stmt_types is not None else list(ALL_REGULATORY_TYPES),
                     min_evidence=min_evidence
                 )
 
@@ -942,7 +1048,9 @@ class INDRAModuleExtractor:
         min_evidence: int = 2,
         min_targets: int = 10,
         max_targets: Optional[int] = None,
-        max_regulators: Optional[int] = None
+        max_regulators: Optional[int] = None,
+        regulator_classes: Optional[Set[RegulatorClass]] = None,
+        stmt_types: Optional[List[str]] = None,
     ) -> List[INDRAModule]:
         """
         Discover regulatory modules from INDRA without pre-specifying regulators.
@@ -976,6 +1084,13 @@ class INDRAModuleExtractor:
             max_regulators: Maximum number of top regulators to return
                 Default: None (return all discovered regulators)
                 Set to limit analysis to top N regulators by target count
+            regulator_classes: Optional set of RegulatorClass enum members to
+                restrict discovery to (e.g., {RegulatorClass.TF} for TFs only).
+                Default: None (all functional classes).
+                Applied after sort-by-targets, before max_targets/max_regulators.
+            stmt_types: List of INDRA statement types to query.
+                Default: None (uses ALL_REGULATORY_TYPES).
+                Use resolve_stmt_types() for named presets.
 
         Returns:
             List of INDRAModule objects, sorted by number of unique targets (descending)
@@ -996,6 +1111,7 @@ class INDRAModuleExtractor:
         # Use the efficient reverse query
         regulator_edges = self.client.discover_regulators(
             gene_universe=gene_universe,
+            stmt_types=stmt_types,
             min_evidence=min_evidence,
             min_targets=min_targets,
             regulator_types={"HGNC"}  # Limit to human genes
@@ -1021,6 +1137,18 @@ class INDRAModuleExtractor:
         # Sort by number of UNIQUE targets (descending)
         # Use indra_targets (set of unique target IDs) not targets (list of edges)
         modules.sort(key=lambda m: len(m.indra_targets), reverse=True)
+
+        # Apply regulator class filter if specified (TF, kinase, phosphatase)
+        if regulator_classes is not None:
+            class_genes = get_regulator_class_genes(regulator_classes)
+            pre_filter_count = len(modules)
+            modules = [m for m in modules if m.regulator_name in class_genes]
+            n_filtered = pre_filter_count - len(modules)
+            if n_filtered > 0:
+                logger.info(
+                    f"Regulator class filter: kept {len(modules)}/{pre_filter_count} "
+                    f"(removed {n_filtered} not in {[c.value for c in regulator_classes]})"
+                )
 
         # Apply max_targets filter if specified (exclude hub regulators)
         # Count unique targets, not edges

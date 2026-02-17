@@ -1,0 +1,41 @@
+# C9orf72 ALS Carrier vs Sporadic ALS Cohort Definition
+#
+# Biologically accurate carrier definition using both clinical reports
+# AND ExpansionHunter repeat expansion data. The standard pathogenic
+# threshold for C9orf72 GGGGCC hexanucleotide repeat expansion is >= 30
+# repeats (normal range: 2-23).
+#
+# Dataset: AnswerALS proteomics cohort
+# Reference: DeJesus-Hernandez et al. (2011) Neuron 72(2):245-256
+
+name: C9orf72_vs_Sporadic
+description: >
+  C9orf72 ALS carriers (clinical report OR pathogenic repeat expansion >= 30)
+  vs sporadic ALS (no known genetic mutation AND repeat length < 30).
+
+base_filter:
+  label: ALS_cases
+  criteria:
+    - column: phenotype
+      eq: CASE
+
+groups:
+  - label: C9ORF72
+    logic: any
+    criteria:
+      - column: ClinReport_Mutations_Details
+        eq: C9orf72
+      - column: C9orf72_repeat_length
+        gte: 30
+
+  - label: SPORADIC
+    logic: all
+    criteria:
+      - column: ClinReport_Mutations_Details
+        not_in: [C9orf72, SOD1, FUS, TARDBP, "TARDBP (TDP43)", SETX, Multiple, Other]
+        allow_na: true
+      - column: C9orf72_repeat_length
+        lt: 30
+        allow_na: true
+
+contrast: [C9ORF72, SPORADIC]

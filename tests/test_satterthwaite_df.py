@@ -16,7 +16,7 @@ from cliquefinder.stats.differential import (
     fit_linear_model,
     build_contrast_matrix,
     satterthwaite_df,
-    test_contrasts,
+    test_contrasts as compute_contrasts,  # Renamed to avoid pytest collection
     ModelType,
     MLX_AVAILABLE,
 )
@@ -332,7 +332,7 @@ class TestSatterthwaiteDf:
             )
 
             # Test contrasts (this internally uses Satterthwaite)
-            results = test_contrasts(
+            results = compute_contrasts(
                 coef_df=coef_df,
                 conditions=cond_list,
                 contrast_matrix=contrast_matrix,
@@ -433,7 +433,7 @@ class TestSatterthwaiteDf:
                 )
 
                 # Compute p-value with Satterthwaite
-                results_satt = test_contrasts(
+                results_satt = compute_contrasts(
                     coef_df=coef_df,
                     conditions=cond_list,
                     contrast_matrix=contrast_matrix,

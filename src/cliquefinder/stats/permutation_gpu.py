@@ -513,36 +513,39 @@ def _batched_ols_gpu(
     # Shape: (n_batch,)
     rss = mx.sum(residuals ** 2, axis=1)
 
-    # Residual variance: σ² = RSS / df_residual
+    # Residual variance: σ² = RSS / df_residual (GPU)
     sigma2 = rss / matrices.df_residual
 
-    # Apply Empirical Bayes variance shrinkage if enabled
-    # s²_post = (d₀ × s₀² + df × σ²) / (d₀ + df)
-    if matrices.eb_d0 is not None and matrices.eb_s0_sq is not None:
-        if not np.isinf(matrices.eb_d0):
-            s2_post = (matrices.eb_d0 * matrices.eb_s0_sq + matrices.df_residual * sigma2) / (matrices.eb_d0 + matrices.df_residual)
-        else:
-            s2_post = sigma2
-    else:
-        s2_post = sigma2
-
-    # Contrast estimate: est = β @ c
+    # Contrast estimate: est = β @ c (GPU)
     # Shape: (n_batch,)
     estimate = mx.matmul(beta, c_mx)
 
-    # Standard error: SE = sqrt(s²_post * c_var_factor)
+    # Evaluate MLX arrays and convert to CPU for EB moderation (type-safe float64)
+    mx.eval(sigma2, estimate)  # Force evaluation before conversion
+    sigma2_np = np.array(sigma2, dtype=np.float64)
+    estimate_np = np.array(estimate, dtype=np.float64)
+
+    # Apply Empirical Bayes variance shrinkage on CPU (all float64, no type mixing)
+    if matrices.eb_d0 is not None and matrices.eb_s0_sq is not None:
+        if not np.isinf(matrices.eb_d0):
+            s2_post = (matrices.eb_d0 * matrices.eb_s0_sq + matrices.df_residual * sigma2_np) / (matrices.eb_d0 + matrices.df_residual)
+        else:
+            s2_post = sigma2_np
+    else:
+        s2_post = sigma2_np
+
+    # Standard error: SE = sqrt(s²_post * c_var_factor) (CPU)
     # Uses moderated variance if EB enabled, otherwise original variance
     # Shape: (n_batch,)
-    se = mx.sqrt(s2_post * matrices.c_var_factor)
+    se = np.sqrt(s2_post * matrices.c_var_factor)
 
     # Prevent division by zero
-    se = mx.maximum(se, 1e-10)
+    se = np.maximum(se, 1e-10)
 
-    # t-statistic: t = estimate / SE
-    t_stats = estimate / se
+    # t-statistic: t = estimate / SE (CPU)
+    t_stats = estimate_np / se
 
-    # Convert back to numpy
-    return np.array(t_stats, dtype=np.float64)
+    return t_stats
 
 
 def _batched_ols_cpu(
@@ -670,6 +673,10 @@ def batched_median_polish_gpu(
         data_arr = np.asarray(data, dtype=np.float64)
 
     batch_size, n_proteins, n_samples = data_arr.shape
+
+    # Early return for empty batch
+    if batch_size == 0:
+        return np.empty((0, n_samples), dtype=np.float64)
 
     # Initialize accumulators
     if use_mlx:

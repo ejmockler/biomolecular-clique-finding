@@ -26,6 +26,11 @@ from cliquefinder.knowledge.cogex import (
     INDRAModule,
     CoGExClient,
     INDRAModuleExtractor,
+    RegulatorClass,
+    get_regulator_class_genes,
+    PHOSPHORYLATION_TYPES,
+    STMT_TYPE_PRESETS,
+    resolve_stmt_types,
 )
 
 from cliquefinder.knowledge.stability import (
@@ -86,6 +91,11 @@ __all__ = [
     'INDRAModule',
     'CoGExClient',
     'INDRAModuleExtractor',
+    'RegulatorClass',
+    'get_regulator_class_genes',
+    'PHOSPHORYLATION_TYPES',
+    'STMT_TYPE_PRESETS',
+    'resolve_stmt_types',
     # Bootstrap stability
     'StableClique',
     'bootstrap_clique_stability',

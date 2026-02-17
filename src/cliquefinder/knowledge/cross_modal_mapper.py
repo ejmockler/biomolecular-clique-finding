@@ -520,7 +520,8 @@ class CrossModalIDMapper:
         try:
             # Map protein IDs to canonical symbols
             protein_mapping = self._map_generic_to_symbol(protein_ids, protein_id_type, species)
-            protein_symbols = set(protein_mapping.values())
+            # Normalize mapped symbols to uppercase (for cross-species compatibility)
+            protein_symbols = {s.upper() for s in protein_mapping.values()}
             # Add unmapped ones as-is (upper case) as fallback
             mapped_sources = set(protein_mapping.keys())
             for pid in protein_ids:

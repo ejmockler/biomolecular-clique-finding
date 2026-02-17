@@ -73,6 +73,7 @@ class CliqueDefinition:
             POSITIVE = all edges have r > 0 (co-activation)
             NEGATIVE = all edges have r < 0 (anti-correlation/repression)
             MIXED = edges have both positive and negative correlations
+            UNKNOWN = direction information not available
         signed_mean_correlation: Mean correlation preserving sign. Unlike
             coherence (which may use absolute values), this can be negative
             for anti-correlated cliques.
@@ -96,6 +97,29 @@ class CliqueDefinition:
     signed_max_correlation: float | None = None
     n_positive_edges: int = 0
     n_negative_edges: int = 0
+
+    @property
+    def is_coherent(self) -> bool:
+        """True if clique has uniform correlation direction (positive or negative).
+
+        Returns:
+            True if direction is "positive" or "negative" (not "mixed" or "unknown").
+            Coherent cliques are suitable for standard summarization methods like
+            Tukey's Median Polish that assume all features move together.
+        """
+        return self.direction.lower() in ("positive", "negative")
+
+    @property
+    def is_mixed(self) -> bool:
+        """True if clique has mixed correlation signs.
+
+        Returns:
+            True if direction is "mixed", indicating the clique contains both
+            positively and negatively correlated edges. Mixed cliques violate
+            the assumptions of additive summarization methods and may produce
+            unreliable results.
+        """
+        return self.direction.lower() == "mixed"
 
 
 @dataclass
@@ -242,14 +266,51 @@ def load_clique_definitions(
     """
     Load clique definitions from cliquefinder output.
 
+    Supports both legacy CSVs (without direction info) and modern CSVs
+    with correlation direction metadata from upstream clique discovery.
+
+    Expected columns (all optional except regulator/clique_id and proteins):
+        - regulator or clique_id: Clique identifier
+        - clique_genes: Comma-separated protein IDs
+        - direction: "positive", "negative", "mixed", "unknown" (optional)
+        - n_positive_edges: Number of edges with r > 0 (optional)
+        - n_negative_edges: Number of edges with r < 0 (optional)
+        - signed_mean_correlation: Mean correlation preserving sign (optional)
+        - signed_min_correlation: Minimum signed correlation (optional)
+        - signed_max_correlation: Maximum signed correlation (optional)
+        - coherence: Mean pairwise correlation (optional)
+        - condition: Discovery condition (optional)
+        - n_indra_targets: Number of INDRA-validated targets (optional)
+
     Args:
         cliques_file: Path to cliques.csv or similar.
         min_proteins: Minimum proteins required per clique.
 
     Returns:
-        List of CliqueDefinition objects.
+        List of CliqueDefinition objects. If direction columns are missing,
+        all cliques will have direction="unknown" and a warning is issued.
+
+    Example:
+        >>> # Load modern CSV with direction info
+        >>> cliques = load_clique_definitions("output/cliques.csv")
+        >>> coherent = [c for c in cliques if c.is_coherent]
+        >>> mixed = [c for c in cliques if c.is_mixed]
+
+        >>> # Load legacy CSV (warning issued, direction="unknown")
+        >>> cliques_old = load_clique_definitions("legacy_cliques.csv")
     """
     df = pd.read_csv(cliques_file)
+
+    # Check for direction columns and issue warning if missing
+    has_direction = 'direction' in df.columns
+    if not has_direction:
+        warnings.warn(
+            f"Direction columns not found in {cliques_file}. "
+            "All cliques will be treated as 'unknown' direction. "
+            "Re-run 'cliquefinder analyze' to generate direction info.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     cliques = []
 
@@ -286,7 +347,9 @@ def load_clique_definitions(
         n_negative_edges = 0
 
         if 'direction' in group.columns:
-            direction = str(group['direction'].iloc[0])
+            val = group['direction'].iloc[0]
+            # Normalize to lowercase for consistency
+            direction = str(val).lower() if pd.notna(val) else 'unknown'
         if 'signed_mean_correlation' in group.columns:
             val = group['signed_mean_correlation'].iloc[0]
             signed_mean_correlation = float(val) if pd.notna(val) else None
@@ -322,9 +385,14 @@ def load_clique_definitions(
     return cliques
 
 
+# Module-level cache for ID mappings (avoids redundant API calls in bootstrap)
+_ID_MAPPING_CACHE: dict[tuple[str, ...], dict[str, str]] = {}
+
+
 def map_feature_ids_to_symbols(
     feature_ids: list[str],
     verbose: bool = True,
+    use_cache: bool = True,
 ) -> dict[str, str]:
     """
     Map feature IDs (UniProt or Ensembl) to gene symbols using multi-source resolution.
@@ -338,10 +406,21 @@ def map_feature_ids_to_symbols(
     Args:
         feature_ids: List of UniProt or Ensembl IDs.
         verbose: Print progress.
+        use_cache: If True, check/store results in module-level cache.
+                   CRITICAL for bootstrap efficiency - avoids N redundant API calls.
 
     Returns:
         Dict mapping symbol → feature_id (for reverse lookup).
     """
+    # Compute cache key (used for both lookup and storage)
+    cache_key = tuple(sorted(feature_ids)) if use_cache else None
+
+    # Check cache first (critical for bootstrap performance)
+    if use_cache and cache_key in _ID_MAPPING_CACHE:
+        if verbose:
+            print("  Using cached ID mappings (skipping API calls)")
+        return _ID_MAPPING_CACHE[cache_key].copy()
+
     # Detect ID type
     sample_ids = feature_ids[:100]
     ensembl_count = sum(1 for fid in sample_ids if fid.startswith('ENSG'))
@@ -370,6 +449,10 @@ def map_feature_ids_to_symbols(
 
             if verbose:
                 print(f"  Symbol mappings: {len(symbol_to_feature)} (from {n_resolved} resolved genes + aliases)")
+
+            # Store in cache for bootstrap reuse
+            if use_cache:
+                _ID_MAPPING_CACHE[cache_key] = symbol_to_feature.copy()
 
             return symbol_to_feature
 
@@ -423,11 +506,186 @@ def map_feature_ids_to_symbols(
     if verbose:
         print(f"  Mapped {len(symbol_to_feature)} symbols/aliases")
 
+    # Store in cache for bootstrap reuse
+    if use_cache and cache_key is not None:
+        _ID_MAPPING_CACHE[cache_key] = symbol_to_feature.copy()
+
     return symbol_to_feature
+
+
+def clear_id_mapping_cache() -> int:
+    """Clear the module-level ID mapping cache.
+
+    Returns:
+        Number of entries cleared.
+    """
+    global _ID_MAPPING_CACHE
+    count = len(_ID_MAPPING_CACHE)
+    _ID_MAPPING_CACHE = {}
+    return count
 
 
 # Legacy alias for backwards compatibility
 map_uniprot_to_symbols = map_feature_ids_to_symbols
+
+
+def modules_to_clique_definitions(
+    modules: list,
+    symbol_to_feature: dict[str, str],
+    min_genes_found: int = 3,
+    verbose: bool = True,
+) -> list[CliqueDefinition]:
+    """
+    Convert INDRA modules to CliqueDefinition objects for differential testing.
+
+    Maps gene symbols from INDRA modules back to feature IDs (UniProt/Ensembl)
+    present in the data, creating CliqueDefinition objects compatible with all
+    differential testing methods (ROAST, permutation, MSstats).
+
+    Args:
+        modules: List of INDRAModule objects from discover_modules().
+        symbol_to_feature: Dict mapping gene_symbol -> feature_id in data.
+            Obtained from map_feature_ids_to_symbols().
+        min_genes_found: Minimum genes that must map to feature IDs.
+            Modules with fewer matches are skipped.
+        verbose: Print progress information.
+
+    Returns:
+        List of CliqueDefinition objects, one per module with sufficient
+        genes in the data.
+    """
+    clique_defs = []
+    n_skipped = 0
+
+    for module in modules:
+        # Map gene symbols to feature IDs
+        mapped_feature_ids = []
+        for gene_name in module.indra_target_names:
+            if gene_name in symbol_to_feature:
+                mapped_feature_ids.append(symbol_to_feature[gene_name])
+
+        if len(mapped_feature_ids) < min_genes_found:
+            n_skipped += 1
+            continue
+
+        # Determine direction from INDRA edge types
+        n_activated = len(module.activated_targets)
+        n_repressed = len(module.repressed_targets)
+
+        if n_activated > 0 and n_repressed == 0:
+            direction = "positive"
+        elif n_repressed > 0 and n_activated == 0:
+            direction = "negative"
+        elif n_activated > 0 and n_repressed > 0:
+            direction = "mixed"
+        else:
+            direction = "unknown"
+
+        clique_def = CliqueDefinition(
+            clique_id=module.regulator_name,
+            protein_ids=mapped_feature_ids,
+            regulator=module.regulator_name,
+            condition=None,
+            coherence=None,
+            n_indra_targets=len(module.indra_target_names),
+            direction=direction,
+            n_positive_edges=n_activated,
+            n_negative_edges=n_repressed,
+        )
+        clique_defs.append(clique_def)
+
+    if verbose:
+        print(f"  Converted {len(clique_defs)} INDRA modules to gene set definitions")
+        print(f"  Skipped {n_skipped} modules with < {min_genes_found} mapped genes")
+        if clique_defs:
+            sizes = [len(c.protein_ids) for c in clique_defs]
+            print(f"  Gene set sizes: min={min(sizes)}, median={sorted(sizes)[len(sizes)//2]}, max={max(sizes)}")
+
+    return clique_defs
+
+
+def discover_gene_sets_from_indra(
+    feature_ids: list[str],
+    min_evidence: int = 2,
+    min_targets: int = 10,
+    max_targets: int | None = None,
+    max_regulators: int | None = None,
+    regulator_classes: set | None = None,
+    stmt_types: list[str] | None = None,
+    min_genes_found: int = 3,
+    env_file: str | None = None,
+    verbose: bool = True,
+) -> list[CliqueDefinition]:
+    """
+    Discover INDRA regulatory modules and convert to CliqueDefinitions.
+
+    One-step pipeline: maps feature IDs to gene symbols, discovers upstream
+    regulators from INDRA CoGEx via a single batch reverse query, then
+    converts to CliqueDefinition objects suitable for ROAST, permutation,
+    or MSstats differential testing.
+
+    Args:
+        feature_ids: List of UniProt/Ensembl IDs from the data matrix.
+        min_evidence: Minimum INDRA evidence count per relationship.
+        min_targets: Minimum unique target genes in data for a regulator.
+        max_targets: Maximum targets (exclude hub regulators). None = no limit.
+        max_regulators: Maximum regulators to return. None = all.
+        regulator_classes: Optional set of RegulatorClass enums to filter by.
+        stmt_types: INDRA statement types (None = ALL_REGULATORY_TYPES).
+        min_genes_found: Minimum mapped genes per module for inclusion.
+        env_file: Path to .env file with INDRA credentials.
+        verbose: Print progress.
+
+    Returns:
+        List of CliqueDefinition objects with protein_ids as feature IDs.
+    """
+    if verbose:
+        print("Discovering INDRA gene sets for differential testing...")
+
+    # Step 1: Map feature IDs to gene symbols
+    symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=verbose)
+    gene_symbols = list(symbol_to_feature.keys())
+
+    if verbose:
+        print(f"  Gene universe: {len(gene_symbols)} symbols from {len(feature_ids)} feature IDs")
+
+    # Step 2: Initialize INDRA client and discover modules
+    from cliquefinder.knowledge.cogex import CoGExClient, INDRAModuleExtractor
+    from pathlib import Path
+
+    client_kwargs = {}
+    if env_file:
+        client_kwargs["env_file"] = Path(env_file)
+
+    client = CoGExClient(**client_kwargs)
+    extractor = INDRAModuleExtractor(client)
+
+    try:
+        modules = extractor.discover_modules(
+            gene_universe=gene_symbols,
+            min_evidence=min_evidence,
+            min_targets=min_targets,
+            max_targets=max_targets,
+            max_regulators=max_regulators,
+            regulator_classes=regulator_classes,
+            stmt_types=stmt_types,
+        )
+
+        if verbose:
+            print(f"  Discovered {len(modules)} INDRA regulatory modules")
+
+        # Step 3: Convert to CliqueDefinitions
+        clique_defs = modules_to_clique_definitions(
+            modules=modules,
+            symbol_to_feature=symbol_to_feature,
+            min_genes_found=min_genes_found,
+            verbose=verbose,
+        )
+
+        return clique_defs
+
+    finally:
+        client.close()
 
 
 def run_clique_differential_analysis(
@@ -607,7 +865,7 @@ def run_clique_differential_analysis(
         # Warn if clique has mixed correlation signs
         # Tukey Median Polish assumes additive structure (all features moving together)
         # Mixed-sign cliques (some positive, some negative edges) violate this assumption
-        if clique.direction == "mixed":
+        if clique.is_mixed:
             warnings.warn(
                 f"Clique '{clique.clique_id}' has mixed correlation signs "
                 f"({clique.n_positive_edges} positive, {clique.n_negative_edges} negative edges). "
@@ -1259,7 +1517,7 @@ def run_matched_single_gene_comparison(
         protein_data = data[indices, :]
 
         # Warn if clique has mixed correlation signs
-        if clique.direction == "mixed":
+        if clique.is_mixed:
             warnings.warn(
                 f"Clique '{clique.clique_id}' has mixed correlation signs "
                 f"({clique.n_positive_edges} positive, {clique.n_negative_edges} negative edges). "

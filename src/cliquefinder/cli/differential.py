@@ -27,6 +27,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from cliquefinder.cohort import resolve_cohort_from_args
+
 
 def query_network_targets(
     gene_symbol: str,
@@ -149,14 +151,61 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--cliques", "-c",
         type=Path,
-        required=True,
-        help="Clique definitions CSV (from analyze command)",
+        required=False,
+        default=None,
+        help="Clique definitions CSV (from analyze command). "
+             "Mutually exclusive with --discover-gene-sets.",
     )
     parser.add_argument(
         "--output", "-o",
         type=Path,
         required=True,
         help="Output directory for results",
+    )
+
+    # INDRA gene set discovery (alternative to --cliques)
+    parser.add_argument(
+        "--discover-gene-sets",
+        action="store_true",
+        help="Discover INDRA regulatory modules as gene sets (alternative to --cliques). "
+             "Uses single batch reverse query to find regulators targeting genes in data.",
+    )
+    parser.add_argument(
+        "--regulator-class",
+        nargs="+",
+        choices=["tf", "kinase", "phosphatase"],
+        default=None,
+        help="Filter discovered regulators by functional class "
+             "(e.g., --regulator-class tf kinase). Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--stmt-types",
+        type=str,
+        default=None,
+        help="INDRA statement types: preset (regulatory, activation, repression, "
+             "phosphorylation) or comma-separated raw types. Default: regulatory. "
+             "Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--min-targets",
+        type=int,
+        default=10,
+        help="Minimum INDRA targets in data for a regulator (default: 10). "
+             "Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--max-targets",
+        type=int,
+        default=None,
+        help="Maximum targets per regulator, excludes hub regulators. "
+             "Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--max-regulators",
+        type=int,
+        default=None,
+        help="Maximum number of regulators to discover. "
+             "Only with --discover-gene-sets.",
     )
 
     # Experimental design
@@ -262,8 +311,16 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         type=str,
         metavar="MUTATION",
         help="Genetic subtype contrast (e.g., 'C9orf72' for carriers vs sporadic ALS). "
-             "Requires ClinReport_Mutations_Details column in metadata. "
+             "Auto-detects genomic columns (repeat length, ExpansionHunter) for "
+             "biologically accurate carrier definition. "
              "Known mutations: C9orf72, SOD1, TARDBP, FUS, SETX, Multiple, Other",
+    )
+    parser.add_argument(
+        "--cohort-config",
+        type=Path,
+        metavar="PATH",
+        help="YAML/JSON cohort definition file for declarative cohort assignment. "
+             "See cohorts/ directory for examples. Overrides --genetic-contrast.",
     )
 
     # Permutation testing (competitive null)
@@ -364,101 +421,6 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=run_differential)
 
 
-def derive_genetic_phenotype(
-    metadata: pd.DataFrame,
-    mutation: str,
-    mutation_col: str = "ClinReport_Mutations_Details",
-    phenotype_col: str = "phenotype",
-) -> tuple[pd.DataFrame, str, str]:
-    """
-    Derive binary genetic phenotype from mutation data.
-
-    Creates a contrast between mutation carriers and sporadic ALS cases
-    (excluding healthy controls).
-
-    Args:
-        metadata: Sample metadata DataFrame (indexed by sample ID).
-        mutation: Mutation name to contrast (e.g., 'C9orf72', 'SOD1').
-        mutation_col: Column containing mutation annotations.
-        phenotype_col: Column containing CASE/CTRL labels.
-
-    Returns:
-        Tuple of (filtered_metadata, carrier_label, sporadic_label).
-        The metadata has a new 'genetic_phenotype' column with labels.
-
-    Raises:
-        ValueError: If mutation column missing or no samples found.
-    """
-    if mutation_col not in metadata.columns:
-        raise ValueError(
-            f"Mutation column '{mutation_col}' not found in metadata. "
-            f"Available columns: {', '.join(metadata.columns)}"
-        )
-
-    if phenotype_col not in metadata.columns:
-        raise ValueError(
-            f"Phenotype column '{phenotype_col}' not found in metadata."
-        )
-
-    # Known familial mutations
-    known_mutations = ['C9orf72', 'SOD1', 'Multiple', 'Other', 'SETX', 'TARDBP', 'TARDBP (TDP43)', 'FUS']
-
-    # Filter to ALS cases only (exclude healthy controls)
-    case_mask = metadata[phenotype_col] == 'CASE'
-    metadata_cases = metadata[case_mask].copy()
-
-    if len(metadata_cases) == 0:
-        raise ValueError("No CASE samples found in metadata")
-
-    # Create carrier mask
-    carrier_mask = metadata_cases[mutation_col] == mutation
-    n_carriers = carrier_mask.sum()
-
-    # Create sporadic mask (CASE without any known mutation)
-    sporadic_mask = (
-        ~metadata_cases[mutation_col].isin(known_mutations) |
-        metadata_cases[mutation_col].isna()
-    )
-    n_sporadic = sporadic_mask.sum()
-
-    if n_carriers == 0:
-        raise ValueError(
-            f"No carriers found for mutation '{mutation}'. "
-            f"Available mutations: {metadata_cases[mutation_col].value_counts().to_dict()}"
-        )
-
-    if n_sporadic == 0:
-        raise ValueError("No sporadic ALS samples found")
-
-    # Create labels
-    carrier_label = mutation.upper()
-    sporadic_label = "SPORADIC"
-
-    # Create derived phenotype column
-    metadata_cases['genetic_phenotype'] = None
-    metadata_cases.loc[carrier_mask, 'genetic_phenotype'] = carrier_label
-    metadata_cases.loc[sporadic_mask, 'genetic_phenotype'] = sporadic_label
-
-    # Filter to only samples with genetic phenotype assigned
-    metadata_filtered = metadata_cases[
-        metadata_cases['genetic_phenotype'].notna()
-    ].copy()
-
-    print(f"\nGenetic subtype contrast:")
-    print(f"  Mutation: {mutation}")
-    print(f"  Carriers ({carrier_label}): n={n_carriers}")
-    print(f"  Sporadic ALS ({sporadic_label}): n={n_sporadic}")
-    print(f"  Total samples: {len(metadata_filtered)}")
-
-    # Warn if underpowered
-    if n_carriers < 30 or n_sporadic < 30:
-        print(f"  WARNING: Small sample size detected. Statistical power may be limited.")
-        if n_carriers < 10 or n_sporadic < 10:
-            print(f"  WARNING: Very small sample size (n<10). Results should be interpreted with caution.")
-
-    return metadata_filtered, carrier_label, sporadic_label
-
-
 def run_differential(args: argparse.Namespace) -> int:
     """Execute clique differential analysis."""
     from cliquefinder.io.loaders import load_csv_matrix
@@ -474,6 +436,15 @@ def run_differential(args: argparse.Namespace) -> int:
     # Validate argument dependencies
     if getattr(args, 'enrichment_test', False) and not args.network_query:
         print("Error: --enrichment-test requires --network-query")
+        return 1
+
+    discover_gene_sets = getattr(args, 'discover_gene_sets', False)
+    if discover_gene_sets and args.cliques:
+        print("Error: --discover-gene-sets and --cliques are mutually exclusive")
+        return 1
+
+    if args.mode == "clique" and not discover_gene_sets and not args.cliques:
+        print("Error: clique mode requires either --cliques or --discover-gene-sets")
         return 1
 
     print("=" * 70)
@@ -492,20 +463,22 @@ def run_differential(args: argparse.Namespace) -> int:
     print(f"Loading metadata: {args.metadata}")
     metadata = pd.read_csv(args.metadata, index_col=0)
 
-    # Handle genetic contrast if specified
+    # Handle cohort-based contrast (--cohort-config or --genetic-contrast)
     condition_col = args.condition_col
-    if args.genetic_contrast:
-        metadata, carrier_label, sporadic_label = derive_genetic_phenotype(
-            metadata=metadata,
-            mutation=args.genetic_contrast,
-        )
-        # Override condition column to use derived genetic phenotype
-        condition_col = 'genetic_phenotype'
+    cohort_config = getattr(args, 'cohort_config', None)
+    genetic_contrast = getattr(args, 'genetic_contrast', None)
 
-        # Set up contrast automatically
+    metadata, condition_col, cohort_contrasts = resolve_cohort_from_args(
+        metadata=metadata,
+        cohort_config=cohort_config,
+        genetic_contrast=genetic_contrast,
+        condition_col=condition_col,
+    )
+
+    if cohort_contrasts is not None:
         if args.contrast:
-            print(f"  Warning: Ignoring --contrast when using --genetic-contrast")
-        args.contrast = [(f"{carrier_label}_vs_{sporadic_label}", carrier_label, sporadic_label)]
+            print(f"  Warning: Ignoring --contrast (overridden by cohort resolution)")
+        args.contrast = cohort_contrasts
 
     # Align metadata with data
     common_samples = [s for s in matrix.sample_ids if s in metadata.index]
@@ -540,15 +513,53 @@ def run_differential(args: argparse.Namespace) -> int:
             network_targets = None
     cliques = None
     if args.mode == "clique":
-        print(f"\nLoading cliques: {args.cliques}")
-        cliques = load_clique_definitions(args.cliques, min_proteins=args.min_proteins)
-        print(f"  {len(cliques)} cliques loaded (min {args.min_proteins} proteins)")
+        if discover_gene_sets:
+            # Discover INDRA modules as gene sets
+            print(f"\nDiscovering INDRA gene sets for differential testing...")
+            from cliquefinder.stats.clique_analysis import discover_gene_sets_from_indra
+            from cliquefinder.knowledge.cogex import RegulatorClass, resolve_stmt_types
 
-        # Filter by coherence if specified
-        if args.min_coherence:
-            original_count = len(cliques)
-            cliques = [c for c in cliques if c.coherence is None or c.coherence >= args.min_coherence]
-            print(f"  Filtered by coherence >= {args.min_coherence}: {len(cliques)} remaining")
+            # Parse regulator classes
+            regulator_classes = None
+            if args.regulator_class:
+                _CLI_TO_ENUM = {
+                    "tf": RegulatorClass.TF,
+                    "kinase": RegulatorClass.KINASE,
+                    "phosphatase": RegulatorClass.PHOSPHATASE,
+                }
+                regulator_classes = {_CLI_TO_ENUM[c] for c in args.regulator_class}
+                print(f"  Regulator class filter: {args.regulator_class}")
+
+            # Resolve stmt_types
+            stmt_types = resolve_stmt_types(args.stmt_types) if args.stmt_types else None
+            if stmt_types:
+                print(f"  Statement types: {stmt_types}")
+
+            cliques = discover_gene_sets_from_indra(
+                feature_ids=feature_ids,
+                min_evidence=args.min_evidence,
+                min_targets=getattr(args, 'min_targets', 10),
+                max_targets=getattr(args, 'max_targets', None),
+                max_regulators=getattr(args, 'max_regulators', None),
+                regulator_classes=regulator_classes,
+                stmt_types=stmt_types,
+                min_genes_found=args.min_proteins,
+                env_file=str(args.indra_env_file) if args.indra_env_file else None,
+                verbose=True,
+            )
+            print(f"  {len(cliques)} gene sets discovered")
+
+        else:
+            # Load from CSV (existing path)
+            print(f"\nLoading cliques: {args.cliques}")
+            cliques = load_clique_definitions(args.cliques, min_proteins=args.min_proteins)
+            print(f"  {len(cliques)} cliques loaded (min {args.min_proteins} proteins)")
+
+            # Filter by coherence if specified
+            if args.min_coherence:
+                original_count = len(cliques)
+                cliques = [c for c in cliques if c.coherence is None or c.coherence >= args.min_coherence]
+                print(f"  Filtered by coherence >= {args.min_coherence}: {len(cliques)} remaining")
     else:
         print(f"\nMode: protein-level analysis (skipping clique loading)")
 
@@ -722,6 +733,10 @@ def run_differential(args: argparse.Namespace) -> int:
                 sig_proteins.to_csv(sig_output, index=False)
                 print(f"Significant proteins: {sig_output}")
 
+            # Normalize result interface for downstream params/summary
+            result.n_features_tested = len(result.results)
+            result.n_significant = len(sig_proteins)
+
         # Save parameters
         params = {
             "timestamp": datetime.now().isoformat(),
@@ -878,7 +893,7 @@ def run_differential(args: argparse.Namespace) -> int:
             "method": "ROAST" if not args.interaction else "ROAST_interaction",
             "data": str(args.data),
             "metadata": str(args.metadata),
-            "cliques": str(args.cliques),
+            "cliques": str(args.cliques) if args.cliques else None,
             "n_rotations": args.n_rotations,
             "seed": args.permutation_seed,
             "use_gpu": args.gpu,
@@ -996,19 +1011,29 @@ def run_differential(args: argparse.Namespace) -> int:
             'empirical_pvalue': 'perm_pvalue',
         })
 
-        # Merge clique member information from source file
-        cliques_source = pd.read_csv(args.cliques)
-        if 'clique_genes' in cliques_source.columns:
-            # Create lookup: regulator -> clique_genes, n_proteins
-            clique_info = cliques_source.groupby('regulator').agg({
-                'clique_genes': 'first',
-            }).reset_index()
-            clique_info = clique_info.rename(columns={'regulator': 'clique_id'})
-            clique_info['n_proteins'] = clique_info['clique_genes'].str.count(',') + 1
-
-            # Merge into results
+        # Merge clique member information
+        if args.cliques and args.cliques.exists():
+            cliques_source = pd.read_csv(args.cliques)
+            if 'clique_genes' in cliques_source.columns:
+                clique_info = cliques_source.groupby('regulator').agg({
+                    'clique_genes': 'first',
+                }).reset_index()
+                clique_info = clique_info.rename(columns={'regulator': 'clique_id'})
+                clique_info['n_proteins'] = clique_info['clique_genes'].str.count(',') + 1
+                clique_df = clique_df.merge(clique_info, on='clique_id', how='left')
+        elif cliques:
+            # Build from in-memory definitions (--discover-gene-sets)
+            clique_info_rows = []
+            for cd in cliques:
+                clique_info_rows.append({
+                    'clique_id': cd.clique_id,
+                    'clique_genes': ','.join(cd.protein_ids),
+                    'n_proteins': len(cd.protein_ids),
+                })
+            clique_info = pd.DataFrame(clique_info_rows)
             clique_df = clique_df.merge(clique_info, on='clique_id', how='left')
 
+        if 'clique_genes' in clique_df.columns:
             # Reorder columns to put clique_genes early
             cols = clique_df.columns.tolist()
             priority_cols = ['clique_id', 'clique_genes', 'n_proteins', 'log2FC', 'perm_pvalue']
@@ -1041,7 +1066,7 @@ def run_differential(args: argparse.Namespace) -> int:
             "mode": "clique",
             "data": str(args.data),
             "metadata": str(args.metadata),
-            "cliques": str(args.cliques),
+            "cliques": str(args.cliques) if args.cliques else None,
             "condition_col": condition_col,
             "subject_col": args.subject_col,
             "contrasts": contrasts,
@@ -1060,6 +1085,13 @@ def run_differential(args: argparse.Namespace) -> int:
             "min_evidence": args.min_evidence if args.network_query else None,
             "n_network_targets": len(network_targets) if network_targets else 0,
         }
+        if discover_gene_sets:
+            params["gene_set_source"] = "indra_discovery"
+            params["regulator_classes"] = args.regulator_class
+            params["stmt_types"] = args.stmt_types
+            params["min_targets_discovery"] = getattr(args, 'min_targets', 10)
+            params["max_targets_discovery"] = getattr(args, 'max_targets', None)
+            params["max_regulators_discovery"] = getattr(args, 'max_regulators', None)
         if args.genetic_contrast:
             params["genetic_contrast"] = args.genetic_contrast
         params_output = args.output / "analysis_parameters.json"
@@ -1135,7 +1167,7 @@ def run_differential(args: argparse.Namespace) -> int:
             "timestamp": datetime.now().isoformat(),
             "data": str(args.data),
             "metadata": str(args.metadata),
-            "cliques": str(args.cliques),
+            "cliques": str(args.cliques) if args.cliques else None,
             "condition_col": args.condition_col,
             "subject_col": args.subject_col,
             "contrasts": contrasts,

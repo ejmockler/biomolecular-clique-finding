@@ -312,55 +312,64 @@ def satterthwaite_df(
         if V_c <= 0 or not np.isfinite(V_c):
             return None
 
-        # Estimate variance of V_c using delta method
-        # For a mixed model, V_c depends on both σ² and σ_u²
-        # The approximate variance of V_c is:
-        #   Var(V_c) ≈ (∂V_c/∂σ²)² Var(σ²) + (∂V_c/∂σ_u²)² Var(σ_u²)
-
-        # Approximate variance of variance estimates:
-        # Var(σ²) ≈ 2σ⁴/(n - p)  for residual variance
-        # Var(σ_u²) ≈ 2σ_u⁴/(m - 1) for random effect variance, where m = n_groups
+        # Satterthwaite-Welch degrees of freedom approximation
+        # For a mixed model: y ~ X*β + Z*u + ε
+        # where u ~ N(0, σ_u²I), ε ~ N(0, σ²I)
+        #
+        # The variance of a contrast c'β has two sources:
+        # 1. Within-group (residual) variance: σ²
+        # 2. Between-group (random effect) variance: σ_u²
+        #
+        # The Satterthwaite formula is:
+        #   df = V² / Σ(V_i² / df_i)
+        # where V_i are variance components and df_i are their degrees of freedom
 
         n_params = len(contrast_vector)
+
+        # Degrees of freedom for each variance component
         df_residual = max(n_obs - n_params, 1)
         df_random = max(n_groups - 1, 1)
 
-        # Variance of the variance estimates
-        var_sigma2 = 2 * (residual_var ** 2) / df_residual
-        var_sigma2_u = 2 * (subject_var ** 2) / df_random if subject_var > 0 else 0
-
-        # For a balanced design, the derivatives can be approximated as:
-        # ∂V_c/∂σ² is related to the within-group contribution
-        # ∂V_c/∂σ_u² is related to the between-group contribution
-
-        # Simplified approximation: weight by the relative contributions
-        # of within-group and between-group variance
+        # Average group size (for balanced approximation)
         avg_group_size = n_obs / n_groups if n_groups > 0 else 1
 
-        # Total variance in the outcome
-        total_var = residual_var + subject_var * avg_group_size
+        # Decompose the contrast variance into components
+        # For a contrast between two condition means in a mixed model:
+        # V_c has contributions from:
+        # - Within-group variance: σ²/n_per_group (variance of group mean)
+        # - Between-group variance: σ_u² (random effect variance)
 
-        if total_var <= 0:
+        # Scale V_c to get the theoretical variance from variance components
+        # V_theoretical = σ²/avg_n + σ_u²
+        v_within = residual_var / avg_group_size
+        v_between = subject_var
+        v_theoretical = v_within + v_between
+
+        # Handle edge case where theoretical variance is zero
+        if v_theoretical <= 0:
             return None
 
-        # Proportion of variance from each component
-        w_residual = residual_var / total_var
-        w_random = (subject_var * avg_group_size) / total_var
+        # Scale factor to match V_c with theoretical variance
+        # (V_c from cov_beta may differ due to estimation, design imbalance, etc.)
+        scale = V_c / v_theoretical if v_theoretical > 0 else 1.0
 
-        # Weighted variance contribution
-        # This is a simplified Satterthwaite formula that weights the df
-        # contributions from each variance component
-        var_V_c = (w_residual ** 2) * var_sigma2 + (w_random ** 2) * var_sigma2_u
+        # Scaled variance components
+        v_within_scaled = v_within * scale
+        v_between_scaled = v_between * scale
 
-        if var_V_c <= 0 or not np.isfinite(var_V_c):
+        # Satterthwaite formula: df = V² / Σ(V_i² / df_i)
+        denominator = (v_within_scaled ** 2) / df_residual + (v_between_scaled ** 2) / df_random
+
+        if denominator <= 0 or not np.isfinite(denominator):
             return None
 
-        # Satterthwaite degrees of freedom: df = 2 * V² / Var(V)
-        df_satterthwaite = 2 * (V_c ** 2) / var_V_c
+        df_satterthwaite = (V_c ** 2) / denominator
 
-        # Sanity bounds: df should be between 1 and n_obs - n_params
+        # Sanity bounds: df should be between 1 and n_obs - 1
+        # (We use n_obs - 1 as upper bound, not n_obs - n_params, because
+        # Satterthwaite can exceed residual df when random effects dominate)
         df_lower = 1.0
-        df_upper = float(n_obs - n_params)
+        df_upper = float(n_obs - 1)
 
         df_satterthwaite = np.clip(df_satterthwaite, df_lower, df_upper)
 

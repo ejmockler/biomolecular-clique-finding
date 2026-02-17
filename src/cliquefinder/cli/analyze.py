@@ -69,10 +69,10 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--output", "-o", type=Path, default=Path("results/analysis"),
                         help="Output directory for results")
     parser.add_argument("--regulators", nargs="+",
-                        default=["TP53", "MYC", "SOD1", "TARDBP", "FUS", "JUN", "ATF3"],
-                        help="Regulator gene symbols to analyze")
-    parser.add_argument("--stratify-by", nargs="+", default=["phenotype", "Sex"],
-                        help="Metadata columns for stratification")
+                        default=None,
+                        help="Regulator gene symbols to analyze (required unless --discover)")
+    parser.add_argument("--stratify-by", nargs="+", default=None,
+                        help="Metadata columns for stratification (default: none)")
     parser.add_argument("--no-stratify", action="store_true",
                         help="Disable stratification (analyze all samples as one cohort)")
     parser.add_argument("--min-evidence", type=int, default=2,
@@ -87,7 +87,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Path to .env file with CoGEx credentials")
 
     # Cross-modal RNA filtering
-    parser.add_argument("--rna-filter", type=Path, default=Path("aals_cohort1-6_counts_merged.csv"),
+    parser.add_argument("--rna-filter", type=Path, default=None,
                         help="RNA-seq data CSV for cross-modal filtering (optional)")
     parser.add_argument("--rna-annotation", type=Path, default=None,
                         help="Gene annotation CSV for numeric RNA indices (optional)")
@@ -137,6 +137,14 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Discovery: max INDRA targets (exclude hub regulators, default: 100)")
     parser.add_argument("--max-regulators", type=int, default=None,
                         help="Discovery: max regulators to analyze")
+    parser.add_argument("--regulator-class", nargs="+",
+                        choices=["tf", "kinase", "phosphatase"], default=None,
+                        help="Filter regulators by functional class (e.g., --regulator-class tf kinase). "
+                             "Omit for all classes.")
+    parser.add_argument("--stmt-types", type=str, default=None,
+                        help="INDRA statement types: preset (regulatory, activation, repression, "
+                             "phosphorylation) or comma-separated raw types "
+                             "(e.g., 'IncreaseAmount,Phosphorylation'). Default: regulatory")
     parser.add_argument("--exact-cliques", action="store_true",
                         help="Use exact clique enumeration vs greedy")
     parser.add_argument("--correlation-method", choices=["pearson", "spearman", "max"],
@@ -150,6 +158,12 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Parallel workers (default: 1)")
     parser.add_argument("--parallel-mode", choices=["threads", "processes", "hybrid"],
                         default="threads", help="Parallelism strategy")
+
+    # Cohort filtering (ensures cliques are discovered only on target cohort)
+    parser.add_argument("--cohort-config", type=Path, default=None,
+                        help="YAML cohort definition file (filters samples before clique finding)")
+    parser.add_argument("--genetic-contrast", type=str, default=None,
+                        help="Quick cohort setup: mutation name (e.g., 'C9orf72') vs sporadic")
 
     # Preprocessing
     parser.add_argument("--log-transform", action="store_true", default=False,
@@ -187,6 +201,7 @@ def run_analyze(args: argparse.Namespace) -> int:
         SampleAlignedCrossModalMapper,
     )
     from cliquefinder.quality import StratifiedExpressionFilter
+    from cliquefinder.cohort import resolve_cohort_from_args
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
@@ -195,10 +210,17 @@ def run_analyze(args: argparse.Namespace) -> int:
     if args.no_log_transform:
         args.log_transform = False
 
+    # Validate required arguments
+    if not args.discover and not args.regulators:
+        logger.error("--regulators is required unless --discover is set")
+        return 1
+
     # Handle stratification flag
     if args.no_stratify:
         args.stratify_by = []
         logger.info("Stratification disabled - analyzing all samples as one cohort")
+    elif args.stratify_by is None:
+        args.stratify_by = []  # Default to no stratification
 
     print(f"\n{'='*70}")
     print("  Phase 2: Regulatory Clique Discovery")
@@ -272,6 +294,46 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     logger.info(f"Loaded: {matrix.n_features} genes x {matrix.n_samples} samples")
     logger.info(f"Metadata columns: {list(matrix.sample_metadata.columns)}")
+
+    # =============================================================================
+    # Cohort Filtering (optional - ensures cliques discovered only on target cohort)
+    # =============================================================================
+    cohort_info = None
+    if args.cohort_config or args.genetic_contrast:
+        cohort_metadata, condition_col, cohort_contrasts = resolve_cohort_from_args(
+            metadata=matrix.sample_metadata,
+            cohort_config=args.cohort_config,
+            genetic_contrast=args.genetic_contrast,
+        )
+        # Filter matrix to only include samples in the cohort
+        cohort_samples = list(cohort_metadata.index)
+        sample_mask = np.array([s in cohort_samples for s in matrix.sample_ids])
+        sample_indices = np.where(sample_mask)[0]
+
+        # Slice quality_flags if it's 2D (per-sample), otherwise keep as-is (per-feature only)
+        if matrix.quality_flags.ndim == 2:
+            sliced_flags = matrix.quality_flags[:, sample_indices]
+        else:
+            sliced_flags = matrix.quality_flags
+
+        matrix = BioMatrix(
+            data=matrix.data[:, sample_indices],
+            feature_ids=matrix.feature_ids,
+            sample_ids=pd.Index([matrix.sample_ids[i] for i in sample_indices]),
+            sample_metadata=cohort_metadata,
+            quality_flags=sliced_flags
+        )
+        cohort_info = {
+            'cohort_config': str(args.cohort_config) if args.cohort_config else None,
+            'genetic_contrast': args.genetic_contrast,
+            'original_samples': int(sample_mask.sum() + (~sample_mask).sum()),
+            'cohort_samples': len(cohort_samples),
+            'groups': {g: int((cohort_metadata[condition_col] == g).sum())
+                       for g in cohort_metadata[condition_col].unique()},
+        }
+        logger.info(f"Cohort filter applied: {cohort_info['original_samples']} → {cohort_info['cohort_samples']} samples")
+        for group, count in cohort_info['groups'].items():
+            logger.info(f"  {group}: n={count}")
 
     # Determine log transform status
     should_log_transform = args.log_transform
@@ -853,6 +915,24 @@ def run_analyze(args: argparse.Namespace) -> int:
     # Create symbol-indexed matrix
     symbol_matrix, _ = create_symbol_indexed_matrix(matrix, ensembl_to_symbol)
 
+    # Parse regulator class filter
+    from cliquefinder.knowledge.cogex import RegulatorClass
+    regulator_classes = None
+    if args.regulator_class:
+        _CLI_TO_ENUM = {
+            "tf": RegulatorClass.TF,
+            "kinase": RegulatorClass.KINASE,
+            "phosphatase": RegulatorClass.PHOSPHATASE,
+        }
+        regulator_classes = {_CLI_TO_ENUM[c] for c in args.regulator_class}
+        logger.info(f"Regulator class filter: {[c.value for c in regulator_classes]}")
+
+    # Parse statement types
+    from cliquefinder.knowledge.cogex import resolve_stmt_types
+    stmt_types = resolve_stmt_types(args.stmt_types) if args.stmt_types else None
+    if stmt_types:
+        logger.info(f"Statement types: {stmt_types}")
+
     # Connect to CoGEx
     logger.info("Connecting to INDRA CoGEx...")
     cogex_client = CoGExClient(env_file=args.env_file)
@@ -879,7 +959,9 @@ def run_analyze(args: argparse.Namespace) -> int:
             n_workers=args.workers,
             parallel_mode=args.parallel_mode,
             correlation_method=args.correlation_method,
-            rna_filter_genes=rna_filter_genes
+            rna_filter_genes=rna_filter_genes,
+            regulator_classes=regulator_classes,
+            stmt_types=stmt_types,
         )
 
         # Save results
@@ -896,6 +978,7 @@ def run_analyze(args: argparse.Namespace) -> int:
             'min_targets': args.min_targets if args.discover else None,
             'max_targets': args.max_targets if args.discover else None,
             'max_regulators': args.max_regulators if args.discover else None,
+            'regulator_classes': [c.value for c in regulator_classes] if regulator_classes else None,
             'use_fast_maximum': not args.exact_cliques,
             'correlation_method': args.correlation_method,
             'log_transform_applied': should_log_transform,
@@ -922,6 +1005,8 @@ def run_analyze(args: argparse.Namespace) -> int:
             # Sample alignment
             'sample_alignment': sample_alignment_stats,
             'require_sample_alignment': args.require_sample_alignment,
+            # Cohort filtering
+            'cohort_filter': cohort_info,
         }
 
         save_results(results, args.output, parameters)

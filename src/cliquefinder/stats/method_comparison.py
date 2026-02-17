@@ -682,6 +682,7 @@ def prepare_experiment(
     imputation_method: str = "min_feature",
     map_ids: bool = True,
     verbose: bool = True,
+    precomputed_symbol_map: dict[str, str] | None = None,
 ) -> PreparedCliqueExperiment:
     """
     Prepare data for multi-method comparison.
@@ -782,8 +783,13 @@ def prepare_experiment(
         work_data = imp_result.data
 
     # 4. ID mapping (UniProt/Ensembl -> Symbol)
+    # If precomputed_symbol_map is provided, use it directly (critical for bootstrap efficiency)
     symbol_to_feature: dict[str, str] = {}
-    if map_ids and len(cliques) > 0:
+    if precomputed_symbol_map is not None:
+        symbol_to_feature = precomputed_symbol_map
+        if verbose:
+            print(f"  Using precomputed symbol map ({len(symbol_to_feature)} mappings)")
+    elif map_ids and len(cliques) > 0:
         # Check if mapping is needed by sampling clique proteins
         sample_proteins: list[str] = []
         for clique in cliques[:10]:
@@ -795,6 +801,7 @@ def prepare_experiment(
         if sample_proteins and matches < len(sample_proteins) * 0.5:
             if verbose:
                 print("  Mapping feature IDs to symbols...")
+            # Uses module-level cache for efficiency across bootstrap iterations
             symbol_to_feature = map_feature_ids_to_symbols(work_ids, verbose=verbose)
 
     # 5. Build feature index map
@@ -2502,6 +2509,7 @@ def run_method_comparison(
     use_gpu: bool = True,
     seed: int | None = None,
     verbose: bool = True,
+    precomputed_symbol_map: dict[str, str] | None = None,
 ) -> MethodComparisonResult:
     """
     Run multiple differential testing methods and compute concordance.
@@ -2615,6 +2623,7 @@ def run_method_comparison(
         normalization_method=normalization_method,
         imputation_method=imputation_method,
         verbose=verbose,
+        precomputed_symbol_map=precomputed_symbol_map,
     )
 
     # 3. Default methods if not specified

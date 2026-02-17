@@ -77,7 +77,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Disable log transformation")
 
     # Cross-modal RNA filtering (NEW)
-    parser.add_argument("--rna-filter", type=Path, default=Path("aals_cohort1-6_counts_merged.csv"),
+    parser.add_argument("--rna-filter", type=Path, default=None,
                         help="RNA-seq data CSV for cross-modal filtering (optional)")
     parser.add_argument("--rna-annotation", type=Path, default=None,
                         help="Gene annotation CSV for numeric RNA indices (optional)")
