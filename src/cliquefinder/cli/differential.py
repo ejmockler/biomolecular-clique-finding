@@ -389,6 +389,57 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Disable Empirical Bayes moderation (use standard t-statistics)",
     )
 
+    # Covariate adjustment
+    parser.add_argument(
+        "--covariates",
+        nargs="+",
+        metavar="COL",
+        help="Metadata columns to include as fixed covariates in the design "
+             "matrix (e.g., --covariates Sex Batch). Adjusts for confounders "
+             "while testing the condition effect. Categorical columns are "
+             "dummy-coded; numeric columns are standardized.",
+    )
+
+    # Validation / baseline controls
+    parser.add_argument(
+        "--label-permutation-null",
+        type=int,
+        metavar="N",
+        default=None,
+        dest="label_perm_n",
+        help="Run label permutation null with N permutations. Permutes "
+             "condition labels and re-runs protein differential + enrichment "
+             "to compute a permutation p-value for the enrichment z-score.",
+    )
+    parser.add_argument(
+        "--permutation-stratify",
+        type=str,
+        metavar="COL",
+        default=None,
+        dest="perm_stratify_col",
+        help="Stratification column for label permutation (e.g., Sex). "
+             "Permutes labels within each stratum to preserve covariate balance.",
+    )
+    parser.add_argument(
+        "--match-covariates",
+        nargs="+",
+        metavar="COL",
+        default=None,
+        help="Create sex/covariate-matched subset before analysis. "
+             "Exact-matches groups on specified columns by downsampling "
+             "larger groups (e.g., --match-covariates Sex).",
+    )
+    parser.add_argument(
+        "--negative-control-sets",
+        type=int,
+        metavar="N",
+        default=None,
+        dest="neg_control_n",
+        help="Run ROAST on N random gene sets of the same size as the "
+             "target set to estimate false positive rate and calibrate "
+             "significance.",
+    )
+
     # Network query integration
     parser.add_argument(
         "--network-query",
@@ -493,6 +544,39 @@ def run_differential(args: argparse.Namespace) -> int:
     feature_ids = list(matrix.feature_ids)
 
     print(f"  Aligned: {len(common_samples)} samples")
+
+    # Covariate matching (creates balanced subset before analysis)
+    match_result = None
+    if getattr(args, 'match_covariates', None):
+        from cliquefinder.stats.matching import exact_match_covariates
+
+        print(f"\nCreating covariate-matched subset...")
+        print(f"  Match variables: {args.match_covariates}")
+
+        # Determine groups from contrast or condition column
+        match_groups = None
+        if args.contrast:
+            # Use groups from all contrasts
+            match_groups = list({c for _, c1, c2 in args.contrast for c in (c1, c2)})
+
+        match_result = exact_match_covariates(
+            metadata=metadata,
+            group_col=condition_col,
+            match_vars=args.match_covariates,
+            groups=match_groups,
+            seed=args.permutation_seed,
+        )
+
+        print(f"  Original: {match_result.n_original} → Matched: {match_result.n_matched}")
+        for group, dropped in match_result.dropped_per_group.items():
+            print(f"    {group}: dropped {dropped}")
+
+        # Apply matching: subset data and metadata
+        matched_idx_in_meta = match_result.matched_indices
+        metadata = metadata.iloc[matched_idx_in_meta].copy()
+        data = data[:, matched_idx_in_meta]
+        common_samples = [common_samples[i] for i in matched_idx_in_meta]
+        print(f"  Proceeding with {len(common_samples)} matched samples")
 
     # Load clique definitions (skip if protein-only mode)
 
@@ -635,6 +719,11 @@ def run_differential(args: argparse.Namespace) -> int:
             print(f"\nRunning genome-wide EB differential with target flagging...")
             print(f"  Network targets: {len(target_feature_ids)}")
 
+            # Build covariates DataFrame if specified
+            covariates_df = None
+            if getattr(args, 'covariates', None):
+                covariates_df = metadata[args.covariates]
+
             # Run genome-wide EB differential with target flagging
             protein_df = run_protein_differential(
                 data=data,
@@ -644,6 +733,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 eb_moderation=args.eb_moderation,
                 target_genes=target_feature_ids,
                 verbose=True,
+                covariates_df=covariates_df,
             )
 
             # Run enrichment test
@@ -692,6 +782,37 @@ def run_differential(args: argparse.Namespace) -> int:
             with open(enrichment_output, "w") as f:
                 json.dump(enrichment, f, indent=2)
             print(f"Enrichment results: {enrichment_output}")
+
+            # Label permutation null (if requested)
+            if getattr(args, 'label_perm_n', None):
+                from cliquefinder.stats.label_permutation import run_label_permutation_null
+
+                stratify_by = None
+                if getattr(args, 'perm_stratify_col', None):
+                    stratify_by = metadata[args.perm_stratify_col].values
+
+                print(f"\n{'=' * 70}")
+                print("LABEL PERMUTATION NULL")
+                print("=" * 70)
+
+                perm_result = run_label_permutation_null(
+                    data=data,
+                    feature_ids=feature_ids,
+                    sample_condition=metadata[condition_col],
+                    contrast=contrast_tuple,
+                    target_feature_ids=target_feature_ids,
+                    n_permutations=args.label_perm_n,
+                    stratify_by=stratify_by,
+                    covariates_df=covariates_df,
+                    eb_moderation=args.eb_moderation,
+                    seed=args.permutation_seed,
+                    verbose=True,
+                )
+
+                perm_output = args.output / "label_permutation_null.json"
+                with open(perm_output, "w") as f:
+                    json.dump(perm_result.to_dict(), f, indent=2)
+                print(f"Label permutation results: {perm_output}")
 
             # Create result-like object for downstream compatibility
             class EnrichmentResult:
@@ -856,6 +977,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 use_gpu=args.gpu,
                 map_ids=True,
                 verbose=True,
+                covariates=getattr(args, 'covariates', None),
             )
 
         elapsed_time = time.time() - start_time
@@ -884,6 +1006,48 @@ def run_differential(args: argparse.Namespace) -> int:
             bidir_output = args.output / "roast_bidirectional_candidates.csv"
             bidir.to_csv(bidir_output, index=False)
             print(f"Bidirectional candidates: {bidir_output}")
+
+        # Negative control gene sets (if requested, ROAST path only)
+        if getattr(args, 'neg_control_n', None) and not args.interaction:
+            from cliquefinder.stats.negative_controls import run_negative_control_sets
+            from cliquefinder.stats.rotation import RotationTestEngine, RotationTestConfig
+
+            print(f"\n{'=' * 70}")
+            print("NEGATIVE CONTROL GENE SETS")
+            print("=" * 70)
+
+            # Build a fresh engine (fast — just QR decomposition)
+            neg_engine = RotationTestEngine(data, feature_ids, metadata)
+            neg_engine.fit(
+                conditions=conditions,
+                contrast=contrast_tuple,
+                condition_column=condition_col,
+                covariates=getattr(args, 'covariates', None),
+            )
+
+            # Use the first (most significant) clique as the target
+            best_clique = clique_df.iloc[0]
+            target_id = best_clique['feature_set_id']
+            target_genes_str = best_clique.get('clique_genes', '')
+            if target_genes_str:
+                target_gene_list = [g.strip() for g in target_genes_str.split(',')]
+            else:
+                target_gene_list = []
+
+            if target_gene_list:
+                neg_result = run_negative_control_sets(
+                    engine=neg_engine,
+                    target_gene_ids=target_gene_list,
+                    target_set_id=target_id,
+                    n_control_sets=args.neg_control_n,
+                    seed=args.permutation_seed,
+                    verbose=True,
+                )
+
+                neg_output = args.output / "negative_control_sets.json"
+                with open(neg_output, "w") as f:
+                    json.dump(neg_result.to_dict(), f, indent=2)
+                print(f"Negative control results: {neg_output}")
 
         # Save parameters
         n_cliques_tested = len(clique_df)
