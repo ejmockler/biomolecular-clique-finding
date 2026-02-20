@@ -1,0 +1,48 @@
+# Three-Group ALS Cohort: C9orf72 Carriers vs Sporadic ALS vs Healthy Controls
+#
+# Enables specificity analysis: compare INDRA target enrichment across
+# three contrasts to determine whether effects are C9orf72-specific or
+# shared with general ALS.
+#
+# Contrasts (specify via --contrast on CLI):
+#   C9_vs_SPORADIC: C9ORF72 vs SPORADIC (disease subtype comparison)
+#   C9_vs_CTRL:     C9ORF72 vs CONTROL  (C9orf72 vs healthy)
+#   SPORADIC_vs_CTRL: SPORADIC vs CONTROL (general ALS vs healthy)
+#
+# Dataset: AnswerALS proteomics cohort
+# Reference: DeJesus-Hernandez et al. (2011) Neuron 72(2):245-256
+
+name: C9ORF72_Sporadic_Control
+description: >
+  Three-group comparison for specificity analysis: C9orf72 ALS carriers,
+  sporadic ALS cases, and healthy controls. If the C9orf72 INDRA target
+  signature is specific, it should appear in C9 vs CTRL but NOT in
+  Sporadic vs CTRL.
+
+groups:
+  - label: C9ORF72
+    logic: any
+    criteria:
+      - column: ClinReport_Mutations_Details
+        eq: C9orf72
+      - column: C9orf72_repeat_length
+        gte: 30
+
+  - label: SPORADIC
+    logic: all
+    criteria:
+      - column: phenotype
+        eq: CASE
+      - column: ClinReport_Mutations_Details
+        not_in: [C9orf72, SOD1, FUS, TARDBP, "TARDBP (TDP43)", SETX, Multiple, Other]
+        allow_na: true
+      - column: C9orf72_repeat_length
+        lt: 30
+        allow_na: true
+
+  - label: CONTROL
+    criteria:
+      - column: phenotype
+        eq: CTRL
+
+contrast: [C9ORF72, SPORADIC]
