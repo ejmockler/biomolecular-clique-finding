@@ -1652,6 +1652,7 @@ def run_clique_roast_analysis(
     use_gpu: bool = True,
     map_ids: bool = True,
     verbose: bool = True,
+    covariates: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Run ROAST rotation-based gene set test on cliques.
@@ -1787,6 +1788,7 @@ def run_clique_roast_analysis(
         conditions=conditions,
         contrast=contrast,
         condition_column=condition_column,
+        covariates=covariates,
     )
 
     if verbose:

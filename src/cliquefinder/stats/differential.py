@@ -949,18 +949,21 @@ def run_protein_differential(
     eb_moderation: bool = True,
     target_genes: list[str] | None = None,
     verbose: bool = False,
+    covariates_df: pd.DataFrame | None = None,
+    covariate_design: "CovariateDesign | None" = None,
 ) -> pd.DataFrame:
     """
     Genome-wide Empirical Bayes differential expression for individual proteins.
 
-    Runs OLS regression (y ~ condition) for each protein and applies limma-style
-    Empirical Bayes variance shrinkage for moderated t-statistics. This is the
-    protein-level analogue of the clique-level permutation test.
+    Runs OLS regression (y ~ condition [+ covariates]) for each protein and
+    applies limma-style Empirical Bayes variance shrinkage for moderated
+    t-statistics. This is the protein-level analogue of the clique-level
+    permutation test.
 
     Statistical Model:
         For each protein i:
-        1. OLS: y_i ~ β₀ + β₁ × condition + ε
-        2. Sample variance: σ²_i = RSS_i / (n - 2)
+        1. OLS: y_i ~ β₀ + β₁ × condition [+ γ × covariates] + ε
+        2. Sample variance: σ²_i = RSS_i / (n - p)
         3. EB shrinkage: σ²_post,i = (d₀ × s₀² + df × σ²_i) / (d₀ + df)
         4. Moderated t: t_i = β₁ / sqrt(σ²_post,i × c_var)
         5. P-value: t-distribution with df_total = d₀ + df
@@ -976,6 +979,14 @@ def run_protein_differential(
                        If False, use standard OLS t-statistics.
         target_genes: Optional list of target genes to flag in results.
         verbose: Print progress information.
+        covariates_df: Optional DataFrame of covariates (one row per sample).
+            When provided, covariates are included in the design matrix as
+            nuisance parameters. The contrast tests only the condition effect,
+            adjusting for covariates (e.g., Sex, Batch).
+        covariate_design: Optional pre-built CovariateDesign from
+            design_matrix.build_covariate_design_matrix(). When provided,
+            its sample_mask is used as the authoritative NaN mask instead
+            of recomputing independently (M-6 consolidation).
 
     Returns:
         DataFrame with columns:
@@ -1024,11 +1035,15 @@ def run_protein_differential(
     if contrast[0] not in conditions or contrast[1] not in conditions:
         raise ValueError(f"Contrast {contrast} not found in conditions {conditions}")
 
+    cov_label = ""
+    if covariates_df is not None and len(covariates_df.columns) > 0:
+        cov_label = f" + covariates: {list(covariates_df.columns)}"
+
     if verbose:
         print(f"Protein-level differential analysis")
         print(f"  Features: {n_features}")
         print(f"  Samples: {n_samples}")
-        print(f"  Contrast: {contrast[0]} vs {contrast[1]}")
+        print(f"  Contrast: {contrast[0]} vs {contrast[1]}{cov_label}")
         print(f"  EB moderation: {'enabled' if eb_moderation else 'disabled'}")
 
     # Precompute design matrix and OLS components
@@ -1039,13 +1054,21 @@ def run_protein_differential(
         conditions=conditions,
         contrast=contrast,
         regularization=1e-8,
+        covariates_df=covariates_df,
     )
 
     # Filter data to valid samples (those included in design matrix)
-    # The precompute function already handles NaN removal internally
-    # We need to align our data with the design matrix
-    condition_cat = pd.Categorical(sample_condition, categories=conditions)
-    valid_mask = ~pd.isna(condition_cat)
+    # When a pre-built CovariateDesign is provided, use its sample_mask
+    # as the authoritative subset (M-6: single NaN mask source of truth).
+    # Otherwise, recompute to match what precompute_ols_matrices used.
+    if covariate_design is not None:
+        valid_mask = covariate_design.sample_mask
+    else:
+        condition_cat = pd.Categorical(sample_condition, categories=conditions)
+        valid_mask = ~pd.isna(condition_cat)
+        if covariates_df is not None and len(covariates_df.columns) > 0:
+            cov_valid = ~covariates_df.isna().any(axis=1).values
+            valid_mask = valid_mask & cov_valid
     data_valid = data[:, valid_mask]
     n_valid = np.sum(valid_mask)
 

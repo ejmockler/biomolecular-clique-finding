@@ -271,14 +271,15 @@ def precompute_ols_matrices(
     conditions: list[str],
     contrast: tuple[str, str],
     regularization: float = 1e-8,
+    covariates_df: pd.DataFrame | None = None,
 ) -> OLSPrecomputedMatrices:
     """
     Precompute design matrix and contrast vectors for batched OLS.
 
     Computes the matrices that are invariant across all permutations:
-    - Design matrix X with dummy coding
+    - Design matrix X with dummy coding (+ optional covariate columns)
     - (X'X)^-1 for efficient coefficient estimation
-    - Contrast vector c in parameter space
+    - Contrast vector c in parameter space (zero-padded for covariates)
     - Variance scaling factor c' @ (X'X)^-1 @ c
 
     These are computed ONCE and reused for all 1.7M permutation tests.
@@ -288,6 +289,10 @@ def precompute_ols_matrices(
         conditions: Ordered list of unique condition names
         contrast: Tuple of (condition1, condition2) to test condition1 - condition2
         regularization: Ridge regularization for near-singular (X'X)
+        covariates_df: Optional DataFrame of covariates (one row per sample).
+            When provided, covariate columns are appended to the design matrix
+            and the contrast vector is zero-padded so the test targets only
+            the condition effect while adjusting for covariates.
 
     Returns:
         OLSPrecomputedMatrices with all precomputed components
@@ -298,6 +303,53 @@ def precompute_ols_matrices(
         >>> matrices = precompute_ols_matrices(metadata['treatment_group'], conditions, contrast)
         >>> # Now reuse matrices for all permutations
     """
+    # If covariates provided, use the unified design matrix builder
+    if covariates_df is not None and len(covariates_df.columns) > 0:
+        from .design_matrix import build_covariate_design_matrix
+
+        design = build_covariate_design_matrix(
+            sample_condition=sample_condition,
+            conditions=conditions,
+            contrast=contrast,
+            covariates_df=covariates_df,
+        )
+        X = design.X
+        c = design.contrast
+        n_params = X.shape[1]
+        n_valid = X.shape[0]
+        contrast_name = design.contrast_name
+
+        # Compute (X'X) with regularization
+        XtX = X.T @ X
+        if regularization > 0:
+            XtX = XtX + regularization * np.eye(n_params)
+        try:
+            XtX_inv = np.linalg.inv(XtX)
+        except np.linalg.LinAlgError as e:
+            raise ValueError(f"Cannot invert design matrix: {e}")
+
+        c_var_factor = float(c @ XtX_inv @ c)
+        if c_var_factor < 0:
+            warnings.warn(f"Negative variance factor {c_var_factor}, taking absolute value")
+            c_var_factor = abs(c_var_factor)
+
+        df_residual = n_valid - n_params
+        if df_residual < 1:
+            raise ValueError(
+                f"Insufficient df: {n_valid} samples - {n_params} parameters = {df_residual}"
+            )
+
+        return OLSPrecomputedMatrices(
+            X=X,
+            XtX_inv=XtX_inv,
+            c=c,
+            c_var_factor=c_var_factor,
+            df_residual=df_residual,
+            conditions=conditions,
+            contrast_name=contrast_name,
+        )
+
+    # Standard path: no covariates
     import statsmodels.api as sm
 
     n_samples = len(sample_condition)

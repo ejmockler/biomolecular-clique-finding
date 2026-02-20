@@ -1516,6 +1516,7 @@ class RotationTestEngine:
         contrast: tuple[str, str],
         condition_column: str,
         subject_column: str | None = None,
+        covariates: list[str] | None = None,
     ) -> "RotationTestEngine":
         """
         Fit the rotation model: compute QR decomposition and gene effects.
@@ -1528,10 +1529,39 @@ class RotationTestEngine:
             contrast: Tuple (test, reference) for comparison
             condition_column: Metadata column containing condition labels (REQUIRED - must be specified by user)
             subject_column: Optional column for subject IDs (for future LMM support)
+            covariates: Optional list of metadata column names to include
+                as fixed covariates in the design matrix (e.g., ['Sex', 'Batch']).
+                When provided, delegates to fit_general() with a covariate-aware
+                design matrix. Covariates are nuisance parameters — the contrast
+                tests only the condition effect.
 
         Returns:
             self (for method chaining)
         """
+        # If covariates are specified, build a full design matrix and
+        # delegate to fit_general() which handles arbitrary designs.
+        if covariates:
+            from .design_matrix import build_covariate_design_matrix
+
+            covariates_df = self.metadata[covariates]
+            design = build_covariate_design_matrix(
+                sample_condition=self.metadata[condition_column].values,
+                conditions=conditions,
+                contrast=contrast,
+                covariates_df=covariates_df,
+            )
+
+            # Filter data and metadata to valid samples
+            self.data = self.data[:, design.sample_mask]
+            self.metadata = self.metadata[design.sample_mask].reset_index(drop=True)
+
+            return self.fit_general(
+                design_matrix=design.X,
+                contrast=design.contrast,
+                contrast_name=design.contrast_name,
+            )
+
+        # Standard path: no covariates, simple two-group comparison
         # Get condition labels
         sample_conditions = self.metadata[condition_column].values
 
