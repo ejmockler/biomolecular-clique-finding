@@ -49,7 +49,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Import and register subcommands
-    from cliquefinder.cli import impute, analyze, discover, differential, compare, sensitivity, viz
+    from cliquefinder.cli import impute, analyze, discover, differential, compare, sensitivity, viz, validate_baselines
     impute.register_parser(subparsers)
     analyze.register_parser(subparsers)
     discover.register_parser(subparsers)
@@ -57,6 +57,7 @@ Examples:
     compare.setup_parser(subparsers)
     sensitivity.register_parser(subparsers)
     viz.register_parser(subparsers)
+    validate_baselines.register_parser(subparsers)
 
     parsed_args = parser.parse_args(args)
 

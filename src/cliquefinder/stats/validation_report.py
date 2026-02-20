@@ -1,0 +1,222 @@
+"""
+Validation report aggregation.
+
+Collects results from all baseline validation phases into a single
+report for JSON serialization and console output.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import json
+
+
+@dataclass
+class ValidationReport:
+    """Aggregated validation report across all phases.
+
+    Attributes:
+        phases: Dict of phase name → phase results dict.
+        summary: Overall assessment string.
+        verdict: "validated", "inconclusive", or "refuted".
+    """
+
+    phases: dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
+    verdict: str = "inconclusive"
+    bootstrap_stability: float | None = None
+    bootstrap_ci: tuple[float, float] | None = None
+
+    def add_phase(self, name: str, result: dict) -> None:
+        """Add a phase result to the report."""
+        self.phases[name] = result
+
+    def to_dict(self) -> dict:
+        """Serialize to JSON-compatible dict."""
+        d = {
+            "verdict": self.verdict,
+            "summary": self.summary,
+            "phases": self.phases,
+        }
+        if self.bootstrap_stability is not None:
+            d["bootstrap_stability"] = self.bootstrap_stability
+            d["bootstrap_ci"] = list(self.bootstrap_ci) if self.bootstrap_ci else None
+        return d
+
+    def save(self, path) -> None:
+        """Save report as JSON."""
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    def compute_verdict(self) -> None:
+        """Compute overall verdict from phase results.
+
+        Uses hierarchical logic rather than equal-weight voting:
+        - Phase 1 (covariate-adjusted) and Phase 3 (label permutation)
+          are MANDATORY gates — both must pass for "validated".
+        - Phase 2 (specificity) characterizes the signal as "specific"
+          or "shared" — a "shared" signal is still biologically valid.
+        - Phase 4 (matched) and Phase 5 (negative controls) provide
+          supplementary evidence, weighted as supporting.
+
+        The overall verdict reflects whether the core signal survives
+        confound correction and permutation null, with nuance from
+        supplementary phases.
+        """
+        details: dict[str, str] = {}
+
+        # --- Mandatory gates ---
+        # Phase 1: Covariate-adjusted enrichment
+        cov = self.phases.get("covariate_adjusted")
+        gate_adjusted = False
+        if cov and cov.get("status") != "failed":
+            p = cov.get("empirical_pvalue", 1.0)
+            gate_adjusted = p < 0.05
+            details["covariate_adjusted"] = f"p={p:.4f} ({'pass' if gate_adjusted else 'fail'})"
+
+        # Phase 3: Label permutation (use both stratified and free)
+        perm = self.phases.get("label_permutation")
+        gate_permutation = False
+        if perm and perm.get("status") != "failed":
+            # Use stratified p-value as primary gate
+            strat = perm.get("stratified", perm)
+            strat_p = strat.get("permutation_pvalue", perm.get("permutation_pvalue", 1.0))
+            gate_permutation = strat_p < 0.05
+            details["label_permutation_stratified"] = f"p={strat_p:.4f}"
+
+            # Also report free permutation
+            free = perm.get("free", {})
+            free_p = free.get("permutation_pvalue", None)
+            if free_p is not None:
+                details["label_permutation_free"] = f"p={free_p:.4f}"
+                # If stratified passes but free fails, flag potential issue
+                if gate_permutation and free_p >= 0.05:
+                    details["permutation_warning"] = (
+                        "Stratified passes but free fails — signal may "
+                        "partly reflect covariate structure."
+                    )
+
+        # --- Supplementary evidence ---
+        supplementary_pass = 0
+        supplementary_total = 0
+
+        # Phase 2: Specificity (characterization, not gate)
+        spec = self.phases.get("specificity")
+        specificity_label = "not_tested"
+        if spec and spec.get("status") != "failed":
+            specificity_label = spec.get("specificity_label", "inconclusive")
+            details["specificity"] = specificity_label
+            # "shared" is still valid biology — only "inconclusive" is a concern
+            if specificity_label in ("specific", "shared"):
+                supplementary_pass += 1
+            supplementary_total += 1
+
+        # Phase 4: Matched subsampling
+        matched = self.phases.get("matched_reanalysis")
+        if matched and matched.get("status") != "failed":
+            p = matched.get("empirical_pvalue", 1.0)
+            n_matched = matched.get("n_matched", 0)
+            passed = p < 0.05
+            supplementary_pass += int(passed)
+            supplementary_total += 1
+            details["matched_reanalysis"] = (
+                f"p={p:.4f}, n={n_matched} ({'pass' if passed else 'fail'})"
+            )
+
+        # Phase 5: Negative controls
+        # Prefer competitive z metrics when available (cross-phase consistency
+        # with Phases 1/3/4); fall back to ROAST percentile
+        neg = self.phases.get("negative_controls")
+        if neg and neg.get("status") != "failed":
+            comp_z = neg.get("competitive_z", {})
+            if comp_z:
+                percentile = comp_z.get("percentile", neg.get("target_percentile", 100))
+                fpr = comp_z.get("fpr", neg.get("fpr", 1.0))
+            else:
+                percentile = neg.get("target_percentile", 100)
+                fpr = neg.get("fpr", 1.0)
+            passed = percentile < 10.0
+            supplementary_pass += int(passed)
+            supplementary_total += 1
+            details["negative_controls"] = (
+                f"percentile={percentile:.1f}%, FPR={fpr:.3f} "
+                f"({'pass' if passed else 'fail'})"
+            )
+
+        # --- Compute verdict ---
+        if not gate_adjusted and not cov:
+            self.verdict = "inconclusive"
+            self.summary = "Core phases not completed."
+        elif gate_adjusted and gate_permutation:
+            if supplementary_total > 0 and supplementary_pass == 0:
+                self.verdict = "inconclusive"
+                self.summary = (
+                    f"Core tests pass (adjusted enrichment + permutation null) "
+                    f"but all {supplementary_total} supplementary phases fail. "
+                    f"Signal survives confound correction but calibration "
+                    f"is concerning."
+                )
+            else:
+                self.verdict = "validated"
+                qualifier = ""
+                if specificity_label == "shared":
+                    qualifier = " (shared across disease subtypes)"
+                elif specificity_label == "specific":
+                    qualifier = " (disease-subtype specific)"
+                self.summary = (
+                    f"Signal validated{qualifier}: survives covariate "
+                    f"adjustment and label permutation null. "
+                    f"Supplementary: {supplementary_pass}/{supplementary_total} pass."
+                )
+        elif gate_adjusted and not gate_permutation and perm:
+            self.verdict = "inconclusive"
+            self.summary = (
+                "Covariate-adjusted enrichment is significant but label "
+                "permutation null is not — effect may not be robust to "
+                "label reassignment."
+            )
+        elif not gate_adjusted and gate_permutation:
+            self.verdict = "inconclusive"
+            self.summary = (
+                "Label permutation is significant but covariate-adjusted "
+                "enrichment is not — signal may reflect confounding."
+            )
+        else:
+            self.verdict = "refuted"
+            self.summary = (
+                "Neither covariate-adjusted enrichment nor label permutation "
+                "null reaches significance — signal is likely spurious."
+            )
+
+        # Annotate with any failed phases
+        failed = [
+            name for name, data in self.phases.items()
+            if isinstance(data, dict) and data.get("status") == "failed"
+        ]
+        if failed:
+            self.summary += f" [Phases failed: {', '.join(failed)}]"
+
+        # Annotate bootstrap stability (report annotation, not a gate)
+        if self.bootstrap_stability is not None and self.bootstrap_stability < 0.7:
+            self.summary += (
+                " [low bootstrap stability — result sensitive to sample composition]"
+            )
+
+    def print_summary(self) -> None:
+        """Print formatted summary to console."""
+        print("=" * 70)
+        print("VALIDATION REPORT")
+        print("=" * 70)
+        print(f"Verdict: {self.verdict.upper()}")
+        print(f"Summary: {self.summary}")
+        print()
+
+        for phase_name, phase_data in self.phases.items():
+            print(f"  {phase_name}:")
+            if isinstance(phase_data, dict):
+                for key, val in phase_data.items():
+                    if not isinstance(val, (dict, list)):
+                        print(f"    {key}: {val}")
+            print()
