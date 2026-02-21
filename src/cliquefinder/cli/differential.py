@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -173,7 +174,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--regulator-class",
         nargs="+",
-        choices=["tf", "kinase", "phosphatase"],
+        choices=["tf", "kinase", "phosphatase", "e3_ligase", "receptor_kinase"],
         default=None,
         help="Filter discovered regulators by functional class "
              "(e.g., --regulator-class tf kinase). Only with --discover-gene-sets.",
@@ -185,6 +186,23 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         help="INDRA statement types: preset (regulatory, activation, repression, "
              "phosphorylation) or comma-separated raw types. Default: regulatory. "
              "Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--strict-stmt-types",
+        action="store_true",
+        default=False,
+        help="Warn when using the mixed 'regulatory' preset, which conflates "
+             "activators and repressors. Suggests using --stmt-types activation "
+             "or --stmt-types repression for directional analysis. "
+             "Only with --discover-gene-sets.",
+    )
+    parser.add_argument(
+        "--exclude-mixed-cliques",
+        action="store_true",
+        default=False,
+        help="Exclude gene sets with mixed activation/repression directions. "
+             "Only retains coherent cliques whose direction is 'positive' or "
+             "'negative'. Only with --discover-gene-sets.",
     )
     parser.add_argument(
         "--min-targets",
@@ -456,8 +474,9 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--indra-env-file",
         type=Path,
-        default=Path("/Users/noot/workspace/indra-cogex/.env"),
-        help="Path to .env file with INDRA CoGEx credentials",
+        default=Path(os.environ.get("INDRA_ENV_FILE", Path.home() / ".indra" / ".env")),
+        help="Path to .env file with INDRA CoGEx credentials "
+             "(default: $INDRA_ENV_FILE or ~/.indra/.env)",
     )
 
     # Network enrichment testing
@@ -610,6 +629,8 @@ def run_differential(args: argparse.Namespace) -> int:
                     "tf": RegulatorClass.TF,
                     "kinase": RegulatorClass.KINASE,
                     "phosphatase": RegulatorClass.PHOSPHATASE,
+                    "e3_ligase": RegulatorClass.E3_LIGASE,
+                    "receptor_kinase": RegulatorClass.RECEPTOR_KINASE,
                 }
                 regulator_classes = {_CLI_TO_ENUM[c] for c in args.regulator_class}
                 print(f"  Regulator class filter: {args.regulator_class}")
@@ -618,6 +639,19 @@ def run_differential(args: argparse.Namespace) -> int:
             stmt_types = resolve_stmt_types(args.stmt_types) if args.stmt_types else None
             if stmt_types:
                 print(f"  Statement types: {stmt_types}")
+
+            # Strict stmt-types warning (H5 audit finding)
+            if getattr(args, 'strict_stmt_types', False) and (args.stmt_types is None or args.stmt_types == "regulatory"):
+                import warnings
+                warnings.warn(
+                    "The default --stmt-types 'regulatory' preset conflates activators "
+                    "(IncreaseAmount, Activation) and repressors (DecreaseAmount, Inhibition) "
+                    "into a single gene set, which can dilute directional enrichment signals. "
+                    "Consider using --stmt-types activation or --stmt-types repression for "
+                    "directional analysis. To silence this warning, choose a specific preset.",
+                    UserWarning,
+                    stacklevel=1,
+                )
 
             cliques = discover_gene_sets_from_indra(
                 feature_ids=feature_ids,
@@ -632,6 +666,13 @@ def run_differential(args: argparse.Namespace) -> int:
                 verbose=True,
             )
             print(f"  {len(cliques)} gene sets discovered")
+
+            # Filter out mixed-direction cliques if requested (M7 audit finding)
+            if getattr(args, 'exclude_mixed_cliques', False):
+                pre_filter = len(cliques)
+                cliques = [c for c in cliques if c.direction in ("positive", "negative")]
+                print(f"  After excluding mixed cliques: {len(cliques)} gene sets "
+                      f"(removed {pre_filter - len(cliques)} mixed-direction sets)")
 
         else:
             # Load from CSV (existing path)
@@ -711,13 +752,13 @@ def run_differential(args: argparse.Namespace) -> int:
             )
 
             # Get target UniProt IDs from network query
-            target_feature_ids = list(network_targets.values())
+            target_gene_ids = list(network_targets.values())
 
             # Extract contrast tuple for the genetic contrast case
             contrast_tuple = list(contrasts.values())[0]
 
             print(f"\nRunning genome-wide EB differential with target flagging...")
-            print(f"  Network targets: {len(target_feature_ids)}")
+            print(f"  Network targets: {len(target_gene_ids)}")
 
             # Build covariates DataFrame if specified
             covariates_df = None
@@ -731,7 +772,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 sample_condition=metadata[condition_col],
                 contrast=contrast_tuple,
                 eb_moderation=args.eb_moderation,
-                target_genes=target_feature_ids,
+                target_gene_ids=target_gene_ids,
                 verbose=True,
                 covariates_df=covariates_df,
             )
@@ -780,7 +821,7 @@ def run_differential(args: argparse.Namespace) -> int:
             # Save enrichment results
             enrichment_output = args.output / "enrichment_results.json"
             with open(enrichment_output, "w") as f:
-                json.dump(enrichment, f, indent=2)
+                json.dump(enrichment.to_dict(), f, indent=2)
             print(f"Enrichment results: {enrichment_output}")
 
             # Label permutation null (if requested)
@@ -800,7 +841,7 @@ def run_differential(args: argparse.Namespace) -> int:
                     feature_ids=feature_ids,
                     sample_condition=metadata[condition_col],
                     contrast=contrast_tuple,
-                    target_feature_ids=target_feature_ids,
+                    target_gene_ids=target_gene_ids,
                     n_permutations=args.label_perm_n,
                     stratify_by=stratify_by,
                     covariates_df=covariates_df,
@@ -910,13 +951,13 @@ def run_differential(args: argparse.Namespace) -> int:
             print(f"\n{'=' * 70}")
             print("NETWORK ENRICHMENT TEST")
             print("=" * 70)
-            print(f"Network targets: {enrichment['n_targets']}")
-            print(f"Background proteins: {enrichment['n_background']}")
-            print(f"Observed mean |t|: {enrichment['observed_mean_abs_t']:.4f}")
-            print(f"Null mean |t|: {enrichment['null_mean']:.4f}")
-            print(f"Z-score: {enrichment['z_score']:.2f}")
-            print(f"Empirical p-value: {enrichment['empirical_pvalue']:.4f}")
-            print(f"Direction: {enrichment['pct_down']:.0f}% targets downregulated")
+            print(f"Network targets: {enrichment.n_targets}")
+            print(f"Background proteins: {enrichment.n_background}")
+            print(f"Observed mean |t|: {enrichment.observed_mean_abs_t:.4f}")
+            print(f"Null mean |t|: {enrichment.null_mean:.4f}")
+            print(f"Z-score: {enrichment.z_score:.2f}")
+            print(f"Empirical p-value: {enrichment.empirical_pvalue:.4f}")
+            print(f"Direction: {enrichment.pct_down:.0f}% targets downregulated")
 
         print(f"\nComplete! Duration: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return 0

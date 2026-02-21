@@ -138,13 +138,18 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--max-regulators", type=int, default=None,
                         help="Discovery: max regulators to analyze")
     parser.add_argument("--regulator-class", nargs="+",
-                        choices=["tf", "kinase", "phosphatase"], default=None,
+                        choices=["tf", "kinase", "phosphatase", "e3_ligase", "receptor_kinase"],
+                        default=None,
                         help="Filter regulators by functional class (e.g., --regulator-class tf kinase). "
                              "Omit for all classes.")
     parser.add_argument("--stmt-types", type=str, default=None,
                         help="INDRA statement types: preset (regulatory, activation, repression, "
                              "phosphorylation) or comma-separated raw types "
                              "(e.g., 'IncreaseAmount,Phosphorylation'). Default: regulatory")
+    parser.add_argument("--strict-stmt-types", action="store_true", default=False,
+                        help="Warn when using the mixed 'regulatory' preset, which conflates "
+                             "activators and repressors. Suggests using --stmt-types activation "
+                             "or --stmt-types repression for directional analysis.")
     parser.add_argument("--exact-cliques", action="store_true",
                         help="Use exact clique enumeration vs greedy")
     parser.add_argument("--correlation-method", choices=["pearson", "spearman", "max"],
@@ -923,6 +928,8 @@ def run_analyze(args: argparse.Namespace) -> int:
             "tf": RegulatorClass.TF,
             "kinase": RegulatorClass.KINASE,
             "phosphatase": RegulatorClass.PHOSPHATASE,
+            "e3_ligase": RegulatorClass.E3_LIGASE,
+            "receptor_kinase": RegulatorClass.RECEPTOR_KINASE,
         }
         regulator_classes = {_CLI_TO_ENUM[c] for c in args.regulator_class}
         logger.info(f"Regulator class filter: {[c.value for c in regulator_classes]}")
@@ -932,6 +939,19 @@ def run_analyze(args: argparse.Namespace) -> int:
     stmt_types = resolve_stmt_types(args.stmt_types) if args.stmt_types else None
     if stmt_types:
         logger.info(f"Statement types: {stmt_types}")
+
+    # Strict stmt-types warning (H5 audit finding)
+    if args.strict_stmt_types and (args.stmt_types is None or args.stmt_types == "regulatory"):
+        import warnings
+        warnings.warn(
+            "The default --stmt-types 'regulatory' preset conflates activators "
+            "(IncreaseAmount, Activation) and repressors (DecreaseAmount, Inhibition) "
+            "into a single gene set, which can dilute directional enrichment signals. "
+            "Consider using --stmt-types activation or --stmt-types repression for "
+            "directional analysis. To silence this warning, choose a specific preset.",
+            UserWarning,
+            stacklevel=1,
+        )
 
     # Connect to CoGEx
     logger.info("Connecting to INDRA CoGEx...")
