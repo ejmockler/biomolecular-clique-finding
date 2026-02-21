@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -109,8 +110,9 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--indra-env-file", type=Path,
-        default=Path("/Users/noot/workspace/indra-cogex/.env"),
-        help="Path to .env file with INDRA CoGEx credentials",
+        default=Path(os.environ.get("INDRA_ENV_FILE", Path.home() / ".indra" / ".env")),
+        help="Path to .env file with INDRA CoGEx credentials "
+             "(default: $INDRA_ENV_FILE or ~/.indra/.env)",
     )
 
     # General settings
@@ -138,6 +140,12 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Include condition × covariate interaction terms in design matrix",
     )
 
+    # Verdict threshold (N-1)
+    parser.add_argument(
+        "--alpha", type=float, default=0.05,
+        help="Significance threshold for phase gates (default: 0.05)",
+    )
+
     parser.set_defaults(func=run_validate_baselines)
 
 
@@ -153,6 +161,29 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     print()
 
     report = ValidationReport()
+
+    # -----------------------------------------------------------------
+    # Seed propagation strategy (M3 audit finding)
+    # -----------------------------------------------------------------
+    # Each phase that uses random state gets a distinct offset from
+    # args.seed, preventing subtle correlations between permutation-
+    # based phases that would arise from sharing the same RNG entry
+    # point. When args.seed is None, all phase seeds are None (fully
+    # random).
+    #
+    # Phase offsets:
+    #   Bootstrap stability:       seed + 0    (runs first, no conflict)
+    #   Phase 3 stratified perm:   seed + 1000
+    #   Phase 3 free perm:         seed + 2000
+    #   Phase 4 matching:          seed + 3000
+    #   Phase 5 negative controls: seed + 4000
+    # -----------------------------------------------------------------
+    _base_seed = args.seed
+    _seed_bootstrap = _base_seed if _base_seed is None else _base_seed + 0
+    _seed_phase3_strat = _base_seed if _base_seed is None else _base_seed + 1000
+    _seed_phase3_free = _base_seed if _base_seed is None else _base_seed + 2000
+    _seed_phase4 = _base_seed if _base_seed is None else _base_seed + 3000
+    _seed_phase5 = _base_seed if _base_seed is None else _base_seed + 4000
 
     # --- Load data ---
     print(f"Loading data: {args.data}")
@@ -209,8 +240,8 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         env_file=args.indra_env_file,
         verbose=True,
     )
-    target_feature_ids = list(network_targets.values())
-    print(f"  {len(target_feature_ids)} targets found in data")
+    target_gene_ids = list(network_targets.values())
+    print(f"  {len(target_gene_ids)} targets found in data")
 
     # Build covariates DataFrame
     covariates_df = None
@@ -242,10 +273,11 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             feature_ids=feature_ids,
             sample_condition=metadata[condition_col],
             contrast=primary_contrast,
-            target_feature_ids=target_feature_ids,
+            target_gene_ids=target_gene_ids,
             covariates_df=covariates_df,
+            covariate_design=covariate_design,
             n_bootstraps=args.n_bootstraps,
-            seed=args.seed,
+            seed=_seed_bootstrap,
             verbose=True,
         )
         report.bootstrap_stability = boot_result["stability"]
@@ -263,26 +295,33 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         run_network_enrichment_test,
     )
 
-    protein_df = run_protein_differential(
-        data=data,
-        feature_ids=feature_ids,
-        sample_condition=metadata[condition_col],
-        contrast=primary_contrast,
-        eb_moderation=True,
-        target_genes=target_feature_ids,
-        verbose=True,
-        covariates_df=covariates_df,
-        covariate_design=covariate_design,
-    )
+    protein_df = None  # Initialize; downstream phases (e.g., Phase 5) check this
+    try:
+        protein_df = run_protein_differential(
+            data=data,
+            feature_ids=feature_ids,
+            sample_condition=metadata[condition_col],
+            contrast=primary_contrast,
+            eb_moderation=True,
+            target_gene_ids=target_gene_ids,
+            verbose=True,
+            covariates_df=covariates_df,
+            covariate_design=covariate_design,
+        )
 
-    enrichment = run_network_enrichment_test(protein_df, verbose=True)
-    report.add_phase("covariate_adjusted", enrichment)
+        enrichment = run_network_enrichment_test(protein_df, verbose=True)
+        report.add_phase("covariate_adjusted", enrichment.to_dict())
+
+        # Save phase-specific output
+        enrichment_out = args.output / "phase1_covariate_enrichment.json"
+        with open(enrichment_out, "w") as f:
+            json.dump(enrichment.to_dict(), f, indent=2)
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
+        report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
+        # protein_df remains None from initialization above; no reassignment needed
     report.save(args.output / "validation_report.json")
-
-    # Save phase-specific output
-    enrichment_out = args.output / "phase1_covariate_enrichment.json"
-    with open(enrichment_out, "w") as f:
-        json.dump(enrichment, f, indent=2)
 
     # =====================================================================
     # PHASE 2: Multi-contrast specificity
@@ -299,7 +338,13 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             for name, contrast_tuple in contrasts.items():
                 print(f"\n  Running contrast: {name} ({contrast_tuple[0]} vs {contrast_tuple[1]})")
 
-                # Filter to samples in this contrast's groups
+                # Filter to samples in this contrast's groups.
+                # M-6 note: each sub-contrast uses a different sample subset
+                # (only samples belonging to the two conditions in that contrast),
+                # so the main covariate_design (built from the primary contrast's
+                # full sample set) cannot be reused here. Each sub-contrast
+                # correctly recomputes its own NaN mask from the subsetted
+                # metadata and covariates.
                 mask = metadata[condition_col].isin(contrast_tuple)
                 sub_data = data[:, mask.values]
                 sub_meta = metadata[mask]
@@ -312,14 +357,14 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         sample_condition=sub_meta[condition_col],
                         contrast=contrast_tuple,
                         eb_moderation=True,
-                        target_genes=target_feature_ids,
+                        target_gene_ids=target_gene_ids,
                         verbose=False,
                         covariates_df=sub_cov,
                     )
                     sub_enrichment = run_network_enrichment_test(sub_results, verbose=False)
-                    enrichment_by_contrast[name] = sub_enrichment
-                    print(f"    z={sub_enrichment['z_score']:.2f}, "
-                          f"p={sub_enrichment['empirical_pvalue']:.4f}")
+                    enrichment_by_contrast[name] = sub_enrichment.to_dict()
+                    print(f"    z={sub_enrichment.z_score:.2f}, "
+                          f"p={sub_enrichment.empirical_pvalue:.4f}")
                 except Exception as e:
                     print(f"    Error: {e}")
 
@@ -332,7 +377,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     metadata=metadata,
                     condition_col=condition_col,
                     contrast_tuples=contrasts,
-                    target_feature_ids=target_feature_ids,
+                    target_gene_ids=target_gene_ids,
                     covariates_df=covariates_df,
                     n_interaction_perms=200,
                     seed=args.seed,
@@ -366,17 +411,21 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             stratify_by = metadata[args.stratify_col].values
             print(f"  Stratification: {args.stratify_col}")
 
+        # M-6: Pass covariate_design to ensure the same NaN mask is used
+        # across all permutations. Covariates do not change when labels are
+        # permuted, so the same design (and sample_mask) applies throughout.
         print(f"\n  Running stratified permutation ({args.label_permutations} permutations)...")
         strat_result = run_label_permutation_null(
             data=data,
             feature_ids=feature_ids,
             sample_condition=metadata[condition_col],
             contrast=primary_contrast,
-            target_feature_ids=target_feature_ids,
+            target_gene_ids=target_gene_ids,
             n_permutations=args.label_permutations,
             stratify_by=stratify_by,
             covariates_df=covariates_df,
-            seed=args.seed,
+            covariate_design=covariate_design,
+            seed=_seed_phase3_strat,
             verbose=True,
         )
         strat_dict = strat_result.to_dict()
@@ -389,11 +438,12 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             feature_ids=feature_ids,
             sample_condition=metadata[condition_col],
             contrast=primary_contrast,
-            target_feature_ids=target_feature_ids,
+            target_gene_ids=target_gene_ids,
             n_permutations=args.label_permutations,
             stratify_by=None,
             covariates_df=covariates_df,
-            seed=args.seed + 1,
+            covariate_design=covariate_design,
+            seed=_seed_phase3_free,
             verbose=True,
         )
         free_dict = free_result.to_dict()
@@ -429,11 +479,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             group_col=condition_col,
             match_vars=args.match_vars,
             groups=list(primary_contrast),
-            seed=args.seed,
+            seed=_seed_phase4,
         )
 
         print(f"  Original: {match_result.n_original} → Matched: {match_result.n_matched}")
 
+        # M-6 note: matched subsampling produces a different sample subset
+        # than the primary analysis, so the main covariate_design (built from
+        # the full sample set) does not apply. The matched subset correctly
+        # recomputes its own NaN mask from the subsetted covariates.
         matched_data = data[:, match_result.matched_indices]
         matched_meta = metadata.iloc[match_result.matched_indices]
         matched_cov = covariates_df.iloc[match_result.matched_indices] if covariates_df is not None else None
@@ -444,14 +498,14 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             sample_condition=matched_meta[condition_col],
             contrast=primary_contrast,
             eb_moderation=True,
-            target_genes=target_feature_ids,
+            target_gene_ids=target_gene_ids,
             verbose=True,
             covariates_df=matched_cov,
         )
 
         matched_enrichment = run_network_enrichment_test(matched_protein_df, verbose=True)
         report.add_phase("matched_reanalysis", {
-            **matched_enrichment,
+            **matched_enrichment.to_dict(),
             "n_original": match_result.n_original,
             "n_matched": match_result.n_matched,
             "match_vars": match_result.match_vars,
@@ -459,7 +513,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
 
         matched_out = args.output / "phase4_matched_enrichment.json"
         with open(matched_out, "w") as f:
-            json.dump(matched_enrichment, f, indent=2)
+            json.dump(matched_enrichment.to_dict(), f, indent=2)
     except Exception as e:
         import warnings
         warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
@@ -477,6 +531,12 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         from cliquefinder.stats.negative_controls import run_negative_control_sets
         from cliquefinder.stats.rotation import RotationTestEngine
 
+        # M-6 note: RotationTestEngine.fit() builds its own design matrix
+        # from the full data + metadata + covariates. It uses the same
+        # covariate columns listed in args.covariates, so its internal NaN
+        # mask is consistent with the covariate_design built above. The
+        # engine operates on the full sample set (not a subset), matching
+        # Phase 1's scope.
         conditions_list = list(primary_contrast)
         engine = RotationTestEngine(data, feature_ids, metadata)
         engine.fit(
@@ -486,12 +546,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             covariates=args.covariates,
         )
 
+        # protein_df may be None if Phase 1 failed. Pass it through;
+        # run_negative_control_sets() handles None gracefully (skips
+        # competitive z-score computation).
         neg_result = run_negative_control_sets(
             engine=engine,
-            target_gene_ids=target_feature_ids,
+            target_gene_ids=target_gene_ids,
             target_set_id=f"{args.network_query}_targets",
             n_control_sets=args.n_neg_controls,
-            seed=args.seed,
+            seed=_seed_phase5,
             protein_results=protein_df,
             data=data,
             matching="both",
@@ -512,7 +575,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     # =====================================================================
     # AGGREGATE REPORT
     # =====================================================================
-    report.compute_verdict()
+    report.compute_verdict(alpha=args.alpha)
     report.save(args.output / "validation_report.json")
     report.print_summary()
 
