@@ -65,6 +65,10 @@ class NegativeControlResult:
     mean_control_pvalue: float
     n_control_sets: int
 
+    # Individual control set significance tracking
+    n_significant_controls: int = 0  # How many control sets had p < alpha
+    n_valid_controls: int = 0  # How many control sets were successfully tested
+
     # Competitive z-score metrics (consistent with Phases 1/3/4)
     target_competitive_z: float | None = None
     control_competitive_z_scores: NDArray[np.float64] | None = None
@@ -89,6 +93,8 @@ class NegativeControlResult:
             "median_control_pvalue": self.median_control_pvalue,
             "mean_control_pvalue": self.mean_control_pvalue,
             "n_control_sets": self.n_control_sets,
+            "n_significant_controls": self.n_significant_controls,
+            "n_valid_controls": self.n_valid_controls,
             "control_pvalue_quantiles": {
                 "q05": float(np.percentile(self.control_pvalues, 5)),
                 "q25": float(np.percentile(self.control_pvalues, 25)),
@@ -303,8 +309,11 @@ def run_negative_control_sets(
     if n_valid == 0:
         raise RuntimeError("All control sets failed")
 
+    # Compute counts of significant and valid controls
+    n_significant = int(np.sum(valid_controls < alpha))
+
     # Compute FPR: fraction of controls with p < alpha
-    fpr = float(np.sum(valid_controls < alpha)) / n_valid
+    fpr = float(n_significant) / n_valid
 
     # Target percentile: where does target p-value rank among controls?
     # Lower percentile = more significant than controls
@@ -458,6 +467,8 @@ def run_negative_control_sets(
         median_control_pvalue=median_control,
         mean_control_pvalue=mean_control,
         n_control_sets=n_valid,
+        n_significant_controls=n_significant,
+        n_valid_controls=n_valid,
         target_competitive_z=target_comp_z,
         control_competitive_z_scores=control_comp_z,
         competitive_z_fpr=comp_z_fpr,

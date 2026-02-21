@@ -1035,6 +1035,8 @@ def _apply_rotations_gpu(
     eb_s0_sq: float | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """GPU implementation using MLX."""
+    # Note: moderated_variances is accepted for backward-compatible call signature
+    # but is no longer used. EB shrinkage is applied directly via eb_d0/eb_s0_sq.
 
     # Convert to MLX arrays
     U_mx = mx.array(U, dtype=mx.float32)
@@ -1064,11 +1066,12 @@ def _apply_rotations_gpu(
         s0_sq_mx = mx.array(eb_s0_sq, dtype=mx.float32)
         df_mx = mx.array(float(df_residual), dtype=mx.float32)
         var_rot = (d0_mx * s0_sq_mx + df_mx * var_rot) / (d0_mx + df_mx)
-    elif moderated_variances is not None:
-        # Fallback: ratio approximation (for backwards compatibility)
-        shrinkage_ratio = moderated_variances / np.maximum(sample_variances, 1e-10)
-        shrinkage_mx = mx.array(shrinkage_ratio[:, None], dtype=mx.float32)
-        var_rot = var_rot * shrinkage_mx
+    # When EB priors (d0, s0_sq) are unavailable, use unmoderated rotated
+    # variances directly.  A previous version applied a ratio approximation
+    # (var_rot * moderated_var / sample_var), but that is mathematically
+    # incorrect: rotated variances follow a different distribution than the
+    # originals, so the per-gene shrinkage ratio does not transfer.  Using
+    # unmoderated variances is conservative but correct.
 
     # Rotated t-statistics
     se_rot = mx.sqrt(var_rot)
@@ -1109,6 +1112,8 @@ def _apply_rotations_cpu(
     eb_s0_sq: float | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """CPU implementation using NumPy."""
+    # Note: moderated_variances is accepted for backward-compatible call signature
+    # but is no longer used. EB shrinkage is applied directly via eb_d0/eb_s0_sq.
 
     n_genes = U.shape[0]
     n_rotations = R.shape[0]
@@ -1131,10 +1136,12 @@ def _apply_rotations_cpu(
         # Proper per-rotation EB shrinkage:
         # s²_post = (d0 × s0² + df × s²_rot) / (d0 + df)
         var_rot = (eb_d0 * eb_s0_sq + df_residual * var_rot) / (eb_d0 + df_residual)
-    elif moderated_variances is not None:
-        # Fallback: ratio approximation (for backwards compatibility)
-        shrinkage_ratio = moderated_variances / np.maximum(sample_variances, 1e-10)
-        var_rot = var_rot * shrinkage_ratio[:, None]
+    # When EB priors (d0, s0_sq) are unavailable, use unmoderated rotated
+    # variances directly.  A previous version applied a ratio approximation
+    # (var_rot * moderated_var / sample_var), but that is mathematically
+    # incorrect: rotated variances follow a different distribution than the
+    # originals, so the per-gene shrinkage ratio does not transfer.  Using
+    # unmoderated variances is conservative but correct.
 
     # t-statistics
     se_rot = np.sqrt(var_rot)
@@ -1564,6 +1571,22 @@ class RotationTestEngine:
         # Standard path: no covariates, simple two-group comparison
         # Get condition labels
         sample_conditions = self.metadata[condition_column].values
+
+        # Check for >2 groups: ROAST is designed for 2-group comparisons
+        if contrast is not None:
+            unique_conditions = set(sample_conditions)
+            # Remove NaN-like values
+            unique_conditions = {
+                c for c in unique_conditions
+                if c is not None and (not isinstance(c, float) or not np.isnan(c))
+            }
+            n_groups = len(unique_conditions)
+            if n_groups > 2:
+                warnings.warn(
+                    f"ROAST rotation test is designed for 2-group comparisons. "
+                    f"{n_groups} groups detected; results may not be valid. "
+                    f"Consider subsetting to the 2 groups in your contrast."
+                )
 
         # Compute rotation matrices (QR decomposition)
         self._precomputed = compute_rotation_matrices(

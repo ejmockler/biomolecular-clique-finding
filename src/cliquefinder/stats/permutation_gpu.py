@@ -267,11 +267,12 @@ class OLSPrecomputedMatrices:
 
 
 def precompute_ols_matrices(
-    sample_condition: NDArray | pd.Series,
-    conditions: list[str],
-    contrast: tuple[str, str],
+    sample_condition: NDArray | pd.Series | None = None,
+    conditions: list[str] | None = None,
+    contrast: tuple[str, str] | None = None,
     regularization: float = 1e-8,
     covariates_df: pd.DataFrame | None = None,
+    covariate_design: "CovariateDesign | None" = None,
 ) -> OLSPrecomputedMatrices:
     """
     Precompute design matrix and contrast vectors for batched OLS.
@@ -285,14 +286,24 @@ def precompute_ols_matrices(
     These are computed ONCE and reused for all 1.7M permutation tests.
 
     Args:
-        sample_condition: Condition labels for each sample (length n_samples)
-        conditions: Ordered list of unique condition names
-        contrast: Tuple of (condition1, condition2) to test condition1 - condition2
+        sample_condition: Condition labels for each sample (length n_samples).
+            Not required when covariate_design is provided.
+        conditions: Ordered list of unique condition names.
+            Not required when covariate_design is provided.
+        contrast: Tuple of (condition1, condition2) to test condition1 - condition2.
+            Not required when covariate_design is provided.
         regularization: Ridge regularization for near-singular (X'X)
         covariates_df: Optional DataFrame of covariates (one row per sample).
             When provided, covariate columns are appended to the design matrix
             and the contrast vector is zero-padded so the test targets only
             the condition effect while adjusting for covariates.
+            Ignored when covariate_design is provided.
+        covariate_design: Optional pre-built CovariateDesign from
+            design_matrix.build_covariate_design_matrix(). When provided,
+            the design's X matrix, contrast vector, and sample_mask are used
+            directly, skipping all internal design matrix construction.
+            This eliminates the F8 latent bug where masks could diverge
+            between the design matrix builder and this function.
 
     Returns:
         OLSPrecomputedMatrices with all precomputed components
@@ -303,6 +314,47 @@ def precompute_ols_matrices(
         >>> matrices = precompute_ols_matrices(metadata['treatment_group'], conditions, contrast)
         >>> # Now reuse matrices for all permutations
     """
+    # If a pre-built CovariateDesign is provided, use it directly (H6/F8 fix).
+    # This consolidates the design matrix construction into a single path,
+    # ensuring the X matrix, contrast vector, and sample mask all come from
+    # the same source.
+    if covariate_design is not None:
+        X = covariate_design.X
+        c = covariate_design.contrast
+        n_params = X.shape[1]
+        n_valid = X.shape[0]
+        contrast_name = covariate_design.contrast_name
+
+        # Compute (X'X) with regularization
+        XtX = X.T @ X
+        if regularization > 0:
+            XtX = XtX + regularization * np.eye(n_params)
+        try:
+            XtX_inv = np.linalg.inv(XtX)
+        except np.linalg.LinAlgError as e:
+            raise ValueError(f"Cannot invert design matrix: {e}")
+
+        c_var_factor = float(c @ XtX_inv @ c)
+        if c_var_factor < 0:
+            warnings.warn(f"Negative variance factor {c_var_factor}, taking absolute value")
+            c_var_factor = abs(c_var_factor)
+
+        df_residual = n_valid - n_params
+        if df_residual < 1:
+            raise ValueError(
+                f"Insufficient df: {n_valid} samples - {n_params} parameters = {df_residual}"
+            )
+
+        return OLSPrecomputedMatrices(
+            X=X,
+            XtX_inv=XtX_inv,
+            c=c,
+            c_var_factor=c_var_factor,
+            df_residual=df_residual,
+            conditions=conditions if conditions is not None else [],
+            contrast_name=contrast_name,
+        )
+
     # If covariates provided, use the unified design matrix builder
     if covariates_df is not None and len(covariates_df.columns) > 0:
         from .design_matrix import build_covariate_design_matrix
