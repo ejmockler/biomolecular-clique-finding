@@ -32,6 +32,35 @@ References:
       approach." PNAS 102(43):15545-50.
     - Cohen J (1960). "A coefficient of agreement for nominal scales."
       Educational and Psychological Measurement 20(1):37-46.
+
+Module Structure (~2820 lines -- candidate for future splitting):
+    Lines    80-108  : Enums (MethodName)
+    Lines   110-449  : Core Dataclasses (UnifiedCliqueResult, ConcordanceMetrics)
+    Lines   451-526  : Protocol (CliqueTestMethod)
+    Lines   528-696  : PreparedCliqueExperiment dataclass
+    Lines   698-941  : Factory Function (prepare_experiment)
+    Lines   944-1133 : OLS Method Implementation (OLSMethod)
+    Lines  1136-1355 : LMM Method Implementation (LMMMethod)
+    Lines  1359-1599 : ROAST Method Implementation (ROASTMethod)
+    Lines  1603-1800 : Permutation Method Implementation (PermutationMethod)
+    Lines  1804-2081 : Concordance Computation (compute_pairwise_concordance,
+                       identify_disagreements)
+    Lines  2085-2522 : MethodComparisonResult dataclass (wide_format, robust_hits,
+                       method_specific_hits, concordance_matrix, summary)
+    Lines  2525-2790 : Main Entry Point (run_method_comparison)
+    Lines  2794-2819 : Exports (__all__)
+
+Future splitting plan (do NOT split without updating all importers):
+    - method_comparison_types.py  : Enums, dataclasses, protocol (~450 lines)
+    - experiment.py               : PreparedCliqueExperiment + prepare_experiment
+                                    (~415 lines)
+    - methods/ols.py              : OLSMethod (~190 lines)
+    - methods/lmm.py              : LMMMethod (~220 lines)
+    - methods/roast.py            : ROASTMethod (~240 lines)
+    - methods/permutation.py      : PermutationMethod (~200 lines)
+    - concordance.py              : concordance functions + MethodComparisonResult
+                                    (~720 lines)
+    - method_comparison.py        : run_method_comparison + re-exports (~300 lines)
 """
 
 from __future__ import annotations
@@ -912,7 +941,7 @@ def prepare_experiment(
 
 
 # =============================================================================
-# Method Implementations
+# OLS Method Implementation
 # =============================================================================
 
 
@@ -1101,6 +1130,11 @@ class OLSMethod:
             print(f"OLS: processed {n_processed} cliques, skipped {n_skipped}")
 
         return results
+
+
+# =============================================================================
+# LMM Method Implementation
+# =============================================================================
 
 
 class LMMMethod:

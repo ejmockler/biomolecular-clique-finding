@@ -21,6 +21,7 @@ These are not bugs — the current implementation produces correct results withi
 | M-5 | [Bootstrap stability not integrated](#m-5-bootstrap-stability-not-integrated) | P3 | Medium | Open |
 | M-6 | [NaN valid mask duplication](#m-6-nan-valid-mask-duplication) | P4 | Low | Open |
 | M-7 | [Additive-only covariate adjustment](#m-7-additive-only-covariate-adjustment) | P4 | Medium | Open |
+| M-8 | [Covariate documentation and cell-type composition gap](#m-8-covariate-documentation-and-cell-type-composition) | P2 | Low | Open |
 
 ---
 
@@ -412,6 +413,43 @@ Run with and without interaction. If the competitive enrichment z-score changes 
 ### Priority
 
 Low. Additive adjustment handles the primary confound. Phase 4 (matched subsampling) already provides interaction-robust sensitivity analysis. Implement this as a future diagnostic when there's specific evidence of interaction effects.
+
+---
+
+## M-8: Covariate Documentation and Cell-Type Composition
+
+### Required Covariates for ALS Proteomics
+- **Sex**: Binary (M/F). ALS has ~1.5:1 male:female ratio. Must be adjusted.
+- **Age at Collection**: Continuous. ALS onset age varies; affects protein expression.
+- **Site of Onset**: Categorical (bulbar/limb/respiratory). Different ALS subtypes.
+- **Post-Mortem Interval (PMI)**: Continuous. Affects protein degradation.
+- **Batch**: Categorical. TMT/iTRAQ batch effects.
+
+### Cell-Type Composition Gap
+Bulk tissue proteomics measures a mixture of cell types. ALS involves selective
+motor neuron degeneration, meaning disease vs. control differences may partly
+reflect cell-type proportion changes rather than per-cell regulatory changes.
+
+Current framework does NOT adjust for cell-type composition. Options:
+1. **CIBERSORTx deconvolution** — requires reference single-cell proteomics
+2. **Marker gene regression** — include known cell-type markers as covariates
+3. **Document as limitation** — note that enrichment may reflect cell composition
+
+### Code References
+
+- Phase 1 covariate adjustment: `stats/design_matrix.py` — `build_covariate_design_matrix()`
+- CLI covariate argument: `cli/validate_baselines.py:78` — `--covariates` (default: Sex only)
+
+### Impact on Current Analysis
+
+The current framework adjusts for Sex only. Age, PMI, site of onset, and batch
+are available in the Answer ALS metadata but are not included in the default
+covariate set. Cell-type composition is not available.
+
+Adding covariates reduces residual degrees of freedom (see M-7). With n=25 for
+C9ORF72, each additional covariate costs 1 df. Recommendation: include Age and
+PMI as continuous covariates (2 df cost), defer site of onset (sparse categories
+may be rank-deficient) and batch (may be confounded with condition).
 
 ---
 
