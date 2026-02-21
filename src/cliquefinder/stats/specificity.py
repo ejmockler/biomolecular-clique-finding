@@ -120,7 +120,7 @@ def _run_interaction_permutation(
     condition_col: str,
     primary_contrast: tuple[str, str],
     secondary_contrast: tuple[str, str],
-    target_feature_ids: list[str],
+    target_gene_ids: list[str],
     covariates_df: pd.DataFrame | None = None,
     n_perms: int = 200,
     seed: int | None = None,
@@ -143,7 +143,7 @@ def _run_interaction_permutation(
         condition_col: Column in metadata with condition labels.
         primary_contrast: (test, reference) for primary comparison.
         secondary_contrast: (test, reference) for secondary comparison.
-        target_feature_ids: Feature IDs of network targets.
+        target_gene_ids: Feature IDs of network targets.
         covariates_df: Optional covariates DataFrame.
         n_perms: Number of label permutations (default: 200).
         seed: Random seed for reproducibility.
@@ -157,7 +157,7 @@ def _run_interaction_permutation(
 
     conditions = metadata[condition_col].values
     all_labels = np.asarray(conditions)
-    target_set = set(target_feature_ids)
+    target_set = set(target_gene_ids)
     target_list = [fid for fid in feature_ids if fid in target_set]
 
     rng = np.random.default_rng(seed)
@@ -177,7 +177,7 @@ def _run_interaction_permutation(
             sample_condition=sub_labels,
             contrast=contrast_tuple,
             eb_moderation=True,
-            target_genes=target_list,
+            target_gene_ids=target_list,
             verbose=False,
             covariates_df=sub_cov,
         )
@@ -260,7 +260,7 @@ def compute_specificity(
     metadata: pd.DataFrame | None = None,
     condition_col: str | None = None,
     contrast_tuples: dict[str, tuple[str, str]] | None = None,
-    target_feature_ids: list[str] | None = None,
+    target_gene_ids: list[str] | None = None,
     covariates_df: pd.DataFrame | None = None,
     n_interaction_perms: int = 200,
     seed: int | None = None,
@@ -285,7 +285,7 @@ def compute_specificity(
         metadata: Sample metadata DataFrame aligned with data columns.
         condition_col: Column in metadata with condition labels.
         contrast_tuples: Dict mapping contrast name → (test, reference) tuple.
-        target_feature_ids: Feature IDs of network targets.
+        target_gene_ids: Feature IDs of network targets.
         covariates_df: Optional covariates DataFrame.
         n_interaction_perms: Permutations for interaction test (default: 200).
         seed: Random seed for reproducibility.
@@ -364,7 +364,7 @@ def compute_specificity(
         and metadata is not None
         and condition_col is not None
         and contrast_tuples is not None
-        and target_feature_ids is not None
+        and target_gene_ids is not None
     ):
         primary_tuple = contrast_tuples.get(primary_contrast)
         secondary_names = [n for n in contrast_tuples if n != primary_contrast]
@@ -386,7 +386,7 @@ def compute_specificity(
                 condition_col=condition_col,
                 primary_contrast=primary_tuple,
                 secondary_contrast=secondary_tuple,
-                target_feature_ids=target_feature_ids,
+                target_gene_ids=target_gene_ids,
                 covariates_df=covariates_df,
                 n_perms=n_interaction_perms,
                 seed=seed,

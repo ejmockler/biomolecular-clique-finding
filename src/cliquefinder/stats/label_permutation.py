@@ -146,10 +146,11 @@ def run_label_permutation_null(
     feature_ids: list[str],
     sample_condition: NDArray | pd.Series,
     contrast: tuple[str, str],
-    target_feature_ids: list[str],
+    target_gene_ids: list[str],
     n_permutations: int = 1000,
     stratify_by: NDArray | pd.Series | None = None,
     covariates_df: pd.DataFrame | None = None,
+    covariate_design: "CovariateDesign | None" = None,
     eb_moderation: bool = True,
     seed: int | None = None,
     verbose: bool = True,
@@ -166,12 +167,18 @@ def run_label_permutation_null(
         feature_ids: Feature identifiers matching rows of data.
         sample_condition: Condition labels per sample.
         contrast: (test_condition, reference_condition).
-        target_feature_ids: Feature IDs of network targets (INDRA gene set).
+        target_gene_ids: Feature IDs of network targets (INDRA gene set).
         n_permutations: Number of label permutations (default: 1000).
         stratify_by: Stratum assignments for stratified permutation (e.g.,
             Sex column values). If None, free permutation is used.
         covariates_df: Optional covariates DataFrame passed through to
             protein differential analysis.
+        covariate_design: Optional pre-built CovariateDesign (M-6 NaN mask
+            consolidation). When provided, its sample_mask is used as the
+            authoritative NaN mask in run_protein_differential() for both
+            the observed and all permuted analyses. The covariates themselves
+            do not change across label permutations (only condition labels
+            are permuted), so the same design applies throughout.
         eb_moderation: Whether to use Empirical Bayes moderation.
         seed: Random seed for reproducibility.
         verbose: Print progress.
@@ -182,7 +189,7 @@ def run_label_permutation_null(
     from .differential import run_protein_differential
 
     sample_condition = np.asarray(sample_condition)
-    target_set = set(target_feature_ids)
+    target_set = set(target_gene_ids)
     stratified = stratify_by is not None
 
     if stratify_by is not None:
@@ -210,9 +217,10 @@ def run_label_permutation_null(
         sample_condition=sample_condition,
         contrast=contrast,
         eb_moderation=eb_moderation,
-        target_genes=target_genes_list,
+        target_gene_ids=target_genes_list,
         verbose=False,
         covariates_df=covariates_df,
+        covariate_design=covariate_design,
     )
 
     # Use lightweight z-score extraction (no 10k inner competitive perms)
@@ -245,9 +253,10 @@ def run_label_permutation_null(
                 sample_condition=perm_labels,
                 contrast=contrast,
                 eb_moderation=eb_moderation,
-                target_genes=target_genes_list,
+                target_gene_ids=target_genes_list,
                 verbose=False,
                 covariates_df=covariates_df,
+                covariate_design=covariate_design,
             )
 
             null_z_scores[i] = _extract_enrichment_z(perm_results)

@@ -24,8 +24,9 @@ def run_bootstrap_stability(
     feature_ids: list[str],
     sample_condition: NDArray | pd.Series,
     contrast: tuple[str, str],
-    target_feature_ids: list[str],
+    target_gene_ids: list[str],
     covariates_df: pd.DataFrame | None = None,
+    covariate_design: "CovariateDesign | None" = None,
     n_bootstraps: int = 200,
     z_threshold: float = 1.5,
     seed: int | None = None,
@@ -38,13 +39,23 @@ def run_bootstrap_stability(
     protein differential analysis, and extracts the competitive z-score.
     Stability = fraction of bootstraps where z >= z_threshold.
 
+    Note on covariate_design: Bootstrap resampling changes the sample
+    indices, so a pre-built CovariateDesign from the full data cannot
+    be directly applied to bootstrapped subsets (different sample count).
+    The parameter is accepted for API consistency but is NOT passed to
+    per-bootstrap run_protein_differential() calls. Each bootstrap
+    correctly recomputes its own NaN mask from the resampled covariates.
+
     Args:
         data: Expression matrix (n_features, n_samples), log2-transformed.
         feature_ids: Feature identifiers matching rows of data.
         sample_condition: Condition labels per sample.
         contrast: (test_condition, reference_condition).
-        target_feature_ids: Feature IDs of network targets.
+        target_gene_ids: Feature IDs of network targets.
         covariates_df: Optional covariates DataFrame.
+        covariate_design: Optional pre-built CovariateDesign (M-6). Accepted
+            for API consistency but not used per-bootstrap since resampling
+            changes the sample set. Each bootstrap recomputes its own mask.
         n_bootstraps: Number of bootstrap resamples (default: 200).
         z_threshold: Z-score threshold for "significant" (default: 1.5).
         seed: Random seed for reproducibility.
@@ -61,7 +72,7 @@ def run_bootstrap_stability(
     from .enrichment_z import compute_competitive_z
 
     sample_condition = np.asarray(sample_condition)
-    target_set = set(target_feature_ids)
+    target_set = set(target_gene_ids)
     target_list = [fid for fid in feature_ids if fid in target_set]
 
     rng = np.random.default_rng(seed)
@@ -104,7 +115,7 @@ def run_bootstrap_stability(
                 sample_condition=boot_labels,
                 contrast=contrast,
                 eb_moderation=True,
-                target_genes=target_list,
+                target_gene_ids=target_list,
                 verbose=False,
                 covariates_df=boot_cov,
             )
