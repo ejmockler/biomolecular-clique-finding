@@ -25,6 +25,7 @@ References:
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 from .summarization import (
     SummarizationMethod,
@@ -440,12 +443,19 @@ def map_feature_ids_to_symbols(
             for eid, entity in results.items():
                 if entity.is_resolved:
                     symbol_to_feature[entity.symbol] = eid
+                    # Also store upper-case key for case-insensitive lookup
+                    symbol_upper = entity.symbol.upper()
+                    if symbol_upper not in symbol_to_feature:
+                        symbol_to_feature[symbol_upper] = eid
                     n_resolved += 1
 
                     # Also include aliases for broader matching
                     for alias in entity.aliases:
                         if alias and alias not in symbol_to_feature:
                             symbol_to_feature[alias] = eid
+                            alias_upper = alias.upper()
+                            if alias_upper not in symbol_to_feature:
+                                symbol_to_feature[alias_upper] = eid
 
             if verbose:
                 print(f"  Symbol mappings: {len(symbol_to_feature)} (from {n_resolved} resolved genes + aliases)")
@@ -494,6 +504,10 @@ def map_feature_ids_to_symbols(
             symbol = hit['symbol']
             feature_id = hit['query']
             symbol_to_feature[symbol] = feature_id
+            # Also store upper-case key for case-insensitive lookup
+            symbol_upper = symbol.upper()
+            if symbol_upper not in symbol_to_feature:
+                symbol_to_feature[symbol_upper] = feature_id
 
             # Also add aliases
             aliases = hit.get('alias', [])
@@ -502,6 +516,9 @@ def map_feature_ids_to_symbols(
             for alias in aliases:
                 if alias and alias not in symbol_to_feature:
                     symbol_to_feature[alias] = feature_id
+                    alias_upper = alias.upper()
+                    if alias_upper not in symbol_to_feature:
+                        symbol_to_feature[alias_upper] = feature_id
 
     if verbose:
         print(f"  Mapped {len(symbol_to_feature)} symbols/aliases")
@@ -556,13 +573,44 @@ def modules_to_clique_definitions(
     """
     clique_defs = []
     n_skipped = 0
+    total_mapped_genes = 0
+    total_unmapped_genes = 0
 
     for module in modules:
-        # Map gene symbols to feature IDs
+        # Map gene symbols to feature IDs with case-insensitive fallback
         mapped_feature_ids = []
+        unmapped_genes = []
         for gene_name in module.indra_target_names:
             if gene_name in symbol_to_feature:
                 mapped_feature_ids.append(symbol_to_feature[gene_name])
+            elif gene_name.upper() in symbol_to_feature:
+                mapped_feature_ids.append(symbol_to_feature[gene_name.upper()])
+            else:
+                unmapped_genes.append(gene_name)
+
+        total_genes = len(module.indra_target_names)
+        n_mapped = len(mapped_feature_ids)
+        n_unmapped = len(unmapped_genes)
+        total_mapped_genes += n_mapped
+        total_unmapped_genes += n_unmapped
+
+        # Log unmapped genes per module
+        if unmapped_genes:
+            preview = sorted(unmapped_genes)[:5]
+            suffix = "..." if n_unmapped > 5 else ""
+            logger.warning(
+                "Module %s: %d/%d targets unmapped: %s%s",
+                module.regulator_name, n_unmapped, total_genes,
+                preview, suffix,
+            )
+
+        # Louder warning if majority of targets are unmapped
+        if total_genes > 0 and n_unmapped / total_genes > 0.5:
+            logger.warning(
+                "Module %s: >50%% targets unmapped (%d/%d). "
+                "Check gene symbol format or ID mapping coverage.",
+                module.regulator_name, n_unmapped, total_genes,
+            )
 
         if len(mapped_feature_ids) < min_genes_found:
             n_skipped += 1
@@ -600,6 +648,15 @@ def modules_to_clique_definitions(
         if clique_defs:
             sizes = [len(c.protein_ids) for c in clique_defs]
             print(f"  Gene set sizes: min={min(sizes)}, median={sorted(sizes)[len(sizes)//2]}, max={max(sizes)}")
+
+    # Summary logging (always emitted, not just verbose)
+    n_retained = len(clique_defs)
+    n_total_modules = len(modules)
+    logger.info(
+        "Gene mapping summary: %d/%d modules retained, "
+        "%d total genes mapped, %d genes unmapped",
+        n_retained, n_total_modules, total_mapped_genes, total_unmapped_genes,
+    )
 
     return clique_defs
 

@@ -117,7 +117,33 @@ REPRESSION_TYPES = {"DecreaseAmount", "Inhibition"}
 """INDRA statement types representing transcriptional repression."""
 
 ALL_REGULATORY_TYPES = ACTIVATION_TYPES | REPRESSION_TYPES
-"""All INDRA statement types for TF regulatory relationships."""
+"""All INDRA statement types for TF regulatory relationships.
+
+.. warning:: **Statement type conflation**
+
+    This preset unions activators (IncreaseAmount, Activation) and
+    repressors (DecreaseAmount, Inhibition) into a **single gene set**.
+    When used for enrichment testing, conflating opposing regulatory
+    directions can dilute directional signals: genes activated by a
+    regulator and genes repressed by the same regulator will be pooled,
+    partially cancelling the fold-change signal in a competitive test.
+
+    **When to use this preset (``--stmt-types regulatory``):**
+    - Exploratory analysis where you want the largest possible gene set
+    - Self-contained tests (ROAST) that detect bidirectional regulation
+    - When the research question is "does this regulator affect *any*
+      downstream target?" regardless of direction
+
+    **When to use directional presets instead:**
+    - ``--stmt-types activation`` for genes *upregulated* by the regulator
+    - ``--stmt-types repression`` for genes *downregulated* by the regulator
+    - When testing a directional hypothesis (e.g., "C9ORF72 loss reduces
+      expression of its activation targets")
+    - When running competitive enrichment tests sensitive to sign coherence
+
+    See also ``--strict-stmt-types`` CLI flag, which emits a warning when
+    the mixed ``regulatory`` preset is used.
+"""
 
 PHOSPHORYLATION_TYPES = {"Phosphorylation"}
 """INDRA statement types for phosphorylation (kinase-substrate) relationships."""
@@ -169,9 +195,11 @@ class RegulatorClass(Enum):
     Each member maps to a curated gene list from INDRA's hgnc_client,
     sourced from HUGO Gene Nomenclature Committee annotations:
 
-        TF          ~1,672 transcription factors
-        KINASE      protein kinases (phosphorylation writers)
-        PHOSPHATASE protein phosphatases (phosphorylation erasers)
+        TF              ~1,672 transcription factors
+        KINASE          protein kinases (phosphorylation writers)
+        PHOSPHATASE     protein phosphatases (phosphorylation erasers)
+        E3_LIGASE       curated subset of E3 ubiquitin ligases (10 genes)
+        RECEPTOR_KINASE curated subset of receptor tyrosine kinases (20 genes)
 
     Usage:
         >>> genes = get_regulator_class_genes({RegulatorClass.TF})
@@ -181,6 +209,27 @@ class RegulatorClass(Enum):
     TF = "tf"
     KINASE = "kinase"
     PHOSPHATASE = "phosphatase"
+    E3_LIGASE = "e3_ligase"
+    RECEPTOR_KINASE = "receptor_kinase"
+
+
+# Curated subset of well-known E3 ubiquitin ligases.
+# NOTE: This is NOT exhaustive — there are ~600+ E3 ligases in the human genome.
+# This curated set covers major oncology/neurodegeneration-relevant E3 ligases.
+_E3_LIGASE_GENES: Set[str] = {
+    "MDM2", "TRIM21", "SMURF1", "SMURF2", "NEDD4",
+    "ITCH", "PARKIN", "VHL", "CHIP", "RNF4",
+}
+
+# Curated subset of receptor tyrosine kinases (RTKs).
+# These are kinases that also function as cell-surface receptors, a biologically
+# distinct class from cytoplasmic kinases. Relevant for targeted therapy studies.
+_RECEPTOR_KINASE_GENES: Set[str] = {
+    "EGFR", "ERBB2", "FGFR1", "FGFR2", "FGFR3",
+    "PDGFRA", "PDGFRB", "KIT", "FLT3", "MET",
+    "RET", "ALK", "ROS1", "NTRK1", "NTRK2",
+    "NTRK3", "IGF1R", "INSR", "VEGFR1", "VEGFR2",
+}
 
 
 def get_regulator_class_genes(classes: Set[RegulatorClass]) -> Set[str]:
@@ -206,6 +255,8 @@ def get_regulator_class_genes(classes: Set[RegulatorClass]) -> Set[str]:
         RegulatorClass.TF: hgnc_client.tfs,
         RegulatorClass.KINASE: hgnc_client.kinases,
         RegulatorClass.PHOSPHATASE: hgnc_client.phosphatases,
+        RegulatorClass.E3_LIGASE: _E3_LIGASE_GENES,
+        RegulatorClass.RECEPTOR_KINASE: _RECEPTOR_KINASE_GENES,
     }
 
     result: Set[str] = set()
@@ -659,14 +710,21 @@ class CoGExClient:
         name_to_curie = {}  # Map for reverse lookup
 
         for gene_name in gene_universe:
-            try:
-                hgnc_id = hgnc_client.get_current_hgnc_id(gene_name)
-                if hgnc_id:
-                    curie = norm_id("HGNC", hgnc_id)
-                    target_curies.append(curie)
-                    name_to_curie[gene_name] = curie
-            except Exception:
-                continue  # Skip unresolvable genes
+            # Try original name first, then upper-cased for case-insensitive resolution
+            resolved = False
+            for candidate in dict.fromkeys([gene_name, gene_name.upper()]):
+                try:
+                    hgnc_id = hgnc_client.get_current_hgnc_id(candidate)
+                    if hgnc_id:
+                        curie = norm_id("HGNC", hgnc_id)
+                        target_curies.append(curie)
+                        name_to_curie[gene_name] = curie
+                        resolved = True
+                        break
+                except Exception:
+                    continue
+            if not resolved:
+                logger.info("Could not resolve gene name to HGNC ID: %s", gene_name)
 
         if not target_curies:
             logger.warning("No genes in universe could be resolved to HGNC IDs")
@@ -839,12 +897,14 @@ class INDRAModuleExtractor:
             Example: ("HGNC", "11998") for TP53 or P04637
         """
         # Strategy 1: Try as gene symbol via INDRA HGNC client (fast, authoritative)
-        try:
-            hgnc_id = hgnc_client.get_current_hgnc_id(name)
-            if hgnc_id:
-                return ("HGNC", hgnc_id)
-        except Exception:
-            pass
+        # Try original name first, then upper-cased for case-insensitive resolution
+        for candidate in dict.fromkeys([name, name.upper()]):
+            try:
+                hgnc_id = hgnc_client.get_current_hgnc_id(candidate)
+                if hgnc_id:
+                    return ("HGNC", hgnc_id)
+            except Exception:
+                pass
 
         # Strategy 2: Try as UniProt accession via INDRA uniprot_client (direct mapping)
         # UniProt accessions are 6-10 alphanumeric chars starting with letter
