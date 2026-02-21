@@ -50,7 +50,7 @@ class ValidationReport:
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
-    def compute_verdict(self) -> None:
+    def compute_verdict(self, *, alpha: float = 0.05) -> None:
         """Compute overall verdict from phase results.
 
         Uses hierarchical logic rather than equal-weight voting:
@@ -64,6 +64,38 @@ class ValidationReport:
         The overall verdict reflects whether the core signal survives
         confound correction and permutation null, with nuance from
         supplementary phases.
+
+        Args:
+            alpha: Significance threshold applied to Phase 1 (covariate-
+                adjusted enrichment), Phase 3 (label permutation null),
+                and Phase 4 (matched subsampling). Default is 0.05.
+
+        Multiple-testing rationale
+        --------------------------
+        Three phases (1, 3, 4) apply the same ``alpha`` threshold:
+
+        1. These phases test *different aspects* of the same underlying
+           enrichment signal — confound correction (Phase 1), label
+           robustness (Phase 3), and sample-composition sensitivity
+           (Phase 4) — rather than independent hypotheses about
+           unrelated effects. Bonferroni or Benjamini-Hochberg
+           adjustment is therefore overly conservative because the
+           test statistics are positively correlated (all driven by
+           the same target-gene signal).
+
+        2. The hierarchical gating structure already provides implicit
+           multiplicity control: Phase 1 AND Phase 3 must *both* pass
+           for a "validated" verdict, which is strictly more stringent
+           than requiring either alone (joint probability under the
+           global null is alpha^2 when tests are independent, and even
+           lower when positively correlated).
+
+        3. Phase 4 is supplementary and cannot override a "refuted"
+           verdict from the mandatory gates — it only modulates between
+           "validated" and "inconclusive" when the gates pass.
+
+        Users who want stricter family-wise error control can set
+        ``alpha=0.01`` or lower.
         """
         details: dict[str, str] = {}
 
@@ -73,7 +105,7 @@ class ValidationReport:
         gate_adjusted = False
         if cov and cov.get("status") != "failed":
             p = cov.get("empirical_pvalue", 1.0)
-            gate_adjusted = p < 0.05
+            gate_adjusted = p < alpha
             details["covariate_adjusted"] = f"p={p:.4f} ({'pass' if gate_adjusted else 'fail'})"
 
         # Phase 3: Label permutation (use both stratified and free)
@@ -83,7 +115,7 @@ class ValidationReport:
             # Use stratified p-value as primary gate
             strat = perm.get("stratified", perm)
             strat_p = strat.get("permutation_pvalue", perm.get("permutation_pvalue", 1.0))
-            gate_permutation = strat_p < 0.05
+            gate_permutation = strat_p < alpha
             details["label_permutation_stratified"] = f"p={strat_p:.4f}"
 
             # Also report free permutation
@@ -92,7 +124,7 @@ class ValidationReport:
             if free_p is not None:
                 details["label_permutation_free"] = f"p={free_p:.4f}"
                 # If stratified passes but free fails, flag potential issue
-                if gate_permutation and free_p >= 0.05:
+                if gate_permutation and free_p >= alpha:
                     details["permutation_warning"] = (
                         "Stratified passes but free fails — signal may "
                         "partly reflect covariate structure."
@@ -118,7 +150,7 @@ class ValidationReport:
         if matched and matched.get("status") != "failed":
             p = matched.get("empirical_pvalue", 1.0)
             n_matched = matched.get("n_matched", 0)
-            passed = p < 0.05
+            passed = p < alpha
             supplementary_pass += int(passed)
             supplementary_total += 1
             details["matched_reanalysis"] = (
