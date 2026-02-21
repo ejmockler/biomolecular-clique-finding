@@ -38,6 +38,65 @@ except ImportError:
     MLX_AVAILABLE = False
 
 
+@dataclass(frozen=True)
+class NetworkEnrichmentResult:
+    """Result of competitive permutation enrichment test for network targets.
+
+    Tests whether network targets (is_target=True) have systematically
+    higher |t-statistics| than random protein sets of the same size.
+
+    Attributes:
+        observed_mean_abs_t: Mean |t| for network targets.
+        null_mean: Mean of the null distribution (random sets).
+        null_std: Standard deviation of the null distribution.
+        z_score: Standardized enrichment score: (observed - null_mean) / null_std.
+        empirical_pvalue: One-sided empirical p-value (targets > random).
+        n_targets: Number of network targets with valid t-statistics.
+        n_background: Number of background proteins.
+        pct_down: Percentage of targets with negative t-statistic.
+        direction_pvalue: Binomial test p-value for directional bias.
+        mannwhitney_pvalue: Mann-Whitney U test p-value (targets vs background |t|).
+    """
+
+    observed_mean_abs_t: float
+    null_mean: float
+    null_std: float
+    z_score: float
+    empirical_pvalue: float
+    n_targets: int
+    n_background: int
+    pct_down: float
+    direction_pvalue: float
+    mannwhitney_pvalue: float
+
+    def to_dict(self) -> dict:
+        """Convert to plain dict, matching the legacy return format.
+
+        Returns:
+            Dict with the same keys as the previous dict-based return.
+        """
+        return {
+            'observed_mean_abs_t': self.observed_mean_abs_t,
+            'null_mean': self.null_mean,
+            'null_std': self.null_std,
+            'z_score': self.z_score,
+            'empirical_pvalue': self.empirical_pvalue,
+            'n_targets': self.n_targets,
+            'n_background': self.n_background,
+            'pct_down': self.pct_down,
+            'direction_pvalue': self.direction_pvalue,
+            'mannwhitney_pvalue': self.mannwhitney_pvalue,
+        }
+
+    def __getitem__(self, key: str):
+        """Support dict-style access for backward compatibility."""
+        return self.to_dict()[key]
+
+    def get(self, key: str, default=None):
+        """Support dict-style .get() for backward compatibility."""
+        return self.to_dict().get(key, default)
+
+
 class ModelType(Enum):
     """Type of statistical model."""
 
@@ -947,7 +1006,7 @@ def run_protein_differential(
     sample_condition: NDArray | pd.Series,
     contrast: tuple[str, str],
     eb_moderation: bool = True,
-    target_genes: list[str] | None = None,
+    target_gene_ids: list[str] | None = None,
     verbose: bool = False,
     covariates_df: pd.DataFrame | None = None,
     covariate_design: "CovariateDesign | None" = None,
@@ -977,7 +1036,7 @@ def run_protein_differential(
         contrast: Tuple of (condition1, condition2) to test condition1 - condition2.
         eb_moderation: If True, apply Empirical Bayes variance shrinkage (limma-style).
                        If False, use standard OLS t-statistics.
-        target_genes: Optional list of target genes to flag in results.
+        target_gene_ids: Optional list of target gene IDs to flag in results.
         verbose: Print progress information.
         covariates_df: Optional DataFrame of covariates (one row per sample).
             When provided, covariates are included in the design matrix as
@@ -998,7 +1057,7 @@ def run_protein_differential(
         - sigma2_post: Posterior variance (after EB shrinkage, if enabled)
         - sigma2: Sample variance (before shrinkage)
         - n_samples: Number of valid samples used
-        - is_target: Boolean flag (True if feature_id in target_genes)
+        - is_target: Boolean flag (True if feature_id in target_gene_ids)
 
     Example:
         >>> # Run EB-moderated differential on all proteins
@@ -1046,7 +1105,11 @@ def run_protein_differential(
         print(f"  Contrast: {contrast[0]} vs {contrast[1]}{cov_label}")
         print(f"  EB moderation: {'enabled' if eb_moderation else 'disabled'}")
 
-    # Precompute design matrix and OLS components
+    # Precompute design matrix and OLS components.
+    # When covariate_design is provided, it is passed through so that
+    # precompute_ols_matrices() uses the design's X, contrast, and
+    # sample_mask directly — eliminating the F8 latent bug where
+    # independently built masks could diverge.
     from .permutation_gpu import precompute_ols_matrices
 
     matrices = precompute_ols_matrices(
@@ -1055,6 +1118,7 @@ def run_protein_differential(
         contrast=contrast,
         regularization=1e-8,
         covariates_df=covariates_df,
+        covariate_design=covariate_design,
     )
 
     # Filter data to valid samples (those included in design matrix)
@@ -1071,6 +1135,23 @@ def run_protein_differential(
             valid_mask = valid_mask & cov_valid
     data_valid = data[:, valid_mask]
     n_valid = np.sum(valid_mask)
+
+    # Check group size imbalance (Satterthwaite df warning)
+    valid_conditions = np.asarray(sample_condition)[valid_mask]
+    group_a_mask = valid_conditions == contrast[0]
+    group_b_mask = valid_conditions == contrast[1]
+    n_a = int(np.sum(group_a_mask))
+    n_b = int(np.sum(group_b_mask))
+    if n_a > 0 and n_b > 0:
+        ratio = max(n_a, n_b) / min(n_a, n_b)
+        if ratio > 3.0:
+            warnings.warn(
+                f"Sample group sizes are highly imbalanced ({n_a} vs {n_b}). "
+                f"Satterthwaite df correction may be more appropriate than "
+                f"pooled variance.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     if verbose:
         print(f"  Valid samples: {n_valid}")
@@ -1179,8 +1260,8 @@ def run_protein_differential(
     })
 
     # Flag target genes if provided
-    if target_genes is not None:
-        target_set = set(target_genes)
+    if target_gene_ids is not None:
+        target_set = set(target_gene_ids)
         results['is_target'] = results['feature_id'].isin(target_set)
     else:
         results['is_target'] = False
@@ -1191,7 +1272,7 @@ def run_protein_differential(
     if verbose:
         n_tested = np.sum(valid_features)
         print(f"  Tested: {n_tested} features")
-        if target_genes is not None:
+        if target_gene_ids is not None:
             n_targets = np.sum(results['is_target'])
             print(f"  Target genes: {n_targets}")
 
@@ -1203,7 +1284,7 @@ def run_network_enrichment_test(
     n_permutations: int = 10000,
     seed: int | None = None,
     verbose: bool = True,
-) -> dict:
+) -> NetworkEnrichmentResult:
     """
     Competitive permutation test for network target enrichment.
 
@@ -1229,7 +1310,7 @@ def run_network_enrichment_test(
         verbose: Print progress
 
     Returns:
-        dict with keys:
+        NetworkEnrichmentResult dataclass with attributes:
             - observed_mean_abs_t: Mean |t| for network targets
             - null_mean: Mean of null distribution
             - null_std: Std of null distribution
@@ -1241,18 +1322,22 @@ def run_network_enrichment_test(
             - direction_pvalue: Binomial test for directional bias
             - mannwhitney_pvalue: Mann-Whitney U test on |t| distributions
 
+        Supports both attribute access (result.z_score) and dict-style
+        access (result["z_score"]) for backward compatibility. Use
+        result.to_dict() for JSON serialization.
+
     Example:
         >>> # Run protein differential first
         >>> protein_results = run_protein_differential(
         ...     data=intensity_matrix,
         ...     feature_ids=protein_ids,
         ...     sample_condition=metadata['phenotype'],
-        ...     target_genes=c9orf72_targets,  # From INDRA query
+        ...     target_gene_ids=c9orf72_targets,  # From INDRA query
         ... )
         >>> # Test network enrichment
         >>> enrichment = run_network_enrichment_test(protein_results)
-        >>> print(f"Z-score: {enrichment['z_score']:.2f}")
-        >>> print(f"P-value: {enrichment['empirical_pvalue']:.2e}")
+        >>> print(f"Z-score: {enrichment.z_score:.2f}")
+        >>> print(f"P-value: {enrichment.empirical_pvalue:.2e}")
 
     References:
         - GSEA: Subramanian et al., PNAS 2005
@@ -1351,18 +1436,18 @@ def run_network_enrichment_test(
         print(f"  Direction: {pct_down:.1f}% down-regulated")
         print(f"  Mann-Whitney p-value: {mannwhitney_pvalue:.2e}")
 
-    return {
-        'observed_mean_abs_t': observed_mean_abs_t,
-        'null_mean': null_mean,
-        'null_std': null_std,
-        'z_score': z_score,
-        'empirical_pvalue': empirical_pvalue,
-        'n_targets': n_targets,
-        'n_background': n_background,
-        'pct_down': pct_down,
-        'direction_pvalue': direction_pvalue,
-        'mannwhitney_pvalue': float(mannwhitney_pvalue),
-    }
+    return NetworkEnrichmentResult(
+        observed_mean_abs_t=observed_mean_abs_t,
+        null_mean=null_mean,
+        null_std=null_std,
+        z_score=z_score,
+        empirical_pvalue=empirical_pvalue,
+        n_targets=n_targets,
+        n_background=n_background,
+        pct_down=pct_down,
+        direction_pvalue=direction_pvalue,
+        mannwhitney_pvalue=float(mannwhitney_pvalue),
+    )
 
 
 def run_differential_analysis(

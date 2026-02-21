@@ -87,6 +87,7 @@ from .missing import (
 
 # Differential analysis
 from .differential import (
+    NetworkEnrichmentResult,
     ModelType,
     ContrastResult,
     ProteinResult,
@@ -202,6 +203,7 @@ __all__ = [
     "impute_qrilc",
     "impute_knn",
     # Differential analysis
+    "NetworkEnrichmentResult",
     "ModelType",
     "ContrastResult",
     "ProteinResult",
