@@ -130,7 +130,7 @@ class TestRunLabelPermutationNull:
             feature_ids=feature_ids,
             sample_condition=conditions,
             contrast=("A", "B"),
-            target_feature_ids=target_ids,
+            target_gene_ids=target_ids,
             n_permutations=50,
             seed=42,
             verbose=False,
@@ -150,7 +150,7 @@ class TestRunLabelPermutationNull:
             feature_ids=feature_ids,
             sample_condition=conditions,
             contrast=("A", "B"),
-            target_feature_ids=target_ids,
+            target_gene_ids=target_ids,
             n_permutations=99,
             seed=42,
             verbose=False,
@@ -173,7 +173,7 @@ class TestRunLabelPermutationNull:
             feature_ids=feature_ids,
             sample_condition=conditions,
             contrast=("A", "B"),
-            target_feature_ids=target_ids,
+            target_gene_ids=target_ids,
             n_permutations=30,
             stratify_by=strata,
             seed=42,
@@ -192,7 +192,7 @@ class TestRunLabelPermutationNull:
                 feature_ids=feature_ids,
                 sample_condition=conditions,
                 contrast=("A", "B"),
-                target_feature_ids=target_ids,
+                target_gene_ids=target_ids,
                 n_permutations=10,
                 stratify_by=np.array(["M", "F"]),  # Wrong length
                 verbose=False,
@@ -207,7 +207,7 @@ class TestRunLabelPermutationNull:
             feature_ids=feature_ids,
             sample_condition=conditions,
             contrast=("A", "B"),
-            target_feature_ids=target_ids,
+            target_gene_ids=target_ids,
             n_permutations=20,
             seed=42,
             verbose=False,
@@ -231,7 +231,7 @@ class TestRunLabelPermutationNull:
             feature_ids=feature_ids,
             sample_condition=conditions,
             contrast=("A", "B"),
-            target_feature_ids=target_ids,
+            target_gene_ids=target_ids,
             n_permutations=20,
             covariates_df=covariates_df,
             seed=42,
@@ -239,3 +239,145 @@ class TestRunLabelPermutationNull:
         )
 
         assert isinstance(result, LabelPermutationResult)
+
+    def test_covariate_design_passed_through(self, null_data):
+        """covariate_design is passed to every run_protein_differential call."""
+        from unittest.mock import patch, MagicMock
+        from cliquefinder.stats.design_matrix import CovariateDesign
+
+        data, feature_ids, conditions, target_ids = null_data
+        n_samples = len(conditions)  # 40
+
+        # Build a CovariateDesign with a restrictive mask (drop last 10)
+        mask = np.ones(n_samples, dtype=bool)
+        mask[-10:] = False
+        n_valid = int(mask.sum())  # 30
+
+        import statsmodels.api as sm
+        valid_conditions = conditions[mask]
+        X_cond = pd.get_dummies(
+            pd.Categorical(valid_conditions, categories=["A", "B"]),
+            drop_first=True,
+            dtype=float,
+        )
+        X_cond = sm.add_constant(X_cond)
+        X_np = X_cond.values.astype(np.float64)
+        contrast_vec = np.array([-1.0, 1.0])
+
+        design = CovariateDesign(
+            X=X_np,
+            condition_cols=[0, 1],
+            covariate_cols=[],
+            col_names=list(X_cond.columns),
+            contrast=contrast_vec,
+            contrast_name="A_vs_B",
+            sample_mask=mask,
+            n_condition_params=2,
+            n_covariate_params=0,
+        )
+
+        # Build a fake protein results DataFrame that _extract_enrichment_z needs
+        rng = np.random.default_rng(99)
+        n_features = len(feature_ids)
+        target_set = set(target_ids)
+        fake_results = pd.DataFrame({
+            "feature_id": feature_ids,
+            "t_statistic": rng.normal(0, 1, n_features),
+            "is_target": [fid in target_set for fid in feature_ids],
+        })
+
+        # Track covariate_design arguments in each call
+        received_designs = []
+
+        def mock_rpd(**kwargs):
+            received_designs.append(kwargs.get("covariate_design"))
+            return fake_results
+
+        # Patch at the source module (label_permutation imports it locally)
+        with patch(
+            "cliquefinder.stats.differential.run_protein_differential",
+            side_effect=mock_rpd,
+        ):
+            result = run_label_permutation_null(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=conditions,
+                contrast=("A", "B"),
+                target_gene_ids=target_ids,
+                n_permutations=5,
+                covariate_design=design,
+                seed=42,
+                verbose=False,
+            )
+
+        assert isinstance(result, LabelPermutationResult)
+        # 1 observed + 5 permutations = 6 calls
+        assert len(received_designs) == 6
+        for cd in received_designs:
+            assert cd is design, (
+                "covariate_design should be the same object passed to "
+                "run_label_permutation_null"
+            )
+            assert int(cd.sample_mask.sum()) == n_valid
+
+    def test_covariate_design_not_passed_when_none(self, null_data):
+        """Without covariate_design, None is passed to run_protein_differential."""
+        from unittest.mock import patch
+
+        data, feature_ids, conditions, target_ids = null_data
+
+        rng = np.random.default_rng(99)
+        n_features = len(feature_ids)
+        target_set = set(target_ids)
+        fake_results = pd.DataFrame({
+            "feature_id": feature_ids,
+            "t_statistic": rng.normal(0, 1, n_features),
+            "is_target": [fid in target_set for fid in feature_ids],
+        })
+
+        received_designs = []
+
+        def mock_rpd(**kwargs):
+            received_designs.append(kwargs.get("covariate_design"))
+            return fake_results
+
+        with patch(
+            "cliquefinder.stats.differential.run_protein_differential",
+            side_effect=mock_rpd,
+        ):
+            result = run_label_permutation_null(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=conditions,
+                contrast=("A", "B"),
+                target_gene_ids=target_ids,
+                n_permutations=3,
+                covariate_design=None,
+                seed=42,
+                verbose=False,
+            )
+
+        assert isinstance(result, LabelPermutationResult)
+        # 1 observed + 3 permutations = 4 calls, all should have None
+        assert len(received_designs) == 4
+        for cd in received_designs:
+            assert cd is None
+
+    def test_covariate_design_none_default(self, null_data):
+        """Without covariate_design, function still works (backward compat)."""
+        data, feature_ids, conditions, target_ids = null_data
+
+        result = run_label_permutation_null(
+            data=data,
+            feature_ids=feature_ids,
+            sample_condition=conditions,
+            contrast=("A", "B"),
+            target_gene_ids=target_ids,
+            n_permutations=10,
+            covariate_design=None,
+            seed=42,
+            verbose=False,
+        )
+
+        assert isinstance(result, LabelPermutationResult)
+        assert result.n_permutations > 0

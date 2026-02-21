@@ -157,3 +157,141 @@ class TestVerdictCompetitiveZPreference:
         # Gates pass but all supplementary fail → inconclusive
         assert report.verdict == "inconclusive"
         assert "0/1" in report.summary or "supplementary" in report.summary.lower()
+
+
+class TestVerdictAlphaParameter:
+    """Tests for configurable alpha threshold in compute_verdict()."""
+
+    def test_verdict_custom_alpha(self):
+        """With alpha=0.01, a phase with p=0.03 fails the gate."""
+        report = ValidationReport()
+        # Phase 1: p=0.03 — passes at alpha=0.05 but fails at alpha=0.01
+        report.add_phase("covariate_adjusted", {
+            "empirical_pvalue": 0.03,
+            "z_score": 2.2,
+        })
+        # Phase 3: clearly significant
+        report.add_phase("label_permutation", {
+            "stratified": {"permutation_pvalue": 0.002},
+            "free": {"permutation_pvalue": 0.005},
+            "permutation_pvalue": 0.002,
+        })
+        report.add_phase("specificity", {
+            "specificity_label": "specific",
+        })
+
+        # Default alpha=0.05: Phase 1 passes (0.03 < 0.05) → validated
+        report.compute_verdict()
+        assert report.verdict == "validated"
+
+        # Stricter alpha=0.01: Phase 1 fails (0.03 >= 0.01)
+        report.compute_verdict(alpha=0.01)
+        assert report.verdict != "validated"
+
+    def test_verdict_custom_alpha_phase3(self):
+        """With alpha=0.01, Phase 3 with p=0.04 fails the gate."""
+        report = ValidationReport()
+        report.add_phase("covariate_adjusted", {
+            "empirical_pvalue": 0.001,
+        })
+        # Phase 3: p=0.04 — passes at default but fails at alpha=0.01
+        report.add_phase("label_permutation", {
+            "stratified": {"permutation_pvalue": 0.04},
+            "permutation_pvalue": 0.04,
+        })
+
+        # Default: passes
+        report.compute_verdict()
+        assert report.verdict == "validated"
+
+        # Stricter: fails
+        report.compute_verdict(alpha=0.01)
+        assert report.verdict == "inconclusive"
+
+    def test_verdict_default_alpha_backward_compat(self):
+        """Default alpha=0.05 produces identical results to previous behavior."""
+        report = ValidationReport()
+        report.add_phase("covariate_adjusted", {
+            "empirical_pvalue": 0.001,
+            "z_score": 3.5,
+        })
+        report.add_phase("label_permutation", {
+            "stratified": {"permutation_pvalue": 0.002},
+            "free": {"permutation_pvalue": 0.01},
+            "permutation_pvalue": 0.002,
+        })
+        report.add_phase("specificity", {
+            "specificity_label": "specific",
+        })
+        report.add_phase("matched_reanalysis", {
+            "empirical_pvalue": 0.01,
+            "n_matched": 20,
+        })
+        report.add_phase("negative_controls", {
+            "target_percentile": 3.0,
+            "fpr": 0.02,
+        })
+
+        # Explicit alpha=0.05 should match no-arg call
+        report.compute_verdict(alpha=0.05)
+        verdict_explicit = report.verdict
+        summary_explicit = report.summary
+
+        report.compute_verdict()
+        assert report.verdict == verdict_explicit
+        assert report.summary == summary_explicit
+        assert report.verdict == "validated"
+
+    def test_verdict_custom_alpha_phase4_supplementary(self):
+        """Custom alpha also affects Phase 4 supplementary threshold."""
+        report = ValidationReport()
+        report.add_phase("covariate_adjusted", {"empirical_pvalue": 0.001})
+        report.add_phase("label_permutation", {
+            "stratified": {"permutation_pvalue": 0.001},
+            "permutation_pvalue": 0.001,
+        })
+        # Phase 4: p=0.03 — passes at alpha=0.05, fails at alpha=0.01
+        report.add_phase("matched_reanalysis", {
+            "empirical_pvalue": 0.03,
+            "n_matched": 15,
+        })
+
+        # At default alpha=0.05, matched passes → "1/1 pass"
+        report.compute_verdict()
+        assert report.verdict == "validated"
+        assert "1/1 pass" in report.summary
+
+        # At alpha=0.01, matched fails → "0/1 pass" but still validated
+        # because supplementary failure alone doesn't block (only
+        # "all supplementary fail" leads to inconclusive)
+        report.compute_verdict(alpha=0.01)
+        # All 1 supplementary phase fails → inconclusive
+        assert report.verdict == "inconclusive"
+
+
+class TestCLIAlphaFlag:
+    """Tests for N1: --alpha CLI flag on validate-baselines command."""
+
+    def test_alpha_argument_registered(self):
+        """Verify --alpha is accepted by the argparse parser."""
+        import argparse
+        from cliquefinder.cli.validate_baselines import register_parser
+
+        parent = argparse.ArgumentParser()
+        subparsers = parent.add_subparsers()
+        register_parser(subparsers)
+
+        # Default value
+        args = parent.parse_args(["validate-baselines",
+            "--data", "d.csv", "--metadata", "m.csv",
+            "--output", "out/", "--network-query", "TP53",
+        ])
+        assert args.alpha == 0.05
+
+        # Custom value
+        args = parent.parse_args(["validate-baselines",
+            "--data", "d.csv", "--metadata", "m.csv",
+            "--output", "out/", "--network-query", "TP53",
+            "--alpha", "0.01",
+        ])
+        assert args.alpha == 0.01

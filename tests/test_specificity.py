@@ -186,7 +186,7 @@ def _make_synthetic_data(
             data[i, n_c9:n_c9 + n_sporadic] += target_effect_sporadic
 
     feature_ids = [f"gene_{i}" for i in range(n_features)]
-    target_feature_ids = feature_ids[:n_targets]
+    target_gene_ids = feature_ids[:n_targets]
 
     # Metadata
     conditions = (
@@ -206,7 +206,7 @@ def _make_synthetic_data(
         "Sporadic_vs_CTRL": ("Sporadic", "CTRL"),
     }
 
-    return data, feature_ids, metadata, target_feature_ids, covariates_df, contrasts
+    return data, feature_ids, metadata, target_gene_ids, covariates_df, contrasts
 
 
 class TestInteractionZTest:
@@ -234,7 +234,7 @@ class TestInteractionZTest:
                 sample_condition=meta.loc[mask, "phenotype"],
                 contrast=ct,
                 eb_moderation=True,
-                target_genes=targets,
+                target_gene_ids=targets,
                 verbose=False,
                 covariates_df=cov[mask],
             )
@@ -250,7 +250,7 @@ class TestInteractionZTest:
             metadata=meta,
             condition_col="phenotype",
             contrast_tuples=contrasts,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             covariates_df=cov,
             n_interaction_perms=100,
             seed=42,
@@ -287,7 +287,7 @@ class TestInteractionZTest:
                 sample_condition=meta.loc[mask, "phenotype"],
                 contrast=ct,
                 eb_moderation=True,
-                target_genes=targets,
+                target_gene_ids=targets,
                 verbose=False,
                 covariates_df=cov[mask],
             )
@@ -303,7 +303,7 @@ class TestInteractionZTest:
             metadata=meta,
             condition_col="phenotype",
             contrast_tuples=contrasts,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             covariates_df=cov,
             n_interaction_perms=100,
             seed=42,
@@ -342,7 +342,7 @@ class TestInteractionZTest:
             condition_col="phenotype",
             primary_contrast=("C9", "CTRL"),
             secondary_contrast=("Sporadic", "CTRL"),
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             covariates_df=cov,
             n_perms=100,
             seed=42,
@@ -373,7 +373,7 @@ class TestInteractionZTest:
                 sample_condition=meta.loc[mask, "phenotype"],
                 contrast=ct,
                 eb_moderation=True,
-                target_genes=targets,
+                target_gene_ids=targets,
                 verbose=False,
                 covariates_df=cov[mask],
             )
@@ -389,7 +389,7 @@ class TestInteractionZTest:
             metadata=meta,
             condition_col="phenotype",
             contrast_tuples=contrasts,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             covariates_df=cov,
             n_interaction_perms=50,
             seed=42,

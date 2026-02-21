@@ -16,10 +16,10 @@ def _make_data(n_features=100, n_samples=30, n_targets=10, effect=0.0, seed=42):
     for i in range(n_targets):
         data[i, :n_a] += effect
     feature_ids = [f"gene_{i}" for i in range(n_features)]
-    target_feature_ids = feature_ids[:n_targets]
+    target_gene_ids = feature_ids[:n_targets]
     condition = np.array(["A"] * n_a + ["B"] * n_b)
     contrast = ("A", "B")
-    return data, feature_ids, condition, contrast, target_feature_ids
+    return data, feature_ids, condition, contrast, target_gene_ids
 
 
 class TestRunBootstrapStability:
@@ -34,7 +34,7 @@ class TestRunBootstrapStability:
             feature_ids=fids,
             sample_condition=cond,
             contrast=contrast,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             n_bootstraps=50,
             seed=42,
             verbose=False,
@@ -53,7 +53,7 @@ class TestRunBootstrapStability:
             feature_ids=fids,
             sample_condition=cond,
             contrast=contrast,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             n_bootstraps=50,
             z_threshold=1.5,
             seed=42,
@@ -71,7 +71,7 @@ class TestRunBootstrapStability:
             feature_ids=fids,
             sample_condition=cond,
             contrast=contrast,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             n_bootstraps=50,
             seed=42,
             verbose=False,
@@ -94,7 +94,7 @@ class TestRunBootstrapStability:
             feature_ids=fids,
             sample_condition=cond,
             contrast=contrast,
-            target_feature_ids=targets,
+            target_gene_ids=targets,
             covariates_df=cov,
             n_bootstraps=30,
             seed=42,

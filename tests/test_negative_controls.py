@@ -422,3 +422,67 @@ class TestExpressionMatchedControls:
 
         # Matched controls should be closer to target mean than random
         assert abs(matched_mean - target_mean) < abs(random_mean - target_mean)
+
+
+class TestSignificantControlsCounting:
+    """Tests for n_significant_controls and n_valid_controls fields (H4)."""
+
+    def test_significant_controls_counted(self):
+        """Verify n_significant_controls is populated and sensible."""
+        gene_ids = [f"gene_{i}" for i in range(100)]
+
+        # Return p-values that alternate between significant and not:
+        # target gets 0.5, then controls alternate 0.01, 0.9, 0.01, 0.9, ...
+        call_count = {"n": 0}
+
+        def alternating_pval(genes):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return 0.5  # Target
+            # Controls: even calls significant, odd calls not
+            if call_count["n"] % 2 == 0:
+                return 0.01  # significant (p < 0.05)
+            return 0.9  # not significant
+
+        engine = MockRotationEngine(gene_ids, pvalue_func=alternating_pval)
+        target_genes = gene_ids[:10]
+
+        result = run_negative_control_sets(
+            engine=engine,
+            target_gene_ids=target_genes,
+            target_set_id="sig_count_test",
+            n_control_sets=20,
+            alpha=0.05,
+            seed=42,
+            verbose=False,
+        )
+
+        # n_significant_controls should be the count of controls with p < alpha
+        assert result.n_significant_controls >= 0
+        assert result.n_significant_controls <= result.n_valid_controls
+        # With alternating pattern, roughly half should be significant
+        assert result.n_significant_controls == int(
+            np.sum(result.control_pvalues < 0.05)
+        )
+
+    def test_valid_controls_equals_n_control_sets(self):
+        """Verify n_valid_controls matches n_control_sets minus failures."""
+        gene_ids = [f"gene_{i}" for i in range(100)]
+
+        # All controls succeed (no exceptions), so n_valid == n_control_sets
+        engine = MockRotationEngine(gene_ids)
+        target_genes = gene_ids[:10]
+
+        n_sets = 30
+        result = run_negative_control_sets(
+            engine=engine,
+            target_gene_ids=target_genes,
+            target_set_id="valid_count_test",
+            n_control_sets=n_sets,
+            seed=42,
+            verbose=False,
+        )
+
+        # No failures, so n_valid_controls should equal n_control_sets requested
+        assert result.n_valid_controls == n_sets
+        assert result.n_control_sets == n_sets

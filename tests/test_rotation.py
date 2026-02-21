@@ -15,6 +15,8 @@ References:
     - Limma package (Bioconductor) for numerical validation
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -544,6 +546,72 @@ class TestActiveProportion:
         props = estimate_active_proportion(t_stats, df_total=18.0)
 
         assert props['mixed'] == 0.0  # None active
+
+
+# =============================================================================
+# 2-Group Warning Tests (H3 audit finding)
+# =============================================================================
+
+class TestTwoGroupWarning:
+    """Tests for ROAST 2-group limit warning."""
+
+    def test_two_group_no_warning(self, synthetic_expression):
+        """2 conditions should not emit a warning."""
+        data, gene_ids, metadata = synthetic_expression
+
+        engine = RotationTestEngine(data, gene_ids, metadata)
+
+        with pytest.warns(match="does_not_match_anything") if False else warnings.catch_warnings():
+            warnings.simplefilter("error")
+            # This should NOT raise any warning
+            engine.fit(
+                conditions=['CASE', 'CTRL'],
+                contrast=('CASE', 'CTRL'),
+                condition_column='phenotype',
+            )
+
+    def test_three_group_warning(self):
+        """3 conditions should emit a warning about 2-group limit.
+
+        The warning fires based on unique values in sample_condition, even
+        though only 2 conditions are passed in `conditions`. The extra
+        samples from the third group are treated as NaN by the categorical
+        and filtered out during QR decomposition, but the data matrix must
+        match the metadata rows. Here we use 30 samples (10 per group)
+        and the downstream QR only uses the 20 A/B samples.
+        """
+        n_genes = 50
+        rng = np.random.default_rng(42)
+
+        # 3 groups present in metadata, but only A and B in conditions
+        sample_condition = np.array(['A'] * 10 + ['B'] * 10 + ['C'] * 10)
+        n_samples = len(sample_condition)  # 30
+
+        data = rng.standard_normal((n_genes, n_samples))
+        gene_ids = [f"GENE_{i}" for i in range(n_genes)]
+        metadata = pd.DataFrame({
+            'sample_id': [f"S{i}" for i in range(n_samples)],
+            'phenotype': sample_condition,
+        })
+
+        engine = RotationTestEngine(data, gene_ids, metadata)
+
+        # We only need to verify the warning is emitted. The downstream
+        # compute_rotation_matrices filters to valid (A/B) samples for QR,
+        # but extract_gene_effects will fail because data has 30 columns
+        # and Q2 only has 20 rows. That is expected -- the audit finding
+        # is about the warning, not about making 3-group analysis work.
+        # So we catch both the warning and the downstream error.
+        with pytest.warns(
+            UserWarning,
+            match=r"ROAST rotation test is designed for 2-group comparisons\. 3 groups detected",
+        ):
+            with pytest.raises(ValueError, match="Sample mismatch"):
+                engine.fit(
+                    conditions=['A', 'B'],
+                    contrast=('A', 'B'),
+                    condition_column='phenotype',
+                )
 
 
 if __name__ == "__main__":

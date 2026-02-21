@@ -410,6 +410,175 @@ class TestCovariateDesignWithDifferential:
         assert result["n_samples"].iloc[0] == 19
 
 
+class TestPrecomputeWithCovariateDesign:
+    """Tests for H6: precompute_ols_matrices() with CovariateDesign pass-through."""
+
+    def test_precompute_with_covariate_design(self):
+        """Pass CovariateDesign to precompute_ols_matrices(), verify it uses X directly."""
+        from cliquefinder.stats.permutation_gpu import precompute_ols_matrices
+
+        condition = np.array(["A"] * 10 + ["B"] * 10)
+        conditions = ["A", "B"]
+        contrast = ("B", "A")
+        cov_df = pd.DataFrame({"Sex": np.tile(["M", "F"], 10)})
+
+        # Build CovariateDesign
+        design = build_covariate_design_matrix(
+            condition, conditions, contrast, covariates_df=cov_df,
+        )
+
+        # Pass design directly to precompute_ols_matrices
+        matrices = precompute_ols_matrices(
+            covariate_design=design,
+            conditions=conditions,
+        )
+
+        # Verify it used the design's X matrix (shape should match exactly)
+        assert matrices.X.shape == design.X.shape
+        np.testing.assert_array_equal(matrices.X, design.X)
+
+        # Verify it used the design's contrast vector
+        np.testing.assert_array_equal(matrices.c, design.contrast)
+
+        # Verify contrast name comes from design
+        assert matrices.contrast_name == design.contrast_name
+
+        # Verify df_residual is consistent
+        assert matrices.df_residual == design.df_residual
+
+        # Verify XtX_inv and c_var_factor are properly computed
+        assert matrices.XtX_inv.shape == (design.n_params, design.n_params)
+        assert matrices.c_var_factor > 0
+
+    def test_precompute_without_covariate_design_unchanged(self):
+        """No covariate_design: identical behavior to before (backward compat)."""
+        from cliquefinder.stats.permutation_gpu import precompute_ols_matrices
+
+        condition = np.array(["A"] * 10 + ["B"] * 10)
+        conditions = ["A", "B"]
+        contrast = ("B", "A")
+        cov_df = pd.DataFrame({"Sex": np.tile(["M", "F"], 10)})
+
+        # Without CovariateDesign (old path via covariates_df)
+        matrices_old = precompute_ols_matrices(
+            sample_condition=condition,
+            conditions=conditions,
+            contrast=contrast,
+            covariates_df=cov_df,
+        )
+
+        # With CovariateDesign (new consolidated path)
+        design = build_covariate_design_matrix(
+            condition, conditions, contrast, covariates_df=cov_df,
+        )
+        matrices_new = precompute_ols_matrices(
+            covariate_design=design,
+            conditions=conditions,
+        )
+
+        # Both paths should produce identical matrices
+        np.testing.assert_array_almost_equal(matrices_old.X, matrices_new.X)
+        np.testing.assert_array_almost_equal(matrices_old.c, matrices_new.c)
+        np.testing.assert_array_almost_equal(matrices_old.XtX_inv, matrices_new.XtX_inv)
+        assert abs(matrices_old.c_var_factor - matrices_new.c_var_factor) < 1e-10
+        assert matrices_old.df_residual == matrices_new.df_residual
+        assert matrices_old.contrast_name == matrices_new.contrast_name
+
+    def test_differential_with_covariate_design_consistent(self):
+        """run_protein_differential with and without CovariateDesign yield same results."""
+        from cliquefinder.stats.differential import run_protein_differential
+
+        rng = np.random.default_rng(123)
+        n_features, n_samples = 80, 24
+        data = rng.normal(0, 1, size=(n_features, n_samples))
+        # Add a condition effect for some features
+        data[:10, :12] += 0.5
+        feature_ids = [f"protein_{i}" for i in range(n_features)]
+        condition = np.array(["ctrl"] * 12 + ["treat"] * 12)
+        conditions = ["ctrl", "treat"]
+        contrast = ("treat", "ctrl")
+        cov_df = pd.DataFrame({"Sex": np.tile(["M", "F"], 12)})
+
+        # Path 1: covariates_df only (no CovariateDesign)
+        result_without = run_protein_differential(
+            data=data, feature_ids=feature_ids,
+            sample_condition=condition, contrast=contrast,
+            covariates_df=cov_df, verbose=False,
+        )
+
+        # Path 2: pre-built CovariateDesign passed through
+        design = build_covariate_design_matrix(
+            condition, conditions, contrast, covariates_df=cov_df,
+        )
+        result_with = run_protein_differential(
+            data=data, feature_ids=feature_ids,
+            sample_condition=condition, contrast=contrast,
+            covariates_df=cov_df, covariate_design=design, verbose=False,
+        )
+
+        # t-statistics should be identical (same design matrix, same data)
+        np.testing.assert_array_almost_equal(
+            result_without["t_statistic"].values,
+            result_with["t_statistic"].values,
+            decimal=10,
+        )
+
+        # log2fc should also match
+        np.testing.assert_array_almost_equal(
+            result_without["log2fc"].values,
+            result_with["log2fc"].values,
+            decimal=10,
+        )
+
+        # p-values should match
+        np.testing.assert_array_almost_equal(
+            result_without["p_value"].values,
+            result_with["p_value"].values,
+            decimal=10,
+        )
+
+
+class TestImbalancedGroupsWarning:
+    """Tests for Satterthwaite df imbalance warning (M4)."""
+
+    def test_imbalanced_groups_warning(self):
+        """Highly imbalanced groups (5 vs 35) should emit UserWarning."""
+        import warnings
+        from cliquefinder.stats.differential import run_protein_differential
+
+        rng = np.random.default_rng(42)
+        n_a, n_b = 5, 35
+        n_samples = n_a + n_b
+        n_features = 20
+        data = rng.normal(0, 1, size=(n_features, n_samples))
+        feature_ids = [f"gene_{i}" for i in range(n_features)]
+        condition = np.array(["A"] * n_a + ["B"] * n_b)
+        contrast = ("B", "A")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            run_protein_differential(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=condition,
+                contrast=contrast,
+                eb_moderation=True,
+                verbose=False,
+            )
+            imbalance_warnings = [
+                x for x in w
+                if issubclass(x.category, UserWarning)
+                and "imbalanced" in str(x.message).lower()
+            ]
+            assert len(imbalance_warnings) >= 1, (
+                f"Expected UserWarning about imbalanced groups, got: "
+                f"{[str(x.message) for x in w]}"
+            )
+            msg = str(imbalance_warnings[0].message)
+            assert "5" in msg and "35" in msg
+            assert "Satterthwaite" in msg
+
+
 class TestPadContrastForCovariates:
     """Tests for pad_contrast_for_covariates."""
 
