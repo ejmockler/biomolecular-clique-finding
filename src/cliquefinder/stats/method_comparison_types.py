@@ -128,6 +128,12 @@ class UnifiedCliqueResult:
     # Method-specific (for deep analysis)
     method_metadata: dict[str, object] = field(default_factory=dict)
 
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        from types import MappingProxyType
+        if isinstance(self.method_metadata, dict) and not isinstance(self.method_metadata, MappingProxyType):
+            object.__setattr__(self, 'method_metadata', MappingProxyType(dict(self.method_metadata)))
+
     def to_dict(self) -> dict[str, object]:
         """
         Flatten result for DataFrame construction.
