@@ -192,7 +192,28 @@
 
 ---
 
-## Final Summary
+---
+
+### Wave 5: Deferred Items & Manual Review Follow-ups (P2/P4)
+
+**Scope:** 5 items (2 deferred + 3 from manual review), ~2,500 lines changed
+
+| Finding | File(s) | Agent | Description |
+|---------|---------|-------|-------------|
+| ARCH-7 | `stats/method_comparison.py` → 7+ new modules | monolith-split | Decompose 2,865-line file per documented plan (lines 53-63) |
+| ARCH-5 | `cli/_analyze_core.py` | shared-memory | Memory-mapped arrays for process pool workers |
+| STAT-1-OPT | `stats/differential.py` | gpu-numerics | Restore MLX fast path for batched OLS (same-pattern features) |
+| W1-SQUEEZE-VAR | `stats/permutation_gpu.py` | gpu-numerics | Unify squeeze_var to accept both scalar and array df |
+| ARCH-4-NOTE | `knowledge/cogex.py` | shared-memory | Replace string-matching with typed Neo4j exception classes |
+
+**Agents (3 parallel, isolated worktrees):**
+- `monolith-split`: ARCH-7 — full method_comparison.py decomposition, backward-compatible re-exports
+- `shared-memory`: ARCH-5 + ARCH-4-NOTE — memory-mapped arrays for process pool, Neo4j exception formalization
+- `gpu-numerics`: STAT-1-OPT + W1-SQUEEZE-VAR — MLX fast path restoration, squeeze_var unification
+
+---
+
+## Summary
 
 | Wave | Findings Fixed | Tests Added | Cumulative Tests | Total Suite |
 |------|---------------|-------------|-----------------|-------------|
@@ -200,13 +221,7 @@
 | Wave 2 (P1) | 10 | 104 | 160 | 513 |
 | Wave 3 (P2) | 7 | 87 | 247 | 599 |
 | Wave 4 (P3/P4) | 12 | 87 | 334 | 687 |
-
-**Total: 36 findings addressed (34 fixed, 2 deferred), 334 audit-specific tests, 687 total tests passing.**
-
-Deferred to future work:
-- ARCH-5: Shared memory for process pool (OS-specific, marginal benefit)
-- ARCH-7: method_comparison.py monolith split (pure refactoring)
-- STAT-1-OPT: Restore MLX GPU fast path (P4, performance only)
+| Wave 5 (P2/P4) | — | — | — | — |
 
 ---
 
