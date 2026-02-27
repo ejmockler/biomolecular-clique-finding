@@ -146,6 +146,18 @@ class ValidationReport:
         """
         details: dict[str, str] = {}
 
+        # --- P-value sidedness conventions (STAT-10) ---
+        # Phase 1 (covariate-adjusted): one-sided (enrichment direction)
+        # Phase 2 (specificity interaction): two-sided (|Δz| in either direction)
+        # Phase 3 (label permutation): one-sided (null z >= observed z)
+        # Phase 4 (matched subsampling): one-sided (enrichment direction)
+        # Phase 5 (negative controls): ROAST MSQ mixed = effectively two-sided
+        #
+        # When comparing p-values across phases, note that one-sided
+        # p-values (Phases 1, 3, 4) test enrichment specifically, while
+        # two-sided p-values (Phase 2 interaction, Phase 5 ROAST mixed)
+        # test deviation in either direction.
+
         # --- Mandatory gates ---
         # Phase 1: Covariate-adjusted enrichment
         cov = self.phases.get("covariate_adjusted")

@@ -162,6 +162,13 @@ def run_label_permutation_null(
     differential analysis and enrichment test, and compares the observed
     z-score against the null distribution.
 
+    P-value sidedness: Returns a one-sided p-value testing enrichment
+    (whether null z >= observed z). This tests the hypothesis that target
+    genes are more differentially expressed than expected under label
+    permutation — i.e., enrichment in a specific direction (higher |t|
+    in targets). To obtain a two-sided p-value, double the returned
+    value (capped at 1.0).
+
     Args:
         data: Expression matrix (n_features, n_samples), log2-transformed.
         feature_ids: Feature identifiers matching rows of data.
