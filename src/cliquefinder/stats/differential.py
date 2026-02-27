@@ -448,10 +448,19 @@ def batched_ols_gpu(
     contrast_names: list[str],
 ) -> list[ProteinResult]:
     """
-    Batched OLS regression for all features using GPU acceleration.
+    Batched OLS regression for all features with correct per-pattern NaN handling.
 
-    Solves: Y = X @ β + ε for all features simultaneously.
-    Uses MLX for GPU acceleration of matrix operations.
+    Solves: Y = X @ beta + epsilon for all features simultaneously, grouping
+    features by their NaN missingness pattern so each group gets a correctly
+    computed (X'X)^{-1} from only the valid rows for that pattern.
+
+    **STAT-1 fix**: Features with different NaN patterns get separate (X'X)^{-1}
+    matrices (shared inverse is incorrect when row subsets differ).
+
+    **STAT-1-OPT**: When all features share the same NaN pattern (common case
+    for complete data), MLX GPU acceleration is used for the single bulk
+    matrix operation. Falls back to NumPy when MLX is unavailable or when
+    multiple NaN patterns exist.
 
     Args:
         Y: Response matrix (n_samples, n_features) of log2 intensities.
@@ -464,95 +473,147 @@ def batched_ols_gpu(
     Returns:
         List of ProteinResult objects with test statistics.
     """
-    if not MLX_AVAILABLE:
-        raise ImportError("MLX not available. Install with: pip install mlx")
-
     n_samples, n_features = Y.shape
     n_params = X.shape[1]
     n_conditions = len(conditions)
 
-    # Convert to MLX arrays
-    Y_mx = mx.array(Y)
-    X_mx = mx.array(X)
+    # Output arrays
+    beta_np = np.full((n_params, n_features), np.nan)
+    residual_var_np = np.full(n_features, np.nan)
+    df_resid_np = np.zeros(n_features)
+    n_valid_np = np.zeros(n_features)
+    XtX_inv_per_feature: dict[int, NDArray[np.float64]] = {}
 
-    # Handle NaN values by creating masks
-    # For simplicity, we'll process all features together and mask results
+    # -------------------------------------------------------------------------
+    # Group features by NaN missingness pattern
+    # Each pattern is a tuple of booleans indicating valid (non-NaN) rows.
+    # Features sharing the same pattern can be solved together with one (X'X)^-1.
+    # -------------------------------------------------------------------------
     nan_mask = np.isnan(Y)  # (n_samples, n_features)
+    valid_mask = ~nan_mask  # (n_samples, n_features)
 
-    # Replace NaN with 0 for computation (will be masked out)
-    Y_clean = np.where(nan_mask, 0.0, Y)
-    Y_mx_clean = mx.array(Y_clean)
+    pattern_groups: dict[tuple[bool, ...], list[int]] = {}
+    for j in range(n_features):
+        pattern = tuple(valid_mask[:, j].tolist())
+        pattern_groups.setdefault(pattern, []).append(j)
 
-    # Compute (X'X)^-1
-    # Note: MLX linalg.inv may require CPU stream, so we compute on CPU and convert back
-    XtX = X_mx.T @ X_mx
-    try:
-        # Convert to numpy for inversion (MLX inv may not support GPU)
-        XtX_np = np.array(XtX)
-        XtX_inv_np = np.linalg.inv(XtX_np)
-        XtX_inv = mx.array(XtX_inv_np)
-    except np.linalg.LinAlgError as e:
-        # Singular matrix - fall back to sequential
-        raise ValueError(f"Singular design matrix: {e}")
+    # -------------------------------------------------------------------------
+    # MLX fast path: when ALL features share the same NaN pattern, use MLX
+    # for the single bulk computation. This is the common case for complete
+    # data and avoids the per-pattern Python loop entirely.
+    # -------------------------------------------------------------------------
+    if len(pattern_groups) == 1 and MLX_AVAILABLE:
+        pattern, all_indices = next(iter(pattern_groups.items()))
+        valid = np.array(pattern, dtype=bool)
+        n_obs = int(np.sum(valid))
 
-    # Solve for coefficients: β = (X'X)^-1 X'Y
-    # Shape: (n_params, n_features)
-    beta = XtX_inv @ (X_mx.T @ Y_mx_clean)
+        if n_obs > n_params:
+            X_g = X[valid, :]
+            Y_g = Y[np.ix_(valid, all_indices)]  # (n_obs, n_group_features)
 
-    # Predictions and residuals
-    Y_pred = X_mx @ beta
-    residuals = Y_mx_clean - Y_pred
+            # Use MLX for the bulk computation
+            X_mx = mx.array(X_g)
+            Y_mx = mx.array(Y_g)
 
-    # Residual sum of squares (RSS) per feature
-    # Mask out NaN positions before computing RSS
-    valid_mask_mx = mx.array(~nan_mask)  # (n_samples, n_features)
-    residuals_masked = residuals * valid_mask_mx
-    rss = mx.sum(residuals_masked ** 2, axis=0)  # (n_features,)
+            # beta = (X'X)^{-1} X'Y via solve for stability
+            XtX_mx = X_mx.T @ X_mx
+            XtY_mx = X_mx.T @ Y_mx
 
-    # Count valid observations per feature
-    n_valid = mx.sum(valid_mask_mx, axis=0)  # (n_features,)
+            # Compute inverse on CPU (MLX linalg support varies)
+            XtX_np_g = np.array(XtX_mx)
+            try:
+                XtX_inv_g = np.linalg.inv(XtX_np_g)
+            except np.linalg.LinAlgError:
+                # Singular — will be caught in the per-feature result loop
+                XtX_inv_g = None
 
-    # Residual degrees of freedom: n_valid - n_params
-    df_resid = n_valid - n_params
+            if XtX_inv_g is not None:
+                XtX_inv_mx = mx.array(XtX_inv_g)
+                beta_mx = XtX_inv_mx @ XtY_mx  # (n_params, n_group)
 
-    # Residual variance: σ² = RSS / df_resid
-    residual_var = rss / mx.maximum(df_resid, 1.0)  # Avoid division by zero
+                # Residuals
+                resid_mx = Y_mx - X_mx @ beta_mx  # (n_obs, n_group)
 
-    # Standard errors: SE(β) = sqrt(σ² * diag((X'X)^-1))
-    # Diagonal of (X'X)^-1
-    XtX_inv_diag = mx.diagonal(XtX_inv)  # (n_params,)
+                # Convert to numpy for output
+                beta_block = np.array(beta_mx)
+                resid_block = np.array(resid_mx)
 
-    # SE matrix: (n_params, n_features)
-    # Each feature has variance residual_var[j], so SE[i,j] = sqrt(residual_var[j] * XtX_inv_diag[i])
-    se_matrix = mx.sqrt(residual_var[None, :] * XtX_inv_diag[:, None])
+                df = n_obs - n_params
+                rss = np.sum(resid_block ** 2, axis=0)
+                var_block = rss / max(df, 1)
 
-    # Convert back to numpy for contrast computation
-    beta_np = np.array(beta)  # (n_params, n_features)
-    se_np = np.array(se_matrix)  # (n_params, n_features)
-    residual_var_np = np.array(residual_var)  # (n_features,)
-    df_resid_np = np.array(df_resid)  # (n_features,)
-    n_valid_np = np.array(n_valid)  # (n_features,)
-    XtX_inv_np = np.array(XtX_inv)  # (n_params, n_params)
+                for local_idx, feat_idx in enumerate(all_indices):
+                    beta_np[:, feat_idx] = beta_block[:, local_idx]
+                    residual_var_np[feat_idx] = var_block[local_idx]
+                    df_resid_np[feat_idx] = df
+                    n_valid_np[feat_idx] = n_obs
+                    XtX_inv_per_feature[feat_idx] = XtX_inv_g
 
-    # Build transformation matrix from coefficients to condition means
-    # For dummy coding: condition_mean[i] = intercept (i=0) or intercept + coef[i] (i>0)
+                # Mark that we handled all features
+                pattern_groups = {}  # Skip the NumPy loop below
+
+    # -------------------------------------------------------------------------
+    # NumPy per-pattern loop: handles multiple NaN patterns or MLX unavailable
+    # -------------------------------------------------------------------------
+    for pattern, indices in pattern_groups.items():
+        valid = np.array(pattern, dtype=bool)
+        n_obs = int(np.sum(valid))
+
+        if n_obs <= n_params:
+            # Insufficient observations for this pattern group
+            for idx in indices:
+                df_resid_np[idx] = 0
+                n_valid_np[idx] = n_obs
+            continue
+
+        X_g = X[valid, :]
+        Y_g = Y[np.ix_(valid, indices)]  # (n_obs, n_group_features)
+
+        # Compute (X'X)^{-1} for this pattern's row subset
+        XtX_g = X_g.T @ X_g
+        try:
+            XtX_inv_g = np.linalg.inv(XtX_g)
+        except np.linalg.LinAlgError:
+            # Singular for this pattern — mark features as failed
+            for idx in indices:
+                df_resid_np[idx] = 0
+                n_valid_np[idx] = n_obs
+            continue
+
+        # beta = (X'X)^{-1} X'Y
+        beta_block = XtX_inv_g @ (X_g.T @ Y_g)  # (n_params, n_group)
+
+        # Residuals and variance
+        resid_block = Y_g - X_g @ beta_block  # (n_obs, n_group)
+        df = n_obs - n_params
+        rss = np.sum(resid_block ** 2, axis=0)
+        var_block = rss / max(df, 1)
+
+        for local_idx, feat_idx in enumerate(indices):
+            beta_np[:, feat_idx] = beta_block[:, local_idx]
+            residual_var_np[feat_idx] = var_block[local_idx]
+            df_resid_np[feat_idx] = df
+            n_valid_np[feat_idx] = n_obs
+            XtX_inv_per_feature[feat_idx] = XtX_inv_g
+
+    # -------------------------------------------------------------------------
+    # Build transformation matrix and assemble per-feature ProteinResults
+    # -------------------------------------------------------------------------
     L = np.zeros((n_conditions, n_params))
     L[:, 0] = 1.0  # All conditions include intercept
     for i in range(1, min(n_conditions, n_params)):
         L[i, i] = 1.0  # Add dummy coefficient for non-reference conditions
 
-    # Process each feature to create ProteinResult
     results = []
     for j in range(n_features):
         feature_id = feature_ids[j]
-        beta_j = beta_np[:, j]  # (n_params,)
-        se_j = se_np[:, j]  # (n_params,)
+        beta_j = beta_np[:, j]
         res_var_j = residual_var_np[j]
         df_j = max(int(df_resid_np[j]), 1)
         n_obs_j = int(n_valid_np[j])
 
         # Check for insufficient data
-        if n_obs_j < 3 or df_j < 1:
+        if n_obs_j < 3 or df_resid_np[j] < 1:
             results.append(ProteinResult(
                 feature_id=feature_id,
                 contrasts=[],
@@ -579,6 +640,21 @@ def batched_ols_gpu(
             ))
             continue
 
+        # Get the (X'X)^{-1} for this feature's pattern group
+        XtX_inv_j = XtX_inv_per_feature.get(j)
+        if XtX_inv_j is None:
+            results.append(ProteinResult(
+                feature_id=feature_id,
+                contrasts=[],
+                model_type=ModelType.FIXED,
+                n_observations=n_obs_j,
+                residual_variance=res_var_j,
+                subject_variance=None,
+                convergence=False,
+                issue="Singular design matrix for NaN pattern",
+            ))
+            continue
+
         # Compute condition means: means = L @ beta
         condition_means = L @ beta_j  # (n_conditions,)
 
@@ -591,9 +667,9 @@ def batched_ols_gpu(
             # Transform contrast to parameter space: c = L' * contrast_vec
             c_param = L.T @ contrast_vec  # (n_params,)
 
-            # Standard error: SE = sqrt(c' * Cov(β) * c)
-            # where Cov(β) = σ² * (X'X)^-1
-            se_squared = res_var_j * (c_param @ XtX_inv_np @ c_param)
+            # Standard error: SE = sqrt(c' * Cov(beta) * c)
+            # where Cov(beta) = sigma^2 * (X'X)^{-1} for THIS feature's pattern
+            se_squared = res_var_j * (c_param @ XtX_inv_j @ c_param)
 
             if se_squared < 0:
                 warnings.warn(f"Negative variance for {feature_id}, contrast {contrast_name}")
@@ -1221,12 +1297,16 @@ def run_protein_differential(
                     print(f"  Shrinkage: {100*shrinkage_weight:.1f}% prior, "
                           f"{100*(1-shrinkage_weight):.1f}% sample")
 
-            # Apply shrinkage to ALL features (including those filtered out)
-            sigma2_post, df_total = squeeze_var(sigma2, matrices.df_residual, d0, s0_sq)
+            # Apply shrinkage to ALL features (including those filtered out).
+            # Use per-feature df (array) so features with different NaN counts
+            # get correctly weighted posterior variances (W1-SQUEEZE-VAR).
+            sigma2_post, df_total = squeeze_var(
+                sigma2, df_per_feature.astype(np.float64), d0, s0_sq,
+            )
     else:
         # No EB moderation - use standard OLS
         sigma2_post = sigma2.copy()
-        df_total = float(matrices.df_residual)
+        df_total = df_per_feature.astype(np.float64)
         d0 = np.inf
         s0_sq = np.nan
 
@@ -1253,7 +1333,7 @@ def run_protein_differential(
         'log2fc': log2fc,
         't_statistic': t_statistic,
         'p_value': p_value,
-        'df': df_total if not np.isinf(d0) else matrices.df_residual,
+        'df': df_total,
         'sigma2_post': sigma2_post,
         'sigma2': sigma2,
         'n_samples': n_valid_per_feature,

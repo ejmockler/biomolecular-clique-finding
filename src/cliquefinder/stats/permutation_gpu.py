@@ -192,10 +192,10 @@ def fit_f_dist(
 
 def squeeze_var(
     sigma2: NDArray[np.float64],
-    df: int,
+    df: int | float | NDArray[np.float64],
     d0: float,
     s0_sq: float,
-) -> tuple[NDArray[np.float64], float]:
+) -> tuple[NDArray[np.float64], float | NDArray[np.float64]]:
     """
     Apply Empirical Bayes variance shrinkage (limma squeezeVar).
 
@@ -209,25 +209,40 @@ def squeeze_var(
         - Prior variance s₀² (weight d₀)
         - Sample variance s² (weight df)
 
+    Supports both scalar and per-feature (array) degrees of freedom.
+    When df is an array, each feature can have a different residual df
+    (e.g., due to different NaN missingness patterns), and the posterior
+    df is also returned as an array.
+
     Args:
         sigma2: Sample variances (n_features,)
-        df: Residual degrees of freedom
+        df: Residual degrees of freedom. Scalar (int/float) when all
+            features share the same df, or array (n_features,) when
+            features have different df due to missing data patterns.
         d0: Prior degrees of freedom (from fit_f_dist)
         s0_sq: Prior scale (from fit_f_dist)
 
     Returns:
         Tuple (s2_post, df_total):
-        - s2_post: Posterior (moderated) variances
-        - df_total: Total degrees of freedom for t-distribution (d0 + df)
+        - s2_post: Posterior (moderated) variances (n_features,)
+        - df_total: Total degrees of freedom for t-distribution (d0 + df).
+          Returns float when df is scalar, NDArray when df is array.
     """
+    df_is_array = isinstance(df, np.ndarray)
+
     if np.isinf(d0):
         # No shrinkage - return original variances
+        if df_is_array:
+            return sigma2.copy(), df.astype(np.float64)
         return sigma2.copy(), float(df)
 
-    # Weighted average shrinkage
+    # Weighted average shrinkage — NumPy broadcasting handles both
+    # scalar and array df transparently.
     s2_post = (d0 * s0_sq + df * sigma2) / (d0 + df)
     df_total = d0 + df
 
+    if df_is_array:
+        return s2_post, df_total.astype(np.float64)
     return s2_post, float(df_total)
 
 
