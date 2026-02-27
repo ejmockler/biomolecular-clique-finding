@@ -14,7 +14,7 @@ compatibility -- prefer importing from there in application code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -395,6 +395,9 @@ class MethodComparisonResult:
     methods_run: list[MethodName]
     n_cliques_tested: int
 
+    # Failure tracking (ARCH-1)
+    failed_methods: dict[str, str] = field(default_factory=dict)
+
     def wide_format(self) -> "pd.DataFrame":
         """
         Pivot results to wide format: one row per clique.
@@ -746,6 +749,15 @@ class MethodComparisonResult:
                     f"  {conc.method_a.value} vs {conc.method_b.value}: "
                     f"rho={conc.spearman_rho:.3f}, kappa={conc.cohen_kappa:.3f}"
                 )
+
+        # Add failure warnings (ARCH-1)
+        if self.failed_methods:
+            lines.extend([
+                "",
+                f"WARNING: {len(self.failed_methods)} method(s) failed:",
+            ])
+            for method_name, error_msg in sorted(self.failed_methods.items()):
+                lines.append(f"  {method_name}: {error_msg}")
 
         return "\n".join(lines)
 

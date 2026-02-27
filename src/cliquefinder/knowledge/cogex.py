@@ -623,9 +623,7 @@ class CoGExClient:
             ...     print("Connection failed")
         """
         try:
-            client = self._get_client()
-            # Simple query to test connection
-            result = client.query_tx("RETURN 1 as test")
+            result = self._execute_query("RETURN 1 as test")
             return len(result) > 0
         except Exception as e:
             logger.error(f"Failed to connect to INDRA CoGEx: {e}")

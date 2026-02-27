@@ -198,8 +198,10 @@ class TestBatchedOlsGpuNaN:
             c_vec = contrast_matrix[0]
             expected_fc = np.dot(c_vec, condition_means)
 
+            # rtol=5e-4 accommodates MLX float32 intermediate precision
+            # when the STAT-1-OPT fast path is active (complete data)
             np.testing.assert_allclose(
-                pr.contrasts[0].log2_fc, expected_fc, atol=1e-8,
+                pr.contrasts[0].log2_fc, expected_fc, rtol=5e-4, atol=1e-6,
                 err_msg=f"Feature {j}: log2FC mismatch",
             )
 

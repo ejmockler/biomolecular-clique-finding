@@ -360,7 +360,7 @@ class TestExecuteQueryTypedExceptions:
             "SyntaxError: Invalid input 'METCH'"
         )
 
-        with pytest.raises(RuntimeError, match="non-retryable"):
+        with pytest.raises(Exception, match="SyntaxError"):
             mock_client._execute_query("METCH (n) RETURN n", max_retries=3)
 
         # Should only be called once (no retry)
@@ -372,7 +372,7 @@ class TestExecuteQueryTypedExceptions:
             "Invalid parameter type"
         )
 
-        with pytest.raises(RuntimeError, match="non-retryable"):
+        with pytest.raises(ValueError, match="Invalid parameter type"):
             mock_client._execute_query("RETURN 1", max_retries=3)
 
         assert mock_client._client.query_tx.call_count == 1

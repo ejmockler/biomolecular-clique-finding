@@ -47,9 +47,12 @@ Module Structure (decomposed into sub-modules for maintainability):
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # ---- Re-exports for backward compatibility --------------------------------
 # All public symbols that were previously defined in this monolith are
@@ -247,6 +250,7 @@ def run_method_comparison(
 
     # 4. Run each method
     results_by_method: dict[MethodName, list[UnifiedCliqueResult]] = {}
+    failed_methods: dict[str, str] = {}
 
     for method in methods:
         if verbose:
@@ -268,7 +272,9 @@ def run_method_comparison(
         except Exception as e:
             if verbose:
                 print(f"FAILED: {e}")
+            logger.warning("Method %s failed: %s", method.name.value, e)
             results_by_method[method.name] = []
+            failed_methods[method.name.value] = str(e)
 
     # 5. Compute pairwise concordance
     if verbose:
@@ -320,7 +326,9 @@ def run_method_comparison(
         print("=" * 60)
         print("SUMMARY")
         print("=" * 60)
-        print(f"Methods compared: {len(method_names)}")
+        n_attempted = len(methods)
+        n_succeeded = len(method_names)
+        print(f"Methods attempted: {n_attempted}, succeeded: {n_succeeded}")
         print(f"Cliques tested: {len(all_tested)}")
         print(f"Mean Spearman rho: {mean_rho:.3f}")
         print(f"Mean Cohen's kappa: {mean_kappa:.3f}")
@@ -329,6 +337,12 @@ def run_method_comparison(
             print(f"Disagreement cases: {len(disagreements)}")
         else:
             print("Disagreement cases: 0")
+
+        if failed_methods:
+            print()
+            print("FAILED methods:")
+            for mname, err in sorted(failed_methods.items()):
+                print(f"  {mname}: {err}")
 
         print()
 
@@ -351,6 +365,7 @@ def run_method_comparison(
         preprocessing_params=experiment.preprocessing_params,
         methods_run=list(method_names),
         n_cliques_tested=len(all_tested),
+        failed_methods=failed_methods,
     )
 
 

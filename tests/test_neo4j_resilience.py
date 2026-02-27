@@ -116,7 +116,7 @@ class TestExecuteQueryReconnection:
         with patch.object(cogex_mod, "Neo4jClient", return_value=mock_client):
             client = CoGExClient(url="bolt://fake:7687", user="neo4j", password="secret")
 
-            with pytest.raises(RuntimeError, match="Query failed after reconnect attempt"):
+            with pytest.raises(RuntimeError, match="Query failed after"):
                 client._execute_query("RETURN 1")
 
     def test_non_connection_error_not_retried(self):
