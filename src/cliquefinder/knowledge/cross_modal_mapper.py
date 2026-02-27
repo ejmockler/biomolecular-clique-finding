@@ -49,7 +49,6 @@ from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, field
 from pathlib import Path
 import logging
-import pickle
 import hashlib
 import json
 import re
@@ -261,21 +260,32 @@ class CrossModalIDMapper:
 
     def _load_cache(self, cache_key: str) -> Optional[Any]:
         """Load cached result if available."""
-        cache_path = self.cache_dir / f"{cache_key}.pkl"
+        cache_path = self.cache_dir / f"{cache_key}.json"
         if cache_path.exists():
             try:
-                with open(cache_path, 'rb') as f:
-                    return pickle.load(f)
+                with open(cache_path, 'r') as f:
+                    raw = json.load(f)
+                # Restore sets from tagged wrapper
+                if isinstance(raw, dict) and raw.get("__set__") is True and "values" in raw:
+                    return set(raw["values"])
+                return raw
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Corrupted cache file {cache_path}, ignoring: {e}")
             except Exception as e:
                 logger.warning(f"Failed to load cache {cache_key}: {e}")
         return None
 
     def _save_cache(self, cache_key: str, data: Any) -> None:
         """Save result to cache."""
-        cache_path = self.cache_dir / f"{cache_key}.pkl"
+        cache_path = self.cache_dir / f"{cache_key}.json"
         try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(data, f)
+            # Convert sets to tagged wrapper for JSON serialization
+            if isinstance(data, set):
+                serializable = {"__set__": True, "values": sorted(data)}
+            else:
+                serializable = data
+            with open(cache_path, 'w') as f:
+                json.dump(serializable, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save cache {cache_key}: {e}")
 
