@@ -69,11 +69,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import logging
+
 import numpy as np
 
 if TYPE_CHECKING:
     import pandas as pd
     from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -2166,6 +2170,9 @@ class MethodComparisonResult:
     methods_run: list[MethodName]
     n_cliques_tested: int
 
+    # Failed method tracking: maps MethodName.value string → error message
+    failed_methods: dict[str, str] = field(default_factory=dict)
+
     def wide_format(self) -> "pd.DataFrame":
         """
         Pivot results to wide format: one row per clique.
@@ -2518,6 +2525,15 @@ class MethodComparisonResult:
                     f"rho={conc.spearman_rho:.3f}, kappa={conc.cohen_kappa:.3f}"
                 )
 
+        # Add failure warnings if any methods failed
+        if self.failed_methods:
+            lines.extend([
+                "",
+                f"WARNING: {len(self.failed_methods)} method(s) failed:",
+            ])
+            for name, err in self.failed_methods.items():
+                lines.append(f"  {name}: {err}")
+
         return "\n".join(lines)
 
 
@@ -2683,6 +2699,7 @@ def run_method_comparison(
 
     # 4. Run each method
     results_by_method: dict[MethodName, list[UnifiedCliqueResult]] = {}
+    failed_methods: dict[str, str] = {}
 
     for method in methods:
         if verbose:
@@ -2702,8 +2719,10 @@ def run_method_comparison(
                 print(f"done ({len(results)} cliques, {n_sig} significant)")
 
         except Exception as e:
+            logger.warning("Method %s failed: %s", method.name.value, e)
             if verbose:
                 print(f"FAILED: {e}")
+            failed_methods[method.name.value] = str(e)
             results_by_method[method.name] = []
 
     # 5. Compute pairwise concordance
@@ -2756,7 +2775,13 @@ def run_method_comparison(
         print("=" * 60)
         print("SUMMARY")
         print("=" * 60)
-        print(f"Methods compared: {len(method_names)}")
+        n_attempted = len(methods)
+        n_succeeded = len(method_names)
+        print(f"Methods attempted: {n_attempted}, succeeded: {n_succeeded}")
+        if failed_methods:
+            print("FAILED methods:")
+            for name, err in failed_methods.items():
+                print(f"  {name}: {err}")
         print(f"Cliques tested: {len(all_tested)}")
         print(f"Mean Spearman rho: {mean_rho:.3f}")
         print(f"Mean Cohen's kappa: {mean_kappa:.3f}")
@@ -2787,6 +2812,7 @@ def run_method_comparison(
         preprocessing_params=experiment.preprocessing_params,
         methods_run=list(method_names),
         n_cliques_tested=len(all_tested),
+        failed_methods=failed_methods,
     )
 
 
