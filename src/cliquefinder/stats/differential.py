@@ -737,9 +737,40 @@ def fit_linear_model(
     try:
         # PSEUDOREPLICATION FIX: If mixed model was attempted but failed,
         # and we have repeated measures (subject column exists with replicates),
-        # aggregate to subject level to avoid treating replicates as independent
+        # aggregate to subject level to avoid treating replicates as independent.
+        #
+        # Limitation (STAT-12): Subject-level means are computed via simple
+        # averaging (groupby...mean), which gives each subject equal weight
+        # in the subsequent OLS regardless of how many observations that
+        # subject contributed.  When observation counts per subject are
+        # heterogeneous, inverse-variance weighting (weight_i = n_i) would
+        # be more efficient because Var(y_bar_i) = sigma^2 / n_i.  In
+        # practice MSstats also uses simple averaging as its fallback, and
+        # the difference is negligible unless max/min observation ratio
+        # exceeds ~3x.  A warning is emitted below when this threshold is
+        # exceeded.
         aggregated = False
         if can_fit_mixed and 'subject' in df.columns:
+            # Count observations per subject×condition before aggregation
+            obs_per_group = df.groupby(
+                ['subject', 'condition'], observed=True,
+            ).size()
+            if len(obs_per_group) > 0:
+                min_obs = int(obs_per_group.min())
+                max_obs = int(obs_per_group.max())
+                if min_obs > 0 and max_obs / min_obs > 3:
+                    warnings.warn(
+                        f"Subject aggregation fallback: observation counts "
+                        f"per subject are heterogeneous (min={min_obs}, "
+                        f"max={max_obs}, ratio={max_obs / min_obs:.1f}x). "
+                        f"Simple averaging gives each subject equal weight; "
+                        f"inverse-variance weighting (WLS) would be more "
+                        f"efficient. Results remain valid but may be "
+                        f"slightly less powerful.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
             # Aggregate to subject level: mean per subject per condition
             df_agg = df.groupby(['subject', 'condition'], observed=True, as_index=False).agg({'y': 'mean'})
             df = df_agg

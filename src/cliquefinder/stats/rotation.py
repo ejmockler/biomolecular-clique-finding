@@ -323,6 +323,13 @@ class RotationResult:
     n_rotations: int
     contrast_name: str
 
+    # STAT-14: Rotation validity tracking
+    n_valid_rotations: int | None = None
+    n_excluded_rotations: int | None = None
+
+    # STAT-11: Precision note — documents whether GPU float32 was used
+    precision_note: str | None = None
+
     def get_pvalue(
         self,
         statistic: SetStatistic | str = SetStatistic.MSQ,
@@ -342,6 +349,15 @@ class RotationResult:
             'n_rotations': self.n_rotations,
             'contrast': self.contrast_name,
         }
+
+        # STAT-14: rotation validity
+        if self.n_valid_rotations is not None:
+            result['n_valid_rotations'] = self.n_valid_rotations
+            result['n_excluded_rotations'] = self.n_excluded_rotations
+
+        # STAT-11: precision note
+        if self.precision_note is not None:
+            result['precision_note'] = self.precision_note
 
         # Add p-values for each combination
         for stat in SetStatistic:
@@ -929,7 +945,7 @@ def apply_rotations_batched(
     chunk_size: int = 10000,
     eb_d0: float | None = None,
     eb_s0_sq: float | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]]:
     """
     Apply rotation vectors to gene effects and compute rotated t-statistics.
 
@@ -957,6 +973,8 @@ def apply_rotations_batched(
         Tuple of:
         - rotated_t: Rotated t-statistics (n_rotations, n_genes)
         - rotated_z: Rotated z-scores (n_rotations, n_genes)
+        - valid_rotation: Boolean mask (n_rotations,) — True for rotations
+          with all-positive residual SS across all genes.
 
     Complexity: O(n_rotations × n_genes × n_dims)
     """
@@ -973,20 +991,26 @@ def apply_rotations_batched(
     if n_rotations > chunk_size:
         rotated_t_chunks = []
         rotated_z_chunks = []
+        valid_chunks = []
 
         for start in range(0, n_rotations, chunk_size):
             end = min(start + chunk_size, n_rotations)
             R_chunk = R[start:end]
 
-            t_chunk, z_chunk = _apply_rotations_impl(
+            t_chunk, z_chunk, valid_chunk = _apply_rotations_impl(
                 U, rho_sq, R_chunk, sample_variances, moderated_variances,
                 df_residual, use_df, use_gpu, eb_d0, eb_s0_sq
             )
 
             rotated_t_chunks.append(t_chunk)
             rotated_z_chunks.append(z_chunk)
+            valid_chunks.append(valid_chunk)
 
-        return np.vstack(rotated_t_chunks), np.vstack(rotated_z_chunks)
+        return (
+            np.vstack(rotated_t_chunks),
+            np.vstack(rotated_z_chunks),
+            np.concatenate(valid_chunks),
+        )
     else:
         return _apply_rotations_impl(
             U, rho_sq, R, sample_variances, moderated_variances,
@@ -1005,8 +1029,12 @@ def _apply_rotations_impl(
     use_gpu: bool,
     eb_d0: float | None = None,
     eb_s0_sq: float | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Internal implementation of rotation application."""
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]]:
+    """Internal implementation of rotation application.
+
+    Returns:
+        Tuple of (t_rot, z_rot, valid_rotation_mask).
+    """
 
     n_genes = U.shape[0]
     n_rotations = R.shape[0]
@@ -1033,8 +1061,30 @@ def _apply_rotations_gpu(
     use_df: float,
     eb_d0: float | None = None,
     eb_s0_sq: float | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """GPU implementation using MLX."""
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]]:
+    """GPU implementation using MLX.
+
+    Numerical Precision (float32)
+    -----------------------------
+    MLX on Apple Silicon uses float32 arithmetic for the rotation inner loop
+    (matrix multiply, variance computation, t-statistic formation).  For
+    moderate effect sizes (|t| < 5), float32 and float64 paths agree to
+    within ~1e-6.  For extreme t-statistics (|t| > 10), float32 truncation
+    can shift individual p-values by up to ~1e-4.
+
+    Final t-to-z conversion and set-statistic aggregation are performed in
+    float64 on the CPU, so the float32 window is limited to the per-gene
+    variance and t-statistic computation.
+
+    If exact CPU-reproducible results are required (e.g. for regression
+    testing or cross-platform benchmarking), use the ``--force-cpu`` CLI
+    flag or set ``RotationTestConfig(use_gpu=False)``.
+
+    Returns:
+        Tuple of (t_rot_np, z_rot_np, valid_rotation_mask) where
+        valid_rotation_mask is a boolean array of shape (n_rotations,)
+        indicating which rotations had all-positive residual SS.
+    """
     # Note: moderated_variances is accepted for backward-compatible call signature
     # but is no longer used. EB shrinkage is applied directly via eb_d0/eb_s0_sq.
 
@@ -1053,6 +1103,18 @@ def _apply_rotations_gpu(
     # Rotated residual SS: ρ² - u*²
     # Broadcasting: (n_genes, 1) - (n_genes, n_rotations)
     residual_ss_rot = rho_sq_mx[:, None] - U_rot_sq
+
+    # STAT-14: Mark rotations where ANY gene has negative residual SS as
+    # invalid instead of clamping to epsilon (which would inflate t-stats).
+    # valid_rotation: per-rotation boolean — True if all genes have positive
+    # residual SS for that rotation.
+    # Shape of residual_ss_rot: (n_genes, n_rotations) — use axis=0 to
+    # reduce over genes, yielding (n_rotations,).
+    valid_rotation_mx = mx.all(residual_ss_rot > 0, axis=0)
+    valid_rotation = np.array(valid_rotation_mx, dtype=np.bool_)
+
+    # Still clamp for numerical safety (avoids NaN in sqrt); the invalid
+    # rotations will be excluded from p-value computation downstream.
     residual_ss_rot = mx.maximum(residual_ss_rot, mx.array(1e-10))
 
     # Rotated sample variances
@@ -1097,7 +1159,7 @@ def _apply_rotations_gpu(
         p_values = np.clip(p_values, 1e-15, 1 - 1e-15)
         z_rot_np = ndtri(p_values)
 
-    return t_rot_np, z_rot_np
+    return t_rot_np, z_rot_np, valid_rotation
 
 
 def _apply_rotations_cpu(
@@ -1110,8 +1172,14 @@ def _apply_rotations_cpu(
     use_df: float,
     eb_d0: float | None = None,
     eb_s0_sq: float | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """CPU implementation using NumPy."""
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_]]:
+    """CPU implementation using NumPy.
+
+    Returns:
+        Tuple of (t_rot, z_rot, valid_rotation_mask) where
+        valid_rotation_mask is a boolean array of shape (n_rotations,)
+        indicating which rotations had all-positive residual SS.
+    """
     # Note: moderated_variances is accepted for backward-compatible call signature
     # but is no longer used. EB shrinkage is applied directly via eb_d0/eb_s0_sq.
 
@@ -1126,6 +1194,13 @@ def _apply_rotations_cpu(
 
     # Rotated residual SS
     residual_ss_rot = rho_sq[:, None] - U_rot_sq
+
+    # STAT-14: Mark rotations where ANY gene has negative residual SS as
+    # invalid instead of clamping to epsilon (which would inflate t-stats).
+    # Shape: (n_genes, n_rotations) -> all() over axis=0 -> (n_rotations,)
+    valid_rotation = np.all(residual_ss_rot > 0, axis=0)
+
+    # Still clamp for numerical safety; invalid rotations excluded downstream.
     residual_ss_rot = np.maximum(residual_ss_rot, 1e-10)
 
     # Rotated sample variances
@@ -1158,7 +1233,7 @@ def _apply_rotations_cpu(
         p_values = np.clip(p_values, 1e-15, 1 - 1e-15)
         z_rot = ndtri(p_values)
 
-    return t_rot, z_rot
+    return t_rot, z_rot, valid_rotation
 
 
 # =============================================================================
@@ -1340,6 +1415,7 @@ def _compute_msq_stat(
 def compute_rotation_pvalues(
     observed_stats: dict[str, dict[str, float]],
     null_stats: dict[str, dict[str, NDArray[np.float64]]],
+    valid_rotation_mask: NDArray[np.bool_] | None = None,
 ) -> dict[str, dict[str, float]]:
     """
     Compute empirical p-values from observed vs null statistics.
@@ -1350,14 +1426,21 @@ def compute_rotation_pvalues(
 
     where b = count of null statistics >= observed.
 
+    When *valid_rotation_mask* is supplied (STAT-14), only rotations flagged
+    ``True`` contribute to b and B.  Rotations with negative residual SS
+    (near-singular geometry) are excluded so that epsilon-clamped variances
+    do not inflate the null distribution.
+
     This "+1" adjustment ensures:
     - P-values are never exactly 0
     - Conservative for finite B
-    - Exact in the limit B → ∞
+    - Exact in the limit B -> infinity
 
     Args:
         observed_stats: stat -> alt -> observed value
         null_stats: stat -> alt -> array of null values
+        valid_rotation_mask: Optional boolean array (n_rotations,).
+            When provided, only rotations where mask is True are counted.
 
     Returns:
         stat -> alt -> p-value
@@ -1371,6 +1454,14 @@ def compute_rotation_pvalues(
             null = null_stats.get(stat, {}).get(alt)
 
             if null is None or len(null) == 0:
+                p_values[stat][alt] = np.nan
+                continue
+
+            # STAT-14: Filter to valid rotations if mask provided
+            if valid_rotation_mask is not None:
+                null = null[valid_rotation_mask]
+
+            if len(null) == 0:
                 p_values[stat][alt] = np.nan
                 continue
 
@@ -1903,7 +1994,8 @@ class RotationTestEngine:
         )
 
         # Apply rotations to get null t-statistics
-        _, z_rot = apply_rotations_batched(
+        use_gpu = config.use_gpu and MLX_AVAILABLE
+        _, z_rot, valid_mask = apply_rotations_batched(
             U_subset,
             rho_sq_subset,
             R,
@@ -1911,11 +2003,26 @@ class RotationTestEngine:
             mod_var_subset,
             self._precomputed.df_residual,
             df_total,
-            use_gpu=config.use_gpu and MLX_AVAILABLE,
+            use_gpu=use_gpu,
             chunk_size=config.chunk_size,
             eb_d0=self._precomputed.eb_d0,
             eb_s0_sq=self._precomputed.eb_s0_sq,
         )
+
+        # STAT-14: Track valid/excluded rotations
+        n_valid = int(np.sum(valid_mask))
+        n_excluded = int(config.n_rotations - n_valid)
+
+        if n_excluded > 0 and n_excluded / config.n_rotations > 0.10:
+            warnings.warn(
+                f"Gene set '{set_id}': {n_excluded}/{config.n_rotations} "
+                f"({100 * n_excluded / config.n_rotations:.1f}%) rotations "
+                f"excluded due to negative residual SS (near-singular "
+                f"rotation geometry). Consider increasing n_rotations or "
+                f"checking for near-zero-variance genes.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Compute null set statistics
         null_stats = compute_set_statistics(
@@ -1925,14 +2032,25 @@ class RotationTestEngine:
             alternatives=config.alternatives,
         )
 
-        # Compute p-values
-        p_values = compute_rotation_pvalues(observed_flat, null_stats)
+        # Compute p-values (only valid rotations contribute)
+        p_values = compute_rotation_pvalues(
+            observed_flat, null_stats, valid_rotation_mask=valid_mask,
+        )
 
         # Estimate active gene proportions
         active_prop = estimate_active_proportion(
             t_obs,
             df_total,
             config.alternatives,
+        )
+
+        # STAT-11: precision note
+        precision_note = (
+            "GPU (MLX float32): inner-loop variance and t-statistics "
+            "computed in float32; final z-scores in float64. For exact "
+            "CPU reproducibility use RotationTestConfig(use_gpu=False)."
+            if use_gpu
+            else None
         )
 
         return RotationResult(
@@ -1946,6 +2064,9 @@ class RotationTestEngine:
             active_proportion=active_prop,
             n_rotations=config.n_rotations,
             contrast_name=self._precomputed.contrast_name,
+            n_valid_rotations=n_valid,
+            n_excluded_rotations=n_excluded,
+            precision_note=precision_note,
         )
 
     def test_gene_sets(
