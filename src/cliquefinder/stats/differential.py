@@ -482,10 +482,19 @@ def batched_ols_gpu(
     contrast_names: list[str],
 ) -> list[ProteinResult]:
     """
-    Batched OLS regression for all features using GPU acceleration.
+    Batched OLS regression for all features with correct per-pattern NaN handling.
 
-    Solves: Y = X @ β + ε for all features simultaneously.
-    Uses MLX for GPU acceleration of matrix operations.
+    Solves: Y = X @ beta + epsilon for all features simultaneously, grouping
+    features by their NaN missingness pattern so each group gets a correctly
+    computed (X'X)^{-1} from only the valid rows for that pattern.
+
+    **STAT-1 fix**: Features with different NaN patterns get separate (X'X)^{-1}
+    matrices (shared inverse is incorrect when row subsets differ).
+
+    **STAT-1-OPT**: When all features share the same NaN pattern (common case
+    for complete data), MLX GPU acceleration is used for the single bulk
+    matrix operation. Falls back to NumPy when MLX is unavailable or when
+    multiple NaN patterns exist.
 
     Args:
         Y: Response matrix (n_samples, n_features) of log2 intensities.
@@ -498,8 +507,6 @@ def batched_ols_gpu(
     Returns:
         List of ProteinResult objects with test statistics.
     """
-    if not MLX_AVAILABLE:
-        raise ImportError("MLX not available. Install with: pip install mlx")
 
     n_samples, n_features = Y.shape
     n_params = X.shape[1]
@@ -530,6 +537,49 @@ def batched_ols_gpu(
     n_valid_np = np.full(n_features, 0, dtype=np.float64)
     # Store per-feature (X_g'X_g)^-1 for SE computation in contrasts
     XtX_inv_per_feature: dict[int, NDArray[np.float64]] = {}
+
+    # ── STAT-1-OPT: MLX fast path for single-pattern (common case) ───────
+    if len(pattern_groups) == 1 and MLX_AVAILABLE:
+        pattern, all_indices = next(iter(pattern_groups.items()))
+        valid = np.array(pattern, dtype=bool)
+        n_obs = int(np.sum(valid))
+
+        if n_obs > n_params:
+            X_g = X[valid, :]
+            Y_g = Y[np.ix_(valid, all_indices)]
+
+            X_mx = mx.array(X_g)
+            Y_mx = mx.array(Y_g)
+            XtX_mx = X_mx.T @ X_mx
+            XtY_mx = X_mx.T @ Y_mx
+
+            # Inverse on CPU (MLX linalg support varies)
+            XtX_np_g = np.array(XtX_mx)
+            try:
+                XtX_inv_g = np.linalg.inv(XtX_np_g)
+            except np.linalg.LinAlgError:
+                XtX_inv_g = None
+
+            if XtX_inv_g is not None:
+                XtX_inv_mx = mx.array(XtX_inv_g)
+                beta_mx = XtX_inv_mx @ XtY_mx
+                resid_mx = Y_mx - X_mx @ beta_mx
+
+                beta_block = np.array(beta_mx)
+                resid_block = np.array(resid_mx)
+                df = n_obs - n_params
+                rss = np.sum(resid_block ** 2, axis=0)
+                var_block = rss / max(df, 1)
+
+                for local_idx, feat_idx in enumerate(all_indices):
+                    beta_np[:, feat_idx] = beta_block[:, local_idx]
+                    residual_var_np[feat_idx] = var_block[local_idx]
+                    df_resid_np[feat_idx] = df
+                    n_valid_np[feat_idx] = n_obs
+                    XtX_inv_per_feature[feat_idx] = XtX_inv_g
+
+                pattern_groups = {}  # Skip NumPy loop below
+    # ─────────────────────────────────────────────────────────────────────
 
     for pattern, feature_indices in pattern_groups.items():
         valid = np.array(pattern)  # boolean mask for valid samples
@@ -1349,14 +1399,10 @@ def run_protein_differential(
                     print(f"  Shrinkage: {100*shrinkage_weight:.1f}% prior, "
                           f"{100*(1-shrinkage_weight):.1f}% sample")
 
-            # Apply shrinkage per feature using per-feature df
-            if np.isinf(d0):
-                sigma2_post = sigma2.copy()
-                df_total = df_per_feature.astype(np.float64)
-            else:
-                # Per-feature squeeze: s2_post_g = (d0*s0² + df_g*s²_g) / (d0 + df_g)
-                sigma2_post = (d0 * s0_sq + df_per_feature * sigma2) / (d0 + df_per_feature)
-                df_total = d0 + df_per_feature
+            # Apply shrinkage per feature using per-feature df (W1-SQUEEZE-VAR)
+            sigma2_post, df_total = squeeze_var(
+                sigma2, df_per_feature.astype(np.float64), d0, s0_sq,
+            )
     else:
         # No EB moderation - use standard OLS
         sigma2_post = sigma2.copy()
