@@ -314,125 +314,146 @@ def satterthwaite_df(
     use_mlx: bool = True,
 ) -> float | None:
     """
-    Compute Satterthwaite degrees of freedom for a contrast in a mixed model.
+    Compute degrees of freedom for a contrast in a mixed model.
 
-    The Satterthwaite approximation estimates the degrees of freedom for a linear
-    combination of variance components. For a contrast c'β, the formula is:
+    Uses the **containment method** as the primary approach, with the classical
+    Satterthwaite--Welch approximation as a refinement when it agrees with the
+    containment result.
 
-        df = 2 * (V_c)² / Var(V_c)
+    Containment df (primary)
+    ------------------------
+    For a two-level model (observations nested within subjects):
 
-    where V_c = c' Cov(β) c is the variance of the contrast estimate.
+    * Between-subject contrasts:  ``df = n_subjects - p``
+    * Within-subject contrasts:   ``df = n_obs - n_subjects``
 
-    The variance of V_c depends on the variance components (residual and random effects),
-    and we use the delta method to approximate it from the uncertainty in the variance
-    component estimates.
+    where *p* is the number of fixed-effect parameters.  This is conservative
+    but statistically justified and is the default in SAS PROC MIXED.
 
-    For a mixed model with random intercepts:
-        y ~ X*β + Z*u + ε
-        where u ~ N(0, σ_u²), ε ~ N(0, σ²)
+    Because the model ``y ~ Condition + (1|Subject)`` treats Condition as a
+    between-subject effect (each subject belongs to exactly one condition in a
+    typical proteomics design), the between-subject formula is used.
 
-    The variance of the contrast is:
-        V_c = c' (X'V⁻¹X)⁻¹ c
-        where V = Z*σ_u²*Z' + σ²*I
-
-    The Satterthwaite df accounts for the uncertainty in estimating σ² and σ_u².
+    Satterthwaite refinement (secondary)
+    -------------------------------------
+    The classical Satterthwaite formula ``df = V_c^2 / sum(V_i^2 / df_i)``
+    is computed as a refinement.  Because containment is a conservative lower
+    bound, the Satterthwaite value is adopted when it lies within
+    ``[containment_df * 0.5, n_obs - 1]`` (i.e., it may exceed containment --
+    that is expected when residual variance dominates -- but it must not drop
+    far below it).  When the refinement falls below ``containment_df * 0.5``,
+    the containment df is returned instead.  This guards against the ad-hoc
+    scaling heuristic that was previously used (balanced-group approximation
+    with ``scale = V_c / v_theoretical``), which could produce unreliable df
+    for unbalanced designs.
 
     Args:
         contrast_vector: Contrast vector in parameter space (length = n_fixed_effects).
         cov_beta: Covariance matrix of fixed effect estimates.
-        residual_var: Estimated residual variance (σ²).
-        subject_var: Estimated random effect variance (σ_u²).
+        residual_var: Estimated residual variance (sigma^2).
+        subject_var: Estimated random effect variance (sigma_u^2).
         n_groups: Number of groups (subjects).
         n_obs: Total number of observations.
         use_mlx: Whether to use MLX for GPU-accelerated computation.
 
     Returns:
-        Satterthwaite degrees of freedom, or None if computation fails.
+        Degrees of freedom (float), or None if computation fails.
 
     References:
         - Satterthwaite, F.E. (1946). Biometrics Bulletin 2(6):110-114.
-        - Giesbrecht & Burns (1985). Commun. Stat. Theory Methods 14(4):989-1001.
-        - Fai & Cornelius (1996). J. Am. Stat. Assoc. 91(434):814-821.
+        - Kuznetsova, Brockhoff & Christensen (2017). J. Stat. Softw. 82(13).
+        - SAS Institute. PROC MIXED documentation (containment method).
+        - Kenward & Roger (1997). Biometrics 53(3):983-997.
     """
     try:
-        # Use MLX for GPU acceleration if available and requested
+        n_params = len(contrast_vector)
+
+        # ── Containment df ────────────────────────────────────────────
+        # Between-subject effect: df = n_subjects - p
+        containment_df = float(n_groups - n_params)
+
+        # If containment df is non-positive the design is degenerate
+        if containment_df < 1.0:
+            if containment_df <= 0.0:
+                warnings.warn(
+                    f"Containment df is non-positive ({containment_df:.1f}): "
+                    f"n_groups={n_groups}, n_params={n_params}. "
+                    "This indicates an under-identified design."
+                )
+                return None
+            # containment_df in (0, 1) -- shouldn't happen with integer
+            # counts, but guard anyway
+            containment_df = 1.0
+
+        # ── Contrast variance V_c = c' Cov(beta) c ───────────────────
         if use_mlx and MLX_AVAILABLE and cov_beta.size > 16:
-            # Convert to MLX arrays for GPU computation
             c_mx = mx.array(contrast_vector, dtype=mx.float32)
             cov_mx = mx.array(cov_beta, dtype=mx.float32)
-
-            # Contrast variance: V_c = c' * Cov(β) * c
-            V_c = mx.matmul(mx.matmul(c_mx, cov_mx), c_mx)
-            V_c = float(V_c)
+            V_c = float(mx.matmul(mx.matmul(c_mx, cov_mx), c_mx))
         else:
-            # CPU computation with numpy
             V_c = float(contrast_vector @ cov_beta @ contrast_vector)
 
         if V_c <= 0 or not np.isfinite(V_c):
-            return None
+            # Cannot compute Satterthwaite refinement; return containment
+            return containment_df
 
-        # Satterthwaite-Welch degrees of freedom approximation
-        # For a mixed model: y ~ X*β + Z*u + ε
-        # where u ~ N(0, σ_u²I), ε ~ N(0, σ²I)
+        # ── Satterthwaite--Welch refinement ───────────────────────────
+        # df = V_c^2 / sum_i (V_i^2 / df_i)
         #
-        # The variance of a contrast c'β has two sources:
-        # 1. Within-group (residual) variance: σ²
-        # 2. Between-group (random effect) variance: σ_u²
-        #
-        # The Satterthwaite formula is:
-        #   df = V² / Σ(V_i² / df_i)
-        # where V_i are variance components and df_i are their degrees of freedom
-
-        n_params = len(contrast_vector)
-
-        # Degrees of freedom for each variance component
+        # Variance component degrees of freedom:
         df_residual = max(n_obs - n_params, 1)
         df_random = max(n_groups - 1, 1)
 
-        # Average group size (for balanced approximation)
-        avg_group_size = n_obs / n_groups if n_groups > 0 else 1
-
-        # Decompose the contrast variance into components
-        # For a contrast between two condition means in a mixed model:
-        # V_c has contributions from:
-        # - Within-group variance: σ²/n_per_group (variance of group mean)
-        # - Between-group variance: σ_u² (random effect variance)
-
-        # Scale V_c to get the theoretical variance from variance components
-        # V_theoretical = σ²/avg_n + σ_u²
+        # Variance component contributions to V_c.
+        # For a balanced design with group size n_g:
+        #   V_within  = sigma^2 / n_g
+        #   V_between = sigma_u^2
+        # We compute per-group sizes from n_obs / n_groups (average) but
+        # note this is only used as a refinement -- containment is the anchor.
+        avg_group_size = n_obs / n_groups if n_groups > 0 else 1.0
         v_within = residual_var / avg_group_size
         v_between = subject_var
-        v_theoretical = v_within + v_between
 
-        # Handle edge case where theoretical variance is zero
-        if v_theoretical <= 0:
-            return None
+        v_total = v_within + v_between
+        if v_total <= 0 or not np.isfinite(v_total):
+            return containment_df
 
-        # Scale factor to match V_c with theoretical variance
-        # (V_c from cov_beta may differ due to estimation, design imbalance, etc.)
-        scale = V_c / v_theoretical if v_theoretical > 0 else 1.0
-
-        # Scaled variance components
-        v_within_scaled = v_within * scale
-        v_between_scaled = v_between * scale
-
-        # Satterthwaite formula: df = V² / Σ(V_i² / df_i)
-        denominator = (v_within_scaled ** 2) / df_residual + (v_between_scaled ** 2) / df_random
+        denominator = (v_within ** 2) / df_residual + (v_between ** 2) / df_random
 
         if denominator <= 0 or not np.isfinite(denominator):
-            return None
+            return containment_df
 
-        df_satterthwaite = (V_c ** 2) / denominator
+        df_satt_raw = (v_total ** 2) / denominator
 
-        # Sanity bounds: df should be between 1 and n_obs - 1
-        # (We use n_obs - 1 as upper bound, not n_obs - n_params, because
-        # Satterthwaite can exceed residual df when random effects dominate)
+        # ── Accept Satterthwaite only if it agrees with containment ───
+        # Containment is a conservative floor.  The Satterthwaite refinement
+        # legitimately exceeds containment when residual variance dominates
+        # (approaching fixed-effects df).  We accept the refinement when it
+        # stays above containment_df * 0.5 (rejecting implausibly low values
+        # that suggest formula breakdown).  The upper clip to n_obs - 1
+        # applied below handles the ceiling.
+        satt_lower = containment_df * 0.5
+
+        if df_satt_raw >= satt_lower:
+            df_result = df_satt_raw
+        else:
+            df_result = containment_df
+
+        # ── Clip to [1, n_obs - 1] with diagnostic warning ───────────
         df_lower = 1.0
         df_upper = float(n_obs - 1)
 
-        df_satterthwaite = np.clip(df_satterthwaite, df_lower, df_upper)
+        if df_result < df_lower or df_result > df_upper:
+            warnings.warn(
+                f"Degrees of freedom ({df_result:.2f}) clipped to "
+                f"[{df_lower:.0f}, {df_upper:.0f}]. This may indicate model "
+                f"misspecification (residual_var={residual_var:.4f}, "
+                f"subject_var={subject_var:.4f}, n_groups={n_groups}, "
+                f"n_obs={n_obs})."
+            )
+            df_result = np.clip(df_result, df_lower, df_upper)
 
-        return float(df_satterthwaite)
+        return float(df_result)
 
     except Exception as e:
         warnings.warn(f"Satterthwaite df computation failed: {e}")
