@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from cliquefinder.cli._validators import _positive_int, _probability
+from cliquefinder.utils.fileio import atomic_write_json
 
 # Warning convention:
 #   warnings.warn() — user-facing (convergence, deprecated, sample size)
@@ -268,11 +269,22 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     #   Phase 5 negative controls: seed + 4000
     # -----------------------------------------------------------------
     _base_seed = args.seed
-    _seed_bootstrap = _base_seed if _base_seed is None else _base_seed + 0
-    _seed_phase3_strat = _base_seed if _base_seed is None else _base_seed + 1000
-    _seed_phase3_free = _base_seed if _base_seed is None else _base_seed + 2000
-    _seed_phase4 = _base_seed if _base_seed is None else _base_seed + 3000
-    _seed_phase5 = _base_seed if _base_seed is None else _base_seed + 4000
+    # ARCH-10: Use SeedSequence for statistically independent phase seeds
+    if _base_seed is not None:
+        from numpy.random import SeedSequence
+        _ss = SeedSequence(_base_seed)
+        (_ss_boot, _ss_p3s, _ss_p3f, _ss_p4, _ss_p5) = _ss.spawn(5)
+        _seed_bootstrap = int(_ss_boot.generate_state(1)[0])
+        _seed_phase3_strat = int(_ss_p3s.generate_state(1)[0])
+        _seed_phase3_free = int(_ss_p3f.generate_state(1)[0])
+        _seed_phase4 = int(_ss_p4.generate_state(1)[0])
+        _seed_phase5 = int(_ss_p5.generate_state(1)[0])
+    else:
+        _seed_bootstrap = None
+        _seed_phase3_strat = None
+        _seed_phase3_free = None
+        _seed_phase4 = None
+        _seed_phase5 = None
 
     # --- Load data ---
     print(f"Loading data: {args.data}")
@@ -406,8 +418,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
 
             # Save phase-specific output
             enrichment_out = args.output / "phase1_covariate_enrichment.json"
-            with open(enrichment_out, "w") as f:
-                json.dump(enrichment.to_dict(), f, indent=2)
+            atomic_write_json(enrichment_out, enrichment.to_dict())
         except Exception as e:
             logger.warning("Phase 1 (covariate_adjusted) failed: %s", e)
             report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
@@ -485,8 +496,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     print(f"  {specificity.summary}")
 
                     spec_out = args.output / "phase2_specificity.json"
-                    with open(spec_out, "w") as f:
-                        json.dump(specificity.to_dict(), f, indent=2)
+                    atomic_write_json(spec_out, specificity.to_dict())
             except Exception as e:
                 logger.warning("Phase 2 (specificity) failed: %s", e)
                 report.add_phase("specificity", {"status": "failed", "error": str(e)})
@@ -559,8 +569,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             })
 
             perm_out = args.output / "phase3_label_permutation.json"
-            with open(perm_out, "w") as f:
-                json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
+            atomic_write_json(perm_out, {"stratified": strat_dict, "free": free_dict})
         except Exception as e:
             logger.warning("Phase 3 (label_permutation) failed: %s", e)
             report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
@@ -620,8 +629,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             })
 
             matched_out = args.output / "phase4_matched_enrichment.json"
-            with open(matched_out, "w") as f:
-                json.dump(matched_enrichment.to_dict(), f, indent=2)
+            atomic_write_json(matched_out, matched_enrichment.to_dict())
         except Exception as e:
             logger.warning("Phase 4 (matched_reanalysis) failed: %s", e)
             report.add_phase("matched_reanalysis", {"status": "failed", "error": str(e)})
@@ -677,8 +685,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             report.add_phase("negative_controls", neg_result.to_dict())
 
             neg_out = args.output / "phase5_negative_controls.json"
-            with open(neg_out, "w") as f:
-                json.dump(neg_result.to_dict(), f, indent=2)
+            atomic_write_json(neg_out, neg_result.to_dict())
         except Exception as e:
             logger.warning("Phase 5 (negative_controls) failed: %s", e)
             report.add_phase("negative_controls", {"status": "failed", "error": str(e)})

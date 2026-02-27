@@ -46,9 +46,10 @@ class ValidationReport:
         return d
 
     def save(self, path) -> None:
-        """Save report as JSON."""
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        """Save report as JSON (atomic write via temp-file + rename)."""
+        from cliquefinder.utils.fileio import atomic_write_json
+
+        atomic_write_json(path, self.to_dict())
 
     def compute_verdict(
         self,
