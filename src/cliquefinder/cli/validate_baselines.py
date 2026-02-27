@@ -96,7 +96,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Permutation settings
     parser.add_argument(
-        "--label-permutations", type=int, default=500,
+        "--label-permutations", type=_positive_int, default=500,
         help="Number of label permutations (default: 500)",
     )
     parser.add_argument(
@@ -107,14 +107,14 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Negative controls
     parser.add_argument(
-        "--negative-control-sets", type=int, default=200,
+        "--negative-control-sets", type=_positive_int, default=200,
         dest="n_neg_controls",
         help="Number of random gene sets for FPR calibration (default: 200)",
     )
 
     # INDRA settings
     parser.add_argument(
-        "--min-evidence", type=int, default=1,
+        "--min-evidence", type=_positive_int, default=1,
         help="Minimum INDRA evidence count (default: 1)",
     )
     parser.add_argument(
@@ -126,7 +126,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # General settings
     parser.add_argument(
-        "--n-rotations", type=int, default=9999,
+        "--n-rotations", type=_positive_int, default=9999,
         help="ROAST rotations (default: 9999)",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -139,7 +139,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Run bootstrap stability analysis (annotation, not a gate)",
     )
     parser.add_argument(
-        "--n-bootstraps", type=int, default=200,
+        "--n-bootstraps", type=_positive_int, default=200,
         help="Number of bootstrap resamples for stability (default: 200)",
     )
 
@@ -151,7 +151,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Verdict threshold (N-1)
     parser.add_argument(
-        "--alpha", type=float, default=0.05,
+        "--alpha", type=_probability, default=0.05,
         help="Significance threshold for phase gates (default: 0.05)",
     )
 
