@@ -716,7 +716,7 @@ def fit_student_t_shared(
             # Use scipy's t distribution (location=0, scale=1, df=df_val)
             ll = np.sum(stats.t.logpdf(standardized_residuals, df=df_val))
             return -ll
-        except:
+        except (ValueError, OverflowError):
             return np.inf
 
     # Optimize df in range [2.1, 100]

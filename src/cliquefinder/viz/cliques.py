@@ -207,7 +207,7 @@ class CliqueVisualizer:
                     linkage = hierarchy.linkage(distances, method='average')
                     dendro = hierarchy.dendrogram(linkage, no_plot=True)
                     gene_order = dendro['leaves']
-            except:
+            except (ValueError, FloatingPointError):
                 # Fall back to original order if clustering fails
                 pass
 

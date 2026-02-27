@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from typing import Optional, Literal
 from pathlib import Path
+import ast
 import json
 import numpy as np
 import pandas as pd
@@ -374,10 +375,10 @@ class DifferentialCliqueVisualizer:
                 for val in df[effect_column]:
                     if isinstance(val, str) and "down" in val:
                         try:
-                            parsed = eval(val)
+                            parsed = ast.literal_eval(val)
                             # Use signed effect: positive for up, negative for down
                             effect_vals.append(parsed.get("down", 0))
-                        except:
+                        except (ValueError, SyntaxError):
                             effect_vals.append(0)
                     else:
                         effect_vals.append(0)
