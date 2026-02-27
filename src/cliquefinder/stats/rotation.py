@@ -1355,6 +1355,16 @@ def compute_rotation_pvalues(
     - Conservative for finite B
     - Exact in the limit B → ∞
 
+    P-value sidedness: The comparison ``null >= observed`` yields a
+    one-sided upper-tail p-value for each (statistic, alternative)
+    combination. Directionality is already encoded in the alternative:
+
+    - **UP**: one-sided test for up-regulation (positive effect)
+    - **DOWN**: one-sided test for down-regulation (negative effect)
+    - **MIXED**: the set statistic itself uses absolute values, so the
+      upper-tail p-value effectively gives a two-sided test for
+      differential expression in either direction.
+
     Args:
         observed_stats: stat -> alt -> observed value
         null_stats: stat -> alt -> array of null values
@@ -1998,7 +2008,11 @@ class RotationTestEngine:
         Convert results to DataFrame with raw p-values.
 
         ROAST produces exact p-values per gene set via rotation tests.
-        These raw p-values are statistically valid without FDR correction.
+        When testing multiple gene sets simultaneously, apply FDR
+        correction (e.g., Benjamini-Hochberg) to the collection of
+        p-values before interpreting significance. For single gene-set
+        validation (as in the validation framework), the raw p-value
+        is valid without correction.
 
         For exploratory analysis, rank by p-value and use thresholds like
         p < 0.01 or p < 0.001 to identify candidates for follow-up.
@@ -2045,9 +2059,13 @@ def run_rotation_test(
     3. Tests all gene sets
     4. Returns results as a DataFrame with raw p-values
 
-    ROAST produces exact p-values per gene set. These are statistically
-    valid without FDR correction. For exploratory analysis, use thresholds
-    like p < 0.01 to identify candidates for follow-up validation.
+    ROAST produces exact p-values per gene set via rotation tests.
+    When testing multiple gene sets simultaneously, apply FDR correction
+    (e.g., Benjamini-Hochberg) to the collection of p-values before
+    interpreting significance. For single gene-set validation (as in
+    the validation framework), the raw p-value is valid without
+    correction. For exploratory analysis, use thresholds like p < 0.01
+    to identify candidates for follow-up validation.
 
     Args:
         data: Expression matrix (n_genes, n_samples), log2-transformed

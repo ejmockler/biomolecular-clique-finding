@@ -65,8 +65,21 @@ class SpecificityResult:
         z_difference_ci: 95% CI for Δz from null distribution.
             None if interaction test not run.
         null_correlation: Estimated correlation between null z-scores
-            for primary and secondary contrasts (shared control samples).
-            None if interaction test not run.
+            for primary and secondary contrasts from the permutation null.
+            This reflects the shared-sample correlation structure: when
+            two contrasts share a common reference group (e.g., both
+            compare against CTRL), their null z-scores are positively
+            correlated. The paired permutation approach already accounts
+            for this correlation (labels are permuted once, preserving the
+            shared-sample structure), so null_corr is diagnostic rather
+            than a correction to apply. Values near 1.0 indicate strong
+            shared-control coupling; values near 0.0 indicate independent
+            contrasts. None if interaction test not run.
+
+    Notes:
+        Permutation resolution: With n_perms=200 (the default for the
+        interaction test), the minimum achievable p-value is ~0.005.
+        For publication-grade specificity claims, use n_perms >= 1000.
     """
 
     primary_contrast: str
@@ -102,6 +115,12 @@ class SpecificityResult:
             },
         }
 
+        # Promote null_correlation to top level for visibility (STAT-6).
+        # This diagnostic reflects shared-sample correlation structure
+        # between contrasts (e.g., shared CTRL group).
+        if self.null_correlation is not None:
+            d["null_correlation"] = self.null_correlation
+
         if self.interaction_z is not None:
             d["interaction_test"] = {
                 "z_difference": self.interaction_z,
@@ -135,6 +154,16 @@ def _run_interaction_permutation(
     This accounts for the shared-control correlation (e.g., both
     C9ORF72 vs CTRL and Sporadic vs CTRL share the CTRL samples),
     which inflates apparent differences in unpaired comparisons.
+
+    The returned ``null_correlation`` reflects this shared-sample
+    correlation structure in the permutation null. It is diagnostic
+    (not a correction to apply), since the paired permutation design
+    already preserves the correlation by permuting labels once across
+    all groups.
+
+    Permutation resolution: With n_perms=200 (the default), the
+    minimum achievable p-value is ~0.005. For publication-grade
+    specificity claims, use n_perms >= 1000.
 
     Args:
         data: Expression matrix (n_features, n_samples), log2-transformed.
@@ -288,12 +317,16 @@ def compute_specificity(
         target_gene_ids: Feature IDs of network targets.
         covariates_df: Optional covariates DataFrame.
         n_interaction_perms: Permutations for interaction test (default: 200).
+            With n_perms=200, the minimum achievable p-value is ~0.005.
+            For publication-grade specificity claims, use n_perms >= 1000.
         seed: Random seed for reproducibility.
 
     Returns:
         SpecificityResult with ratio, label, and per-contrast details.
         When interaction test data is provided, includes interaction_z,
         interaction_pvalue, z_difference_ci, and null_correlation.
+        The null_correlation is also available as a top-level key in
+        ``to_dict()`` output for visibility.
 
     Raises:
         ValueError: If primary_contrast not found in enrichment_by_contrast.

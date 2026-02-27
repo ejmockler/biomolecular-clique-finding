@@ -434,6 +434,12 @@ class PermutationTestEngine:
         2. Generate null by testing random sets of same size
         3. Compute empirical p-value
 
+        P-value sidedness: Returns a two-sided permutation p-value
+        (``empirical_pvalue``). The null comparison uses
+        ``|null_stat| >= |observed_stat|``, testing for deviation in
+        either direction. A one-sided p-value is also provided as
+        ``empirical_pvalue_onesided`` in each :class:`PermutationResult`.
+
         Args:
             feature_sets: Feature sets to test
             design: Experimental design specification
