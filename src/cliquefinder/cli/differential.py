@@ -371,6 +371,16 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_false",
         help="Disable GPU acceleration, use CPU parallelization",
     )
+    parser.add_argument(
+        "--force-cpu",
+        action="store_true",
+        default=False,
+        help="Force CPU computation for exact float64 reproducibility. "
+             "The GPU (MLX) path uses float32 for rotation inner loops, "
+             "which can shift p-values by ~1e-4 for extreme t-statistics "
+             "(|t| > 10). Use this flag for cross-platform benchmarking "
+             "or regression testing.",
+    )
     parser.set_defaults(gpu=True)  # GPU is default if available
 
     # ROAST rotation-based gene set testing
@@ -963,6 +973,12 @@ def run_differential(args: argparse.Namespace) -> int:
         print(f"\nComplete! Duration: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return 0
 
+    # STAT-11: --force-cpu overrides GPU for exact float64 reproducibility
+    use_gpu = args.gpu
+    if getattr(args, 'force_cpu', False):
+        use_gpu = False
+        print("  Note: --force-cpu active, using float64 CPU path for exact reproducibility")
+
     # Clique-level analysis
     if args.roast:
         # ROAST rotation-based gene set testing
@@ -988,7 +1004,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 factor2_column=factor2_col,
                 n_rotations=args.n_rotations,
                 seed=args.permutation_seed,
-                use_gpu=args.gpu,
+                use_gpu=use_gpu,
                 map_ids=True,
                 verbose=True,
             )
@@ -1016,7 +1032,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 contrast=contrast_tuple,
                 n_rotations=args.n_rotations,
                 seed=args.permutation_seed,  # Reuse seed arg
-                use_gpu=args.gpu,
+                use_gpu=use_gpu,
                 map_ids=True,
                 verbose=True,
                 covariates=getattr(args, 'covariates', None),
@@ -1102,7 +1118,7 @@ def run_differential(args: argparse.Namespace) -> int:
             "cliques": str(args.cliques) if args.cliques else None,
             "n_rotations": args.n_rotations,
             "seed": args.permutation_seed,
-            "use_gpu": args.gpu,
+            "use_gpu": use_gpu,
             "n_cliques_tested": n_cliques_tested,
             "n_top_hits_p05": n_top_hits,
             "n_bidirectional": len(bidir),
@@ -1147,8 +1163,7 @@ def run_differential(args: argparse.Namespace) -> int:
         # Parse the first contrast for permutation test
         contrast_tuple = list(contrasts.values())[0]
 
-        # Try GPU implementation first if requested
-        use_gpu = args.gpu
+        # Try GPU implementation first if requested (respects --force-cpu)
         gpu_available = False
 
         if use_gpu:

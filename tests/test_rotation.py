@@ -485,7 +485,7 @@ class TestGPUCPUEquivalence:
         R = generate_rotation_vectors(100, precomputed.residual_dims, rng=rng)
 
         # Apply with CPU
-        t_cpu, z_cpu = apply_rotations_batched(
+        t_cpu, z_cpu, valid_cpu = apply_rotations_batched(
             effects.U,
             effects.rho_sq,
             R,
@@ -499,7 +499,7 @@ class TestGPUCPUEquivalence:
         # Apply with GPU (if available)
         try:
             import mlx.core as mx
-            t_gpu, z_gpu = apply_rotations_batched(
+            t_gpu, z_gpu, valid_gpu = apply_rotations_batched(
                 effects.U,
                 effects.rho_sq,
                 R,
