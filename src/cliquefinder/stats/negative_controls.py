@@ -398,6 +398,8 @@ def run_negative_control_sets(
 
         matched_pvalues_arr = np.full(n_control_sets, np.nan)
 
+        # First pass: generate and cache matched gene sets, compute p-values
+        matched_gene_sets: list[list[str]] = []
         for i in range(n_control_sets):
             if verbose and (i + 1) % 50 == 0:
                 print(f"  Matched control set {i + 1}/{n_control_sets}...")
@@ -407,6 +409,7 @@ def run_negative_control_sets(
                 gene_means, gene_variances, rng,
             )
             matched_genes = [all_gene_ids[idx] for idx in matched_indices]
+            matched_gene_sets.append(matched_genes)
 
             try:
                 matched_result = engine.test_gene_set(
@@ -429,15 +432,10 @@ def run_negative_control_sets(
                 float(np.sum(valid_matched <= target_pvalue)) / n_valid_matched * 100
             )
 
-            # Matched competitive z percentile (if protein_results available)
+            # Second pass: reuse SAME matched gene sets for competitive z-scores
             if protein_results is not None and target_comp_z is not None:
                 matched_comp_z = np.full(n_control_sets, np.nan)
-                for i in range(n_control_sets):
-                    matched_indices = _sample_expression_matched_set(
-                        target_indices, non_target_indices,
-                        gene_means, gene_variances, rng,
-                    )
-                    matched_genes = [all_gene_ids[idx] for idx in matched_indices]
+                for i, matched_genes in enumerate(matched_gene_sets):
                     ctrl_mask = np.zeros(n_features, dtype=bool)
                     for g in matched_genes:
                         if g in feature_to_idx:

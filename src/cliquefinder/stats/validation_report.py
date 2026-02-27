@@ -50,14 +50,20 @@ class ValidationReport:
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
-    def compute_verdict(self, *, alpha: float = 0.05) -> None:
+    def compute_verdict(
+        self,
+        *,
+        alpha: float = 0.05,
+        neg_ctrl_percentile: float = 10.0,
+    ) -> None:
         """Compute overall verdict from phase results.
 
         Uses hierarchical logic rather than equal-weight voting:
+
         - Phase 1 (covariate-adjusted) and Phase 3 (label permutation)
-          are MANDATORY gates — both must pass for "validated".
+          are MANDATORY gates -- both must pass for "validated".
         - Phase 2 (specificity) characterizes the signal as "specific"
-          or "shared" — a "shared" signal is still biologically valid.
+          or "shared" -- a "shared" signal is still biologically valid.
         - Phase 4 (matched) and Phase 5 (negative controls) provide
           supplementary evidence, weighted as supporting.
 
@@ -69,33 +75,74 @@ class ValidationReport:
             alpha: Significance threshold applied to Phase 1 (covariate-
                 adjusted enrichment), Phase 3 (label permutation null),
                 and Phase 4 (matched subsampling). Default is 0.05.
+            neg_ctrl_percentile: Percentile threshold for Phase 5
+                negative control pass/fail (default: 10.0). The target
+                gene set must rank below this percentile among random
+                control sets to pass.
 
-        Multiple-testing rationale
-        --------------------------
+        Bounded-FWER rationale
+        ----------------------
         Three phases (1, 3, 4) apply the same ``alpha`` threshold:
 
         1. These phases test *different aspects* of the same underlying
-           enrichment signal — confound correction (Phase 1), label
+           enrichment signal -- confound correction (Phase 1), label
            robustness (Phase 3), and sample-composition sensitivity
-           (Phase 4) — rather than independent hypotheses about
+           (Phase 4) -- rather than independent hypotheses about
            unrelated effects. Bonferroni or Benjamini-Hochberg
            adjustment is therefore overly conservative because the
            test statistics are positively correlated (all driven by
            the same target-gene signal).
 
-        2. The hierarchical gating structure already provides implicit
-           multiplicity control: Phase 1 AND Phase 3 must *both* pass
-           for a "validated" verdict, which is strictly more stringent
-           than requiring either alone (joint probability under the
-           global null is alpha^2 when tests are independent, and even
-           lower when positively correlated).
+        2. The hierarchical gating structure provides bounded-FWER
+           control: Phase 1 AND Phase 3 must *both* pass for a
+           "validated" verdict, which is strictly more stringent than
+           requiring either alone.
+
+           **Design asymmetry note:** Phase 1 (covariate-adjusted
+           enrichment) and Phase 3 (label permutation null) are *not*
+           independent -- they test the same gene set on the same data.
+           If their test statistics have correlation rho under the
+           global null, the joint-pass probability is:
+
+               P(both pass) = alpha * Phi((z_alpha - rho * z_alpha)
+                              / sqrt(1 - rho^2))
+
+           where z_alpha = Phi^{-1}(1 - alpha).
+
+           For alpha = 0.05 and typical rho in [0.3, 0.7], the
+           effective FWER is bounded by approximately 0.006 to 0.020,
+           which is still well below the nominal alpha = 0.05. The
+           gating therefore provides meaningful multiplicity reduction
+           even under positive dependence, but the exact bound depends
+           on the inter-phase correlation and is *not* alpha^2 unless
+           the phases are independent (rho = 0). At moderate
+           correlation (rho = 0.5) the bound is approximately 0.012;
+           at high correlation (rho = 0.8) it rises to approximately
+           0.030 -- still below alpha but 12x the independent-case
+           value of 0.0025.
 
         3. Phase 4 is supplementary and cannot override a "refuted"
-           verdict from the mandatory gates — it only modulates between
+           verdict from the mandatory gates -- it only modulates between
            "validated" and "inconclusive" when the gates pass.
 
-        Users who want stricter family-wise error control can set
-        ``alpha=0.01`` or lower.
+        Design asymmetry note
+        ---------------------
+        This framework is designed for VALIDATION of a candidate
+        finding, not balanced hypothesis testing. The verdict is
+        intentionally asymmetric:
+
+        - "Validated" requires positive evidence from both mandatory
+          gates
+        - "Refuted" requires both gates to fail simultaneously
+        - "Inconclusive" is the default for mixed or ambiguous results
+
+        This asymmetry biases toward "inconclusive" rather than
+        "refuted" for null signals. Users who want formal two-sided
+        testing should use the individual phase p-values with
+        Bonferroni-Holm correction across the mandatory gates
+        (alpha/2 each).
+
+        For conservative family-wise error control, set ``alpha=0.01``.
         """
         details: dict[str, str] = {}
 
@@ -169,7 +216,7 @@ class ValidationReport:
             else:
                 percentile = neg.get("target_percentile", 100)
                 fpr = neg.get("fpr", 1.0)
-            passed = percentile < 10.0
+            passed = percentile < neg_ctrl_percentile
             supplementary_pass += int(passed)
             supplementary_total += 1
             details["negative_controls"] = (
