@@ -153,6 +153,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     """Execute the full baseline validation suite."""
     from cliquefinder.io.loaders import load_csv_matrix
     from cliquefinder.stats.validation_report import ValidationReport
+    from cliquefinder.utils.fileio import atomic_write_json
 
     print("=" * 70)
     print("  BASELINE VALIDATION SUITE")
@@ -163,27 +164,44 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     report = ValidationReport()
 
     # -----------------------------------------------------------------
-    # Seed propagation strategy (M3 audit finding)
+    # Seed propagation strategy (M3 audit finding, ARCH-10 SeedSequence)
     # -----------------------------------------------------------------
-    # Each phase that uses random state gets a distinct offset from
-    # args.seed, preventing subtle correlations between permutation-
-    # based phases that would arise from sharing the same RNG entry
-    # point. When args.seed is None, all phase seeds are None (fully
-    # random).
+    # Each phase that uses random state gets a cryptographically
+    # independent child seed derived via NumPy's SeedSequence.spawn().
+    # This avoids the prior pattern of adding constants (seed + 1000,
+    # seed + 2000, etc.) which — while safe for PCG64 — is not best
+    # practice.  SeedSequence guarantees statistically independent
+    # streams regardless of the underlying bit generator.
     #
-    # Phase offsets:
-    #   Bootstrap stability:       seed + 0    (runs first, no conflict)
-    #   Phase 3 stratified perm:   seed + 1000
-    #   Phase 3 free perm:         seed + 2000
-    #   Phase 4 matching:          seed + 3000
-    #   Phase 5 negative controls: seed + 4000
+    # When args.seed is None, all phase seeds are None (fully random).
     # -----------------------------------------------------------------
+    from numpy.random import SeedSequence
+
     _base_seed = args.seed
-    _seed_bootstrap = _base_seed if _base_seed is None else _base_seed + 0
-    _seed_phase3_strat = _base_seed if _base_seed is None else _base_seed + 1000
-    _seed_phase3_free = _base_seed if _base_seed is None else _base_seed + 2000
-    _seed_phase4 = _base_seed if _base_seed is None else _base_seed + 3000
-    _seed_phase5 = _base_seed if _base_seed is None else _base_seed + 4000
+    if _base_seed is not None:
+        _ss = SeedSequence(_base_seed)
+        (
+            _ss_bootstrap,
+            _ss_phase3_strat,
+            _ss_phase3_free,
+            _ss_phase4,
+            _ss_phase5,
+        ) = _ss.spawn(5)
+        # generate_state(1) yields a unique 32-bit integer seed that
+        # encodes the full lineage (parent entropy + spawn_key).  This
+        # is the correct way to convert a child SeedSequence into an
+        # integer seed; ``.entropy`` would return the *parent* value.
+        _seed_bootstrap = int(_ss_bootstrap.generate_state(1)[0])
+        _seed_phase3_strat = int(_ss_phase3_strat.generate_state(1)[0])
+        _seed_phase3_free = int(_ss_phase3_free.generate_state(1)[0])
+        _seed_phase4 = int(_ss_phase4.generate_state(1)[0])
+        _seed_phase5 = int(_ss_phase5.generate_state(1)[0])
+    else:
+        _seed_bootstrap = None
+        _seed_phase3_strat = None
+        _seed_phase3_free = None
+        _seed_phase4 = None
+        _seed_phase5 = None
 
     # --- Load data ---
     print(f"Loading data: {args.data}")
@@ -312,10 +330,9 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         enrichment = run_network_enrichment_test(protein_df, verbose=True)
         report.add_phase("covariate_adjusted", enrichment.to_dict())
 
-        # Save phase-specific output
+        # Save phase-specific output (atomic write)
         enrichment_out = args.output / "phase1_covariate_enrichment.json"
-        with open(enrichment_out, "w") as f:
-            json.dump(enrichment.to_dict(), f, indent=2)
+        atomic_write_json(enrichment_out, enrichment.to_dict())
     except Exception as e:
         import warnings
         warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
@@ -387,8 +404,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 print(f"  {specificity.summary}")
 
                 spec_out = args.output / "phase2_specificity.json"
-                with open(spec_out, "w") as f:
-                    json.dump(specificity.to_dict(), f, indent=2)
+                atomic_write_json(spec_out, specificity.to_dict())
         except Exception as e:
             import warnings
             warnings.warn(f"Phase 2 (specificity) failed: {e}")
@@ -456,8 +472,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         })
 
         perm_out = args.output / "phase3_label_permutation.json"
-        with open(perm_out, "w") as f:
-            json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
+        atomic_write_json(perm_out, {"stratified": strat_dict, "free": free_dict})
     except Exception as e:
         import warnings
         warnings.warn(f"Phase 3 (label_permutation) failed: {e}")
@@ -512,8 +527,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         })
 
         matched_out = args.output / "phase4_matched_enrichment.json"
-        with open(matched_out, "w") as f:
-            json.dump(matched_enrichment.to_dict(), f, indent=2)
+        atomic_write_json(matched_out, matched_enrichment.to_dict())
     except Exception as e:
         import warnings
         warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
@@ -564,8 +578,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         report.add_phase("negative_controls", neg_result.to_dict())
 
         neg_out = args.output / "phase5_negative_controls.json"
-        with open(neg_out, "w") as f:
-            json.dump(neg_result.to_dict(), f, indent=2)
+        atomic_write_json(neg_out, neg_result.to_dict())
     except Exception as e:
         import warnings
         warnings.warn(f"Phase 5 (negative_controls) failed: {e}")

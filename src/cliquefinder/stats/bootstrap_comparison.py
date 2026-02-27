@@ -183,7 +183,20 @@ def run_bootstrap_comparison(
         MethodName,
     )
 
+    from numpy.random import SeedSequence
+
     rng = np.random.default_rng(config.seed)
+    # Pre-spawn independent seeds for each bootstrap iteration (ARCH-10).
+    # Avoids the prior pattern of ``config.seed + b`` which doesn't
+    # guarantee independent streams for arbitrary generators.
+    if config.seed is not None:
+        _bootstrap_ss = SeedSequence(config.seed)
+        _bootstrap_child_seeds = [
+            int(child.generate_state(1)[0])
+            for child in _bootstrap_ss.spawn(config.n_bootstraps)
+        ]
+    else:
+        _bootstrap_child_seeds = [None] * config.n_bootstraps
     test_cond, ref_cond = contrast
 
     # Identify case and control samples
@@ -299,7 +312,7 @@ def run_bootstrap_comparison(
                 n_rotations=config.n_rotations,
                 n_permutations=100,  # Minimal, we don't use permutation results
                 use_gpu=config.use_gpu,
-                seed=config.seed + b if config.seed else None,
+                seed=_bootstrap_child_seeds[b],
                 verbose=False,
                 precomputed_symbol_map=precomputed_symbol_map,  # Use cached mappings
             )

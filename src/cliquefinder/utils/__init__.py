@@ -9,6 +9,10 @@ from cliquefinder.utils.correlation_matrix import (
     compute_weighted_correlation_matrix_chunked,
     get_weighted_correlation_matrix
 )
+from cliquefinder.utils.fileio import (
+    atomic_write_json,
+    atomic_write_text,
+)
 from cliquefinder.utils.statistics import (
     otsu_threshold,
     cohens_d,
@@ -24,6 +28,9 @@ __all__ = [
     'weighted_pearson_correlation',
     'compute_weighted_correlation_matrix_chunked',
     'get_weighted_correlation_matrix',
+    # Atomic file-write utilities
+    'atomic_write_json',
+    'atomic_write_text',
     # Statistical utilities
     'otsu_threshold',
     'cohens_d',

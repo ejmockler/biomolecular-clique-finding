@@ -935,13 +935,44 @@ def precompute_random_indices(
                 size=(total_samples, size),
                 replace=True
             )
-        else:
-            # Standard case: sample without replacement FOR EACH ROW
-            # We need to generate each row independently
-            # Using a vectorized approach with permuted indices
+        elif pool_size <= 2 * size:
+            # Small-pool case: size is close to pool_size so the
+            # argpartition trick below would waste memory generating
+            # (total_samples, pool_size) random keys for little gain.
+            # Fall back to sequential sampling.
             all_samples = np.zeros((total_samples, size), dtype=np.int32)
             for i in range(total_samples):
                 all_samples[i] = rng.choice(pool_size, size=size, replace=False)
+        else:
+            # Vectorized sampling without replacement (ARCH-16).
+            # Strategy: generate uniform random keys of shape
+            # (total_samples, pool_size), then use argpartition to
+            # pick the indices of the `size` smallest keys per row.
+            # This is exact (each of the C(pool_size, size) subsets
+            # has equal probability) and avoids a Python for-loop
+            # over potentially hundreds of thousands of iterations.
+            #
+            # Memory note: for very large pool_size we chunk to
+            # avoid allocating a single enormous (total_samples x
+            # pool_size) array.
+            _CHUNK_MAX_ELEMS = 50_000 * 1_000  # ~400 MB of float64
+            chunk_rows = max(1, _CHUNK_MAX_ELEMS // pool_size)
+
+            if total_samples <= chunk_rows:
+                # Single vectorized pass — typical case
+                random_keys = rng.random((total_samples, pool_size))
+                all_samples = np.argpartition(
+                    random_keys, size, axis=1
+                )[:, :size].astype(np.int32)
+            else:
+                # Chunked to cap peak memory
+                all_samples = np.zeros((total_samples, size), dtype=np.int32)
+                for start in range(0, total_samples, chunk_rows):
+                    end = min(start + chunk_rows, total_samples)
+                    random_keys = rng.random((end - start, pool_size))
+                    all_samples[start:end] = np.argpartition(
+                        random_keys, size, axis=1
+                    )[:, :size].astype(np.int32)
 
         # Reshape: (n_cliques, n_perms, size)
         all_samples_reshaped = all_samples.reshape(
