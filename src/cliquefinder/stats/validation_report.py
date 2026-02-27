@@ -80,8 +80,8 @@ class ValidationReport:
                 gene set must rank below this percentile among random
                 control sets to pass.
 
-        Multiple-testing rationale
-        --------------------------
+        Bounded-FWER rationale
+        ----------------------
         Three phases (1, 3, 4) apply the same ``alpha`` threshold:
 
         1. These phases test *different aspects* of the same underlying
@@ -93,16 +93,33 @@ class ValidationReport:
            test statistics are positively correlated (all driven by
            the same target-gene signal).
 
-        2. The joint gating structure provides multiplicity control more
-           stringent than either test alone. However, the exact FWER
-           depends on the correlation between Phase 1 and Phase 3 test
-           statistics (which share the same data and gene set). Under
-           the global null with positive correlation:
+        2. The hierarchical gating structure provides bounded-FWER
+           control: Phase 1 AND Phase 3 must *both* pass for a
+           "validated" verdict, which is strictly more stringent than
+           requiring either alone.
 
-           - P(both pass) is bounded above by alpha and below by
-             alpha^2
-           - For typical Phase 1-3 correlations (0.3-0.7), the
-             effective FWER is approximately 0.01-0.03 for alpha=0.05
+           **Design asymmetry note:** Phase 1 (covariate-adjusted
+           enrichment) and Phase 3 (label permutation null) are *not*
+           independent -- they test the same gene set on the same data.
+           If their test statistics have correlation rho under the
+           global null, the joint-pass probability is:
+
+               P(both pass) = alpha * Phi((z_alpha - rho * z_alpha)
+                              / sqrt(1 - rho^2))
+
+           where z_alpha = Phi^{-1}(1 - alpha).
+
+           For alpha = 0.05 and typical rho in [0.3, 0.7], the
+           effective FWER is bounded by approximately 0.006 to 0.020,
+           which is still well below the nominal alpha = 0.05. The
+           gating therefore provides meaningful multiplicity reduction
+           even under positive dependence, but the exact bound depends
+           on the inter-phase correlation and is *not* alpha^2 unless
+           the phases are independent (rho = 0). At moderate
+           correlation (rho = 0.5) the bound is approximately 0.012;
+           at high correlation (rho = 0.8) it rises to approximately
+           0.030 -- still below alpha but 12x the independent-case
+           value of 0.0025.
 
         3. Phase 4 is supplementary and cannot override a "refuted"
            verdict from the mandatory gates -- it only modulates between
