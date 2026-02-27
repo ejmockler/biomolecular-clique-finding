@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import json
+import os
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Set, Optional, Tuple
@@ -179,11 +181,35 @@ _worker_conditions = None
 _worker_params = None
 
 
-def _init_worker(matrix_data, feature_ids, sample_ids, sample_metadata,
+def _init_worker(mmap_path, feature_ids, sample_ids, sample_metadata,
                  quality_flags, stratify_by, min_samples, conditions,
                  min_correlation, min_clique_size, use_fast_maximum, correlation_method):
-    """Initialize worker process with shared data."""
+    """Initialize worker process with memory-mapped data.
+
+    Instead of receiving the full matrix via pickle serialization (which
+    duplicates ~300 MB per worker), workers load a memory-mapped .npy file.
+    The OS shares the physical pages across all worker processes (copy-on-write),
+    so total memory usage is O(1) regardless of worker count.
+
+    Args:
+        mmap_path: Path to a temporary .npy file containing the expression matrix.
+            Loaded with ``np.load(mmap_path, mmap_mode='r')`` for read-only access.
+        feature_ids: List of feature ID strings (gene names / Ensembl IDs).
+        sample_ids: List of sample ID strings.
+        sample_metadata: DataFrame of sample metadata (pickled normally — small).
+        quality_flags: NumPy array of quality flags (small).
+        stratify_by: Column name for stratification.
+        min_samples: Minimum samples per stratum.
+        conditions: List of condition labels.
+        min_correlation: Minimum correlation threshold.
+        min_clique_size: Minimum clique size.
+        use_fast_maximum: Whether to use fast maximum clique algorithm.
+        correlation_method: Correlation method ('pearson' or 'spearman').
+    """
     global _worker_validator, _worker_conditions, _worker_params
+
+    # Load expression matrix via memory mapping (OS shares physical pages, read-only)
+    matrix_data = np.load(mmap_path, mmap_mode='r')
 
     # Reconstruct BioMatrix in this process
     matrix = BioMatrix(
@@ -827,24 +853,8 @@ def run_stratified_analysis(
 
     if use_regulator_parallelism and parallel_mode == "processes":
         # Process-based parallelism - TRUE multi-core execution
-        # Each process gets its own copy of the data and validator
+        # Memory-mapped array: write matrix once, all workers share OS pages
         logger.info(f"Using {n_workers} PROCESS workers for true multi-core parallelism")
-
-        # Prepare data for worker initialization (must be picklable)
-        init_args = (
-            matrix.data,  # numpy array - picklable
-            list(matrix.feature_ids),  # list of strings
-            list(matrix.sample_ids),  # list of strings
-            matrix.sample_metadata,  # DataFrame - picklable
-            matrix.quality_flags,  # numpy array
-            stratify_by,
-            min_samples,
-            conditions,
-            min_correlation,
-            min_clique_size,
-            use_fast_maximum,
-            correlation_method
-        )
 
         # Prepare regulator args (tuples of picklable data)
         regulator_args = [
@@ -855,31 +865,66 @@ def run_stratified_analysis(
         # Use 'spawn' context for clean process creation (avoids fork issues)
         ctx = mp.get_context('spawn')
 
-        completed = 0
-        with ProcessPoolExecutor(
-            max_workers=n_workers,
-            mp_context=ctx,
-            initializer=_init_worker,
-            initargs=init_args
-        ) as executor:
-            futures = {
-                executor.submit(_process_regulator_worker, args): args
-                for args in regulator_args
-            }
+        # Write expression matrix to a temporary .npy file for memory-mapping.
+        # Workers load with mmap_mode='r' so the OS shares physical pages
+        # across all processes (copy-on-write), avoiding per-worker copies.
+        mmap_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as tmp:
+                mmap_path = tmp.name
+                np.save(tmp, matrix.data)
 
-            for future in as_completed(futures):
-                args = futures[future]
-                completed += 1
-                try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                    # Progress logging every 10 regulators or at milestones
-                    if completed % 10 == 0 or completed == len(modules):
-                        pct = 100 * completed / len(modules)
-                        logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
-                except Exception as e:
-                    logger.error(f"Failed to get result for {args[0]}: {e}")
+            logger.info(
+                f"Wrote expression matrix to mmap file: {mmap_path} "
+                f"({matrix.data.nbytes / 1024 / 1024:.1f} MB)"
+            )
+
+            # Prepare worker init args — pass mmap path instead of raw matrix
+            init_args = (
+                mmap_path,  # path to memory-mapped .npy file
+                list(matrix.feature_ids),  # list of strings
+                list(matrix.sample_ids),  # list of strings
+                matrix.sample_metadata,  # DataFrame - picklable (small)
+                matrix.quality_flags,  # numpy array (small)
+                stratify_by,
+                min_samples,
+                conditions,
+                min_correlation,
+                min_clique_size,
+                use_fast_maximum,
+                correlation_method
+            )
+
+            completed = 0
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=ctx,
+                initializer=_init_worker,
+                initargs=init_args
+            ) as executor:
+                futures = {
+                    executor.submit(_process_regulator_worker, args): args
+                    for args in regulator_args
+                }
+
+                for future in as_completed(futures):
+                    args = futures[future]
+                    completed += 1
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append(result)
+                        # Progress logging every 10 regulators or at milestones
+                        if completed % 10 == 0 or completed == len(modules):
+                            pct = 100 * completed / len(modules)
+                            logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
+                    except Exception as e:
+                        logger.error(f"Failed to get result for {args[0]}: {e}")
+        finally:
+            # Clean up temporary mmap file
+            if mmap_path and os.path.exists(mmap_path):
+                os.unlink(mmap_path)
+                logger.debug(f"Cleaned up mmap file: {mmap_path}")
 
     elif use_regulator_parallelism:
         # Thread-based parallelism for regulators (default)

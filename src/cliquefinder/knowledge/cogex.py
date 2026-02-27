@@ -79,6 +79,20 @@ except ImportError:
     INDRA_AVAILABLE = False
     norm_id = None  # Placeholder
 
+# Neo4j driver exception classes for typed error handling.
+# These propagate through INDRA's Neo4jClient when the Neo4j server is
+# unreachable, the session expires mid-query, or a transient failure occurs.
+# If the neo4j driver is not installed (or INDRA wraps errors differently),
+# we fall back to string-matching heuristics in _execute_query().
+try:
+    from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
+    _NEO4J_EXCEPTIONS_AVAILABLE = True
+except ImportError:
+    _NEO4J_EXCEPTIONS_AVAILABLE = False
+    ServiceUnavailable = None  # type: ignore[assignment,misc]
+    SessionExpired = None  # type: ignore[assignment,misc]
+    TransientError = None  # type: ignore[assignment,misc]
+
 __all__ = [
     'GeneId',
     'INDRAEdge',
@@ -499,6 +513,12 @@ class CoGExClient:
             "3. .env file: CoGExClient(env_file=Path('~/.env'))"
         )
 
+    # Keywords used for heuristic connection-error detection when typed
+    # Neo4j exceptions are not available.  Checked against str(e).lower().
+    _CONNECTION_ERROR_KEYWORDS = (
+        'connection', 'timeout', 'unavailable', 'refused', 'reset', 'broken',
+    )
+
     def _get_client(self) -> Neo4jClient:
         """
         Get or create Neo4j client (lazy initialization).
@@ -512,6 +532,78 @@ class CoGExClient:
             logger.info(f"Connected to INDRA CoGEx at {url}")
 
         return self._client
+
+    def _execute_query(self, query: str, max_retries: int = 1, **params):
+        """
+        Execute a Cypher query with typed exception handling and retry.
+
+        Defence-in-depth strategy:
+        1. If ``neo4j.exceptions`` typed classes are importable, catch
+           ``ServiceUnavailable``, ``SessionExpired``, and ``TransientError``
+           first — these are *definite* connection/transient failures.
+        2. For any other ``Exception``, fall back to string-keyword matching
+           to detect connection errors that the typed classes missed (e.g.,
+           errors wrapped by INDRA's own exception hierarchy).
+        3. Query *syntax* errors (``SyntaxError``, ``ClientError``) are
+           never retried — they are deterministic bugs.
+
+        Args:
+            query: Cypher query string.
+            max_retries: Number of retry attempts after a connection error
+                (default 1, meaning at most 2 total attempts).
+            **params: Parameterized query values passed to ``query_tx()``.
+
+        Returns:
+            Query result rows from ``Neo4jClient.query_tx()``.
+
+        Raises:
+            RuntimeError: If the query fails after all retries.
+        """
+        last_error = None
+
+        for attempt in range(1 + max_retries):
+            try:
+                client = self._get_client()
+                return client.query_tx(query, **params)
+
+            except Exception as e:
+                last_error = e
+
+                # --- Classify the error ---
+                is_connection_error = False
+
+                # (a) Typed Neo4j exceptions — definite connection/transient errors
+                if _NEO4J_EXCEPTIONS_AVAILABLE:
+                    typed_classes = (ServiceUnavailable, SessionExpired, TransientError)
+                    if isinstance(e, typed_classes):
+                        is_connection_error = True
+
+                # (b) Fallback: string-keyword heuristic
+                if not is_connection_error:
+                    error_str = str(e).lower()
+                    is_connection_error = any(
+                        word in error_str
+                        for word in self._CONNECTION_ERROR_KEYWORDS
+                    )
+
+                if not is_connection_error:
+                    # Deterministic error (syntax, constraint, etc.) — never retry
+                    raise RuntimeError(f"Query failed (non-retryable): {e}") from e
+
+                # Connection error — reset client and maybe retry
+                logger.warning(
+                    "Connection error on attempt %d/%d: %s",
+                    attempt + 1, 1 + max_retries, e,
+                )
+                self._client = None  # force reconnect on next attempt
+
+                if attempt >= max_retries:
+                    raise RuntimeError(
+                        f"Query failed after {1 + max_retries} attempts: {e}"
+                    ) from e
+
+        # Should never reach here, but satisfy type checkers
+        raise RuntimeError(f"Query failed: {last_error}")  # pragma: no cover
 
     def ping(self) -> bool:
         """
@@ -528,9 +620,7 @@ class CoGExClient:
             ...     print("Connection failed")
         """
         try:
-            client = self._get_client()
-            # Simple query to test connection
-            result = client.query_tx("RETURN 1 as test")
+            result = self._execute_query("RETURN 1 as test")
             return len(result) > 0
         except Exception as e:
             logger.error(f"Failed to connect to INDRA CoGEx: {e}")
@@ -587,12 +677,11 @@ class CoGExClient:
         """
 
         try:
-            client = self._get_client()
-            results = client.query_tx(
+            results = self._execute_query(
                 query,
                 regulator_id=regulator_curie,
                 stmt_types=stmt_types,
-                min_evidence=min_evidence
+                min_evidence=min_evidence,
             )
 
             # Parse results into INDRAEdge objects
@@ -635,6 +724,8 @@ class CoGExClient:
             logger.info(f"Found {len(edges)} INDRA targets for {regulator[0]}:{regulator[1]}")
             return edges
 
+        except RuntimeError:
+            raise  # re-raise _execute_query's RuntimeError as-is
         except Exception as e:
             logger.error(f"Failed to query downstream targets: {e}")
             raise RuntimeError(f"Query failed: {e}") from e
@@ -746,12 +837,11 @@ class CoGExClient:
         """
 
         try:
-            client = self._get_client()
-            results = client.query_tx(
+            results = self._execute_query(
                 query,
                 target_ids=target_curies,
                 stmt_types=stmt_types,
-                min_evidence=min_evidence
+                min_evidence=min_evidence,
             )
 
             # Group edges by regulator
@@ -815,6 +905,8 @@ class CoGExClient:
 
             return filtered_regulators
 
+        except RuntimeError:
+            raise  # re-raise _execute_query's RuntimeError as-is
         except Exception as e:
             logger.error(f"Failed to discover regulators: {e}")
             raise RuntimeError(f"Reverse query failed: {e}") from e
