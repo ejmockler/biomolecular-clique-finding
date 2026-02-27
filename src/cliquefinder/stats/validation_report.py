@@ -225,11 +225,31 @@ class ValidationReport:
             )
 
         # --- Compute verdict ---
+        # ARCH-17: Distinguish skipped supplementary phases from failed ones.
+        # Phases that didn't run (e.g., Phase 2 for single-contrast datasets)
+        # should NOT count as failures.  ``supplementary_total`` only counts
+        # phases that actually executed and produced a result.
+        supplementary_failed = supplementary_total - supplementary_pass
+
         if not gate_adjusted and not cov:
             self.verdict = "inconclusive"
             self.summary = "Core phases not completed."
         elif gate_adjusted and gate_permutation:
-            if supplementary_total > 0 and supplementary_pass == 0:
+            if supplementary_total == 0:
+                # No supplementary phases ran — don't penalise for missing data
+                self.verdict = "validated"
+                qualifier = ""
+                if specificity_label == "shared":
+                    qualifier = " (shared across disease subtypes)"
+                elif specificity_label == "specific":
+                    qualifier = " (disease-subtype specific)"
+                self.summary = (
+                    f"Signal validated{qualifier}: survives covariate "
+                    f"adjustment and label permutation null. "
+                    f"No supplementary phases ran."
+                )
+            elif supplementary_failed > 0 and supplementary_pass == 0:
+                # All supplementary phases that ran actually FAILED
                 self.verdict = "inconclusive"
                 self.summary = (
                     f"Core tests pass (adjusted enrichment + permutation null) "
@@ -238,6 +258,7 @@ class ValidationReport:
                     f"is concerning."
                 )
             else:
+                # At least one supplementary phase passed
                 self.verdict = "validated"
                 qualifier = ""
                 if specificity_label == "shared":

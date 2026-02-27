@@ -175,6 +175,12 @@ class TestResult:
     n_reference: int  # samples in reference condition
     additional: dict = field(default_factory=dict)  # method-specific extras
 
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        from types import MappingProxyType
+        if isinstance(self.additional, dict) and not isinstance(self.additional, MappingProxyType):
+            object.__setattr__(self, 'additional', MappingProxyType(dict(self.additional)))
+
 
 @dataclass
 class PermutationResult:

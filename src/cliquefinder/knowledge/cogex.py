@@ -692,13 +692,17 @@ class CoGExClient:
             logger.error(f"Failed to query downstream targets: {e}")
             raise RuntimeError(f"Query failed: {e}") from e
 
+    # Chunk size for batching large CURIE lists in Neo4j queries
+    CURIE_CHUNK_SIZE = 5000
+
     def discover_regulators(
         self,
         gene_universe: List[str],
         stmt_types: Optional[List[str]] = None,
         min_evidence: int = 2,
         min_targets: int = 5,
-        regulator_types: Optional[Set[str]] = None
+        regulator_types: Optional[Set[str]] = None,
+        max_results: int = 100_000,
     ) -> Dict[str, List[INDRAEdge]]:
         """
         Discover all upstream regulators for genes in universe (reverse query).
@@ -729,6 +733,9 @@ class CoGExClient:
             regulator_types: Optional set of regulator namespaces to include
                 Default: None (include all, typically HGNC for human genes)
                 Example: {"HGNC"} to limit to human genes
+            max_results: Maximum total result rows across all chunks.
+                Default: 100,000. A warning is emitted if this limit is reached,
+                indicating that results may be truncated.
 
         Returns:
             Dict mapping regulator symbol -> list of INDRAEdge objects
@@ -785,8 +792,8 @@ class CoGExClient:
 
         logger.info(f"Resolved {len(target_curies)}/{len(gene_universe)} genes for reverse query")
 
-        # Single batch Cypher query: find ALL regulators targeting genes in universe
-        # This is the key efficiency gain - one query instead of O(n) queries
+        # Chunked Cypher query: batch large CURIE lists to avoid Neo4j
+        # query size limits and unbounded memory usage (ARCH-14).
         query = """
             MATCH (reg:BioEntity)-[r:indra_rel]->(target:BioEntity)
             WHERE target.id IN $target_ids
@@ -799,17 +806,41 @@ class CoGExClient:
         """
 
         try:
-            results = self._execute_query(
-                query,
-                target_ids=target_curies,
-                stmt_types=stmt_types,
-                min_evidence=min_evidence
-            )
+            # Chunk the CURIE list to avoid Neo4j query size limits
+            # Uses _execute_query for auto-reconnection (ARCH-4 + ARCH-14)
+            all_results = []
+            chunk_size = self.CURIE_CHUNK_SIZE
+            for i in range(0, len(target_curies), chunk_size):
+                chunk = target_curies[i:i + chunk_size]
+                chunk_results = self._execute_query(
+                    query,
+                    target_ids=chunk,
+                    stmt_types=stmt_types,
+                    min_evidence=min_evidence
+                )
+                all_results.extend(chunk_results)
+                if len(all_results) >= max_results:
+                    logger.warning(
+                        "discover_regulators hit max_results limit (%d). "
+                        "Results may be truncated. Consider increasing "
+                        "max_results or narrowing the gene universe.",
+                        max_results,
+                    )
+                    all_results = all_results[:max_results]
+                    break
+
+            if len(target_curies) > chunk_size:
+                logger.info(
+                    "Chunked %d CURIEs into %d batches of <= %d",
+                    len(target_curies),
+                    (len(target_curies) + chunk_size - 1) // chunk_size,
+                    chunk_size,
+                )
 
             # Group edges by regulator
             regulator_edges: Dict[str, List[INDRAEdge]] = {}
 
-            for row in results:
+            for row in all_results:
                 # Determine regulation type
                 stmt_type = row[4]  # stmt_type column
                 if stmt_type in ACTIVATION_TYPES:
