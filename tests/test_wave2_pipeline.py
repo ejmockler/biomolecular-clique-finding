@@ -317,10 +317,9 @@ class TestARCH15Docstring:
     def test_docstring_replaces_alpha_squared_claim(self):
         """The old alpha^2 independent-test claim should be replaced."""
         docstring = ValidationReport.compute_verdict.__doc__
-        # The new docstring says P(both pass) is BOUNDED, not equals alpha^2
-        assert "bounded above by alpha" in docstring
+        # The new docstring uses bounded-FWER with rho-dependent formula (STAT-8)
+        assert "bounded-FWER" in docstring.lower() or "Bounded-FWER" in docstring
         # The old claim "alpha^2 when tests are independent" should be gone
-        # or wrapped in bounded language
         assert "joint probability under the\n           global null is alpha^2" not in docstring
 
 
