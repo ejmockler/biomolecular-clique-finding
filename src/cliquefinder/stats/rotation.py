@@ -536,15 +536,36 @@ def compute_rotation_matrices_general(
     # - Q[:, p:] spans the residual space
     Q2 = Q[:, (n_params - 1):]  # Shape: (n_samples, df_residual + 1)
 
-    # Sign correction: ensure Q2[:, 0] has positive correlation with contrast
-    # For proper C-matrix reparameterization, the sign should already be correct,
-    # but we verify to be safe.
+    # Sign correction: ensure Q2[:, 0] aligns with the contrast direction.
     #
-    # The expected pattern is: samples with positive contrast contribution
-    # should have positive values in Q2[:, 0]
-    expected_sign = design_matrix @ contrast
-    correlation = np.corrcoef(Q2[:, 0], expected_sign)[0, 1]
-    if correlation < 0:
+    # QR decomposition is unique only up to sign flips of Q columns (the sign
+    # of each Q column can be flipped along with the corresponding R row).
+    # We resolve this ambiguity by projecting the contrast direction in sample
+    # space (Xc = X @ c) onto Q2[:, 0].
+    #
+    # Mathematical justification: Q2 spans the complement of the first p-1
+    # reparameterized columns (the reduced model without the contrast).  The
+    # contrast signal Xc = X @ c is NOT in that reduced model's column space,
+    # so Q2.T @ Xc is nonzero.  The sign of Q2[:, 0] @ Xc tells us whether
+    # Q2[:, 0] points "with" or "against" the contrast — we canonicalize it
+    # to point "with" the contrast so that positive test statistics correspond
+    # to upregulation in the contrast direction.
+    #
+    # This replaces a correlation heuristic that was fragile for balanced
+    # designs where the correlation could be near zero.
+    Xc = design_matrix @ contrast
+    proj = Q2[:, 0] @ Xc
+    if abs(proj) < 1e-10:
+        # Near-degenerate: contrast is almost entirely in the reduced model's
+        # column space.  This should not happen for a valid contrast but we
+        # warn and keep the current sign rather than making an arbitrary flip.
+        warnings.warn(
+            "Q2 sign correction: contrast projection onto Q2[:,0] is near-zero "
+            f"({proj:.2e}). The contrast may be nearly redundant with the "
+            "reduced model. Directional (UP/DOWN) p-values may be unreliable.",
+            stacklevel=2,
+        )
+    elif proj < 0:
         Q2 = Q2.copy()
         Q2[:, 0] = -Q2[:, 0]
 
@@ -794,21 +815,33 @@ def compute_rotation_matrices(
     # This matches limma's behavior
     Q2_full = Q[:, (n_params - 1):]  # d + 1 columns
 
-    # Sign correction: ensure first column of Q2 has correct orientation
-    # relative to the contrast direction.
+    # Sign correction: ensure first column of Q2 aligns with contrast direction.
     #
-    # The contrast pattern in sample space is: condition1 samples positive,
-    # condition2 samples negative. We ensure Q2[:, 0] has positive correlation
-    # with this pattern.
-    contrast_pattern = np.zeros(n_samples_valid)
-    valid_conditions = df['condition'].values
-    contrast_pattern[valid_conditions == contrast[0]] = 1.0
-    contrast_pattern[valid_conditions == contrast[1]] = -1.0
-
-    # Check correlation of first column with contrast pattern
-    correlation = np.corrcoef(Q2_full[:, 0], contrast_pattern)[0, 1]
-    if correlation < 0:
-        # Flip sign of first column to match contrast direction
+    # QR decomposition is unique only up to sign flips of Q columns.  We
+    # resolve this by projecting the contrast signal in sample space
+    # (Xc = X_weighted @ c) onto Q2_full[:, 0].
+    #
+    # Mathematical justification: Q2_full spans the complement of the first
+    # p-1 columns of Q (the reduced model without the contrast).  The contrast
+    # signal Xc is NOT in that reduced model's column space, so Q2.T @ Xc is
+    # nonzero and its sign tells us whether Q2[:, 0] points "with" or "against"
+    # the contrast.  We canonicalize it to point "with" the contrast so that
+    # positive test statistics correspond to upregulation.
+    #
+    # This replaces a correlation heuristic that was fragile for balanced
+    # designs where the correlation could be near zero.
+    Xc = X_weighted @ c
+    proj = Q2_full[:, 0] @ Xc
+    if abs(proj) < 1e-10:
+        # Near-degenerate: contrast projection is near-zero.  This should not
+        # happen for a valid two-group contrast, but we warn and keep the
+        # current sign rather than making an arbitrary flip.
+        warnings.warn(
+            "Q2 sign correction: contrast projection onto Q2[:,0] is near-zero "
+            f"({proj:.2e}). Directional (UP/DOWN) p-values may be unreliable.",
+            stacklevel=2,
+        )
+    elif proj < 0:
         Q2_full = Q2_full.copy()
         Q2_full[:, 0] = -Q2_full[:, 0]
 
