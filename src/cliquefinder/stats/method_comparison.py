@@ -183,6 +183,12 @@ class UnifiedCliqueResult:
     # Method-specific (for deep analysis)
     method_metadata: dict[str, object] = field(default_factory=dict)
 
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        from types import MappingProxyType
+        if isinstance(self.method_metadata, dict) and not isinstance(self.method_metadata, MappingProxyType):
+            object.__setattr__(self, 'method_metadata', MappingProxyType(dict(self.method_metadata)))
+
     def to_dict(self) -> dict[str, object]:
         """
         Flatten result for DataFrame construction.
@@ -598,6 +604,20 @@ class PreparedCliqueExperiment:
     # Provenance
     preprocessing_params: dict[str, object]
     creation_timestamp: str
+
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        from types import MappingProxyType
+        # Make NDArray read-only
+        data_copy = self.data.copy()
+        data_copy.flags.writeable = False
+        object.__setattr__(self, 'data', data_copy)
+        # Wrap dicts as read-only MappingProxyType
+        for attr in ('feature_to_idx', 'clique_to_feature_indices',
+                     'symbol_to_feature', 'preprocessing_params'):
+            val = getattr(self, attr)
+            if isinstance(val, dict) and not isinstance(val, MappingProxyType):
+                object.__setattr__(self, attr, MappingProxyType(dict(val)))
 
     @property
     def n_features(self) -> int:

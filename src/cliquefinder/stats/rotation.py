@@ -247,6 +247,13 @@ class RotationPrecomputed:
     design_rank: int = 0
     n_samples: int = 0
 
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        # Make NDArray read-only: copy then set flags
+        q2 = self.Q2.copy()
+        q2.flags.writeable = False
+        object.__setattr__(self, 'Q2', q2)
+
     @property
     def residual_dims(self) -> int:
         """Dimensionality of residual space (df_residual + 1)."""
@@ -284,6 +291,23 @@ class GeneEffects:
     sample_variances: NDArray[np.float64]
     moderated_variances: NDArray[np.float64] | None = None
     df_total: float | None = None
+
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        # Make NDArrays read-only
+        for attr in ('U', 'rho_sq', 'sample_variances'):
+            arr = getattr(self, attr).copy()
+            arr.flags.writeable = False
+            object.__setattr__(self, attr, arr)
+
+        if self.moderated_variances is not None:
+            mv = self.moderated_variances.copy()
+            mv.flags.writeable = False
+            object.__setattr__(self, 'moderated_variances', mv)
+
+        # Convert list to tuple for true immutability
+        if isinstance(self.gene_ids, list):
+            object.__setattr__(self, 'gene_ids', tuple(self.gene_ids))
 
     @property
     def n_genes(self) -> int:
