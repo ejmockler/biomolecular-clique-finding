@@ -151,9 +151,14 @@ from .method_comparison import (
     UnifiedCliqueResult,
     ConcordanceMetrics,
     MethodComparisonResult,
+    CliqueTestMethod,
     PreparedCliqueExperiment,
     run_method_comparison,
     prepare_experiment,
+    OLSMethod,
+    LMMMethod,
+    ROASTMethod,
+    PermutationMethod,
 )
 
 # Bootstrap subsampling for imbalanced designs
@@ -252,9 +257,14 @@ __all__ = [
     "UnifiedCliqueResult",
     "ConcordanceMetrics",
     "MethodComparisonResult",
+    "CliqueTestMethod",
     "PreparedCliqueExperiment",
     "run_method_comparison",
     "prepare_experiment",
+    "OLSMethod",
+    "LMMMethod",
+    "ROASTMethod",
+    "PermutationMethod",
     # Bootstrap subsampling for imbalanced designs
     "BootstrapConfig",
     "BootstrapCliqueResult",

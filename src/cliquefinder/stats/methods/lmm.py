@@ -155,8 +155,6 @@ class LMMMethod(_BaseLinearMethod):
         Raises:
             ValueError: If experiment.subject_column is None.
         """
-        from ..method_comparison_types import UnifiedCliqueResult
-
         # Validate subject column early (before entering base class loop)
         if experiment.subject_column is None:
             raise ValueError(
