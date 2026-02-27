@@ -93,15 +93,43 @@
 
 ### Wave 3: Statistical Refinements & Architecture Hardening (P2)
 
-| Finding | Description |
-|---------|-------------|
-| STAT-4 | Satterthwaite df: containment df fallback |
-| STAT-5 | Q2 sign convention: contrast projection method |
-| STAT-8 | FWER docstring correction |
-| STAT-9 | Cache matched control sets |
-| ARCH-9 | Frozen dataclass immutability enforcement |
-| ARCH-14 | Neo4j result pagination |
-| ARCH-17 | Single-contrast verdict fix |
+**Scope:** 7 findings, 9 files modified, ~2,000 lines changed
+
+| Finding | File(s) | Agent | Description |
+|---------|---------|-------|-------------|
+| STAT-4 | `stats/differential.py` | stat-satterthwaite | Containment df primary + Satterthwaite refinement |
+| STAT-5 | `stats/rotation.py` | stat-rotation | Q2 sign: contrast projection replaces correlation heuristic |
+| STAT-8 | `stats/validation_report.py` | stat-docs-controls | Bounded-FWER docstring with ρ-dependent bivariate formula |
+| STAT-9 | `stats/negative_controls.py` | stat-docs-controls | Cache matched gene sets for paired z-score/p-value computation |
+| ARCH-9 | `stats/rotation.py`, `stats/permutation_framework.py`, `stats/method_comparison.py` | arch-verdict-pagination | MappingProxyType + read-only arrays + list→tuple |
+| ARCH-14 | `knowledge/cogex.py` | arch-verdict-pagination | Chunked CURIE queries (5000/batch) + max_results limit |
+| ARCH-17 | `stats/validation_report.py` | arch-verdict-pagination | Skipped vs failed supplementary phase distinction |
+
+**Agents (4 parallel, isolated worktrees):**
+- `stat-satterthwaite`: STAT-4 — containment df (SAS PROC MIXED default) with Satterthwaite refinement
+- `stat-rotation`: STAT-5 — Q2 sign via `Q2[:,0] @ (X @ c)` projection, both simple and general paths
+- `stat-docs-controls`: STAT-8 + STAT-9 — docstring formula + cached matched gene sets
+- `arch-verdict-pagination`: ARCH-9 + ARCH-14 + ARCH-17 — frozen immutability, chunked queries, verdict logic
+
+**Manual review between waves:** Verified containment df formula `n_subjects - p` is correct per SAS PROC MIXED. Confirmed Satterthwaite refinement accepted only when `>= containment_df * 0.5`. Verified Q2 projection `Q2[:,0] @ Xc` is nonzero because Xc is not in reduced model's column space. Confirmed STAT-9 caching eliminates RNG advancement mismatch. Resolved 2 merge conflicts (cogex.py: combined ARCH-14 chunking with ARCH-4 `_execute_query()` reconnection; validation_report.py: took STAT-8 formula over Wave 2 partial fix). Updated Wave 2 test assertion for STAT-8 docstring refinement.
+
+**Status: COMPLETE** — All 7 sub-findings fixed. 87 new tests (Wave 3), 247 cumulative audit tests, 599 total tests passing.
+
+#### Wave 3 Completion Log
+
+| Finding | Status | Tests Added | Manual Review Notes |
+|---------|--------|-------------|---------------------|
+| STAT-4 | Fixed | 19 tests (balanced, unbalanced, bounds, containment fallback, backward compat) | Containment df `n_groups - n_params` as primary. Satterthwaite refinement only when `>= containment * 0.5`. Diagnostic warning on clipping. 8 pre-existing tests still pass. |
+| STAT-5 | Fixed | 21 tests (balanced groups, UP/DOWN consistency, MSQ invariance, multi-group, near-degenerate) | Projection `Q2[:,0] @ Xc` is deterministic regardless of group balance. Both general and simple paths updated. 28 pre-existing rotation tests pass. |
+| STAT-8 | Fixed | 6 tests (bounded-FWER language, rho formula, quantitative bounds, no alpha^2 claim) | Full bivariate normal formula with ρ-dependence. Quantitative bounds: ρ∈[0.3,0.7] → FWER ≈ 0.006-0.020. Updated Wave 2 test that expected earlier phrasing. |
+| STAT-9 | Fixed | 7 tests (gene set pairing, call count, RNG reproducibility, edge cases) | `matched_gene_sets` list caches first-pass gene sets. Second pass uses `enumerate(matched_gene_sets)`. No extra RNG advancement. |
+| ARCH-9 | Fixed | 23 tests (read-only arrays, MappingProxyType, tuple conversion, FrozenInstanceError, construction) | `RotationPrecomputed`, `GeneEffects`, `PreparedCliqueExperiment`, `UnifiedCliqueResult`, `TestResult` all enforced. `to_dict()` and `is_valid` work through MappingProxyType. |
+| ARCH-14 | Fixed | 4 tests (single chunk, multi-chunk, max_results warning, empty CURIEs) | `CURIE_CHUNK_SIZE = 5000`. Combined with `_execute_query()` for auto-reconnection. `max_results=100_000` default with warning. |
+| ARCH-17 | Fixed | 7 tests (single-contrast validated, no supplementary, all fail, mixed, gates fail) | Three-way branch: `supplementary_total==0` → validated, `failed>0 && pass==0` → inconclusive, else → validated. |
+
+**New findings from manual review:**
+- STAT-4-NOTE: Satterthwaite clipping warning fires for unbalanced designs where `df_satt_raw > n_obs - 1`. This is expected behavior (Satterthwaite can exceed residual df when random effects dominate) but the warning is informative. No code fix needed.
+- ARCH-9-NOTE: `MappingProxyType` is a read-only view but not deeply immutable (nested mutable objects in dict values are still mutable). Acceptable for current usage — no nested mutable values observed in practice.
 
 ---
 
