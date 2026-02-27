@@ -56,6 +56,11 @@ class NetworkEnrichmentResult:
         pct_down: Percentage of targets with negative t-statistic.
         direction_pvalue: Binomial test p-value for directional bias.
         mannwhitney_pvalue: Mann-Whitney U test p-value (targets vs background |t|).
+        variance_inflation_factor: Camera VIF = 1 + (k-1)*rho_bar, where rho_bar
+            is mean pairwise inter-gene correlation. Defaults to 1.0 (no
+            correlation adjustment). See Wu & Smyth (2012) NAR 40(17):e133.
+        mean_pairwise_correlation: Estimated mean pairwise correlation (rho_bar)
+            among target genes. Defaults to 0.0 (unknown / not estimated).
     """
 
     observed_mean_abs_t: float
@@ -68,6 +73,8 @@ class NetworkEnrichmentResult:
     pct_down: float
     direction_pvalue: float
     mannwhitney_pvalue: float
+    variance_inflation_factor: float = 1.0
+    mean_pairwise_correlation: float = 0.0
 
     def to_dict(self) -> dict:
         """Convert to plain dict, matching the legacy return format.
@@ -86,6 +93,8 @@ class NetworkEnrichmentResult:
             'pct_down': self.pct_down,
             'direction_pvalue': self.direction_pvalue,
             'mannwhitney_pvalue': self.mannwhitney_pvalue,
+            'variance_inflation_factor': self.variance_inflation_factor,
+            'mean_pairwise_correlation': self.mean_pairwise_correlation,
         }
 
     def __getitem__(self, key: str):
