@@ -14,7 +14,7 @@ class TestComputeCompetitiveZ:
     """Tests for compute_competitive_z()."""
 
     def test_basic_computation(self):
-        """Known values produce expected z-score."""
+        """Known values produce expected z-score (SE denominator)."""
         # 5 targets with high |t|, 95 background with lower |t|
         rng = np.random.default_rng(42)
         t_stats = rng.normal(0, 1, size=100)
@@ -28,25 +28,27 @@ class TestComputeCompetitiveZ:
         target_mean = np.mean(np.abs(t_stats[:5]))
         bg_mean = np.mean(np.abs(t_stats[5:]))
         bg_std = np.std(np.abs(t_stats[5:]), ddof=1)
-        expected_z = (target_mean - bg_mean) / bg_std
+        k = 5
+        # STAT-3 fix: denominator is SE = bg_std / sqrt(k)
+        expected_z = (target_mean - bg_mean) / (bg_std / np.sqrt(k))
 
         assert z == pytest.approx(expected_z)
-        assert z > 2.0  # strong signal
+        assert z > 2.0  # strong signal (even stronger now with SE)
 
     def test_no_targets_returns_zero(self):
-        """No targets → z = 0.0."""
+        """No targets -> z = 0.0."""
         t_stats = np.random.default_rng(42).normal(0, 1, size=50)
         is_target = np.zeros(50, dtype=bool)
         assert compute_competitive_z(t_stats, is_target) == 0.0
 
     def test_all_targets_returns_zero(self):
-        """All features are targets → z = 0.0 (no background)."""
+        """All features are targets -> z = 0.0 (no background)."""
         t_stats = np.random.default_rng(42).normal(0, 1, size=50)
         is_target = np.ones(50, dtype=bool)
         assert compute_competitive_z(t_stats, is_target) == 0.0
 
     def test_zero_variance_background(self):
-        """Constant background → z = 0.0 (division by zero guard)."""
+        """Constant background -> z = 0.0 (division by zero guard)."""
         t_stats = np.array([3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         is_target = np.array([True, True, False, False, False, False, False, False])
         # Background |t| = [1, 1, 1, 1, 1, 1], std = 0
@@ -91,7 +93,7 @@ class TestRobustCompetitiveZ:
     """Tests for robust (median+MAD) competitive z-score."""
 
     def test_robust_z_basic(self):
-        """Known values produce expected median+MAD z-score."""
+        """Known values produce expected median+MAD z-score (SE denominator)."""
         # Construct deterministic data so we can hand-compute the answer.
         # 5 targets with |t| = [3.0, 3.5, 2.8, 4.0, 3.2]
         # 10 background with |t| = [1.0]*10 except one = 1.5
@@ -107,10 +109,10 @@ class TestRobustCompetitiveZ:
         z = compute_competitive_z(t_stats, is_target, robust=True)
 
         # Manual calculation:
-        # target |t|: [3.0, 3.5, 2.8, 4.0, 3.2] → median = 3.2
-        # bg |t|: [1.0]*9 + [1.5] → median = 1.0
-        # deviations from bg median: [0]*9 + [0.5] → median deviation = 0.0
-        # MAD = 1.4826 * 0.0 = 0.0 → zero guard → 0.0
+        # target |t|: [3.0, 3.5, 2.8, 4.0, 3.2] -> median = 3.2
+        # bg |t|: [1.0]*9 + [1.5] -> median = 1.0
+        # deviations from bg median: [0]*9 + [0.5] -> median deviation = 0.0
+        # MAD = 1.4826 * 0.0 = 0.0 -> zero guard -> 0.0
         # Actually with 9 ones and 1 value of 1.5, median of deviations is 0.
         # So this should return 0.0.
         assert z == 0.0
@@ -124,15 +126,17 @@ class TestRobustCompetitiveZ:
         z2 = compute_competitive_z(t_stats2, is_target2, robust=True)
 
         # Manual calculation:
-        # target |t|: [3.0, 3.5, 2.8, 4.0, 3.2] → median = 3.2
+        # target |t|: [3.0, 3.5, 2.8, 4.0, 3.2] -> median = 3.2
         # bg |t| = bg (all positive): sorted = [0.5, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.7, 2.0]
         # bg median = (1.1 + 1.2) / 2 = 1.15
         # deviations: |bg - 1.15| = [0.65, 0.35, 0.25, 0.15, 0.05, 0.05, 0.15, 0.35, 0.55, 0.85]
         # sorted devs: [0.05, 0.05, 0.15, 0.15, 0.25, 0.35, 0.35, 0.55, 0.65, 0.85]
         # median dev = (0.25 + 0.35) / 2 = 0.30
         # MAD = 1.4826 * 0.30 = 0.44478
-        # z = (3.2 - 1.15) / 0.44478 = 2.05 / 0.44478 ≈ 4.609
-        expected = (3.2 - 1.15) / (1.4826 * 0.30)
+        # STAT-3 fix: SE = MAD / sqrt(k) = 0.44478 / sqrt(5) = 0.198918
+        # z = (3.2 - 1.15) / 0.198918 = 2.05 / 0.198918 ~ 10.306
+        k = 5
+        expected = (3.2 - 1.15) / (1.4826 * 0.30 / np.sqrt(k))
         assert z2 == pytest.approx(expected, rel=1e-6)
         assert z2 > 4.0
 
@@ -167,7 +171,7 @@ class TestRobustCompetitiveZ:
     def test_robust_z_matches_standard_for_normal(self):
         """For normal data, robust and standard z agree in sign and rough magnitude."""
         rng = np.random.default_rng(123)
-        # Large sample from normal distribution — median ≈ mean, MAD ≈ std
+        # Large sample from normal distribution -- median ~ mean, MAD ~ std
         t_stats = rng.normal(0, 1, size=5000)
         t_stats[:50] = rng.normal(2, 0.5, size=50)  # moderate target signal
         is_target = np.zeros(5000, dtype=bool)
@@ -184,7 +188,7 @@ class TestRobustCompetitiveZ:
 
     def test_robust_z_zero_mad(self):
         """Zero MAD returns 0.0 (same guard as zero-variance in standard mode)."""
-        # Background all identical → MAD = 0
+        # Background all identical -> MAD = 0
         t_stats = np.array([5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         is_target = np.array([True, True, False, False, False, False, False, False, False, False])
         z = compute_competitive_z(t_stats, is_target, robust=True)
@@ -234,6 +238,9 @@ class TestNetworkEnrichmentResult:
         assert result.pct_down == 60.0
         assert result.direction_pvalue == 0.1
         assert result.mannwhitney_pvalue == 0.005
+        # New VIF fields have defaults
+        assert result.variance_inflation_factor == 1.0
+        assert result.mean_pairwise_correlation == 0.0
 
         # Verify frozen (immutable)
         with pytest.raises(AttributeError):
@@ -243,6 +250,30 @@ class TestNetworkEnrichmentResult:
         assert result["z_score"] == 5.0
         assert result.get("z_score") == 5.0
         assert result.get("nonexistent", 42) == 42
+
+    def test_network_enrichment_result_vif_fields(self):
+        """Verify VIF fields can be set explicitly."""
+        from cliquefinder.stats.differential import NetworkEnrichmentResult
+
+        result = NetworkEnrichmentResult(
+            observed_mean_abs_t=2.5,
+            null_mean=1.0,
+            null_std=0.3,
+            z_score=5.0,
+            empirical_pvalue=0.001,
+            n_targets=50,
+            n_background=500,
+            pct_down=60.0,
+            direction_pvalue=0.1,
+            mannwhitney_pvalue=0.005,
+            variance_inflation_factor=3.5,
+            mean_pairwise_correlation=0.05,
+        )
+
+        assert result.variance_inflation_factor == 3.5
+        assert result.mean_pairwise_correlation == 0.05
+        assert result["variance_inflation_factor"] == 3.5
+        assert result["mean_pairwise_correlation"] == 0.05
 
     def test_network_enrichment_to_dict(self):
         """Verify to_dict() produces correct dict and roundtrips."""
@@ -263,11 +294,12 @@ class TestNetworkEnrichmentResult:
 
         d = result.to_dict()
 
-        # Verify dict has all expected keys
+        # Verify dict has all expected keys (including new VIF fields)
         expected_keys = {
             'observed_mean_abs_t', 'null_mean', 'null_std', 'z_score',
             'empirical_pvalue', 'n_targets', 'n_background', 'pct_down',
             'direction_pvalue', 'mannwhitney_pvalue',
+            'variance_inflation_factor', 'mean_pairwise_correlation',
         }
         assert set(d.keys()) == expected_keys
 
@@ -282,6 +314,8 @@ class TestNetworkEnrichmentResult:
         assert d['pct_down'] == 60.0
         assert d['direction_pvalue'] == 0.1
         assert d['mannwhitney_pvalue'] == 0.005
+        assert d['variance_inflation_factor'] == 1.0
+        assert d['mean_pairwise_correlation'] == 0.0
 
         # Verify JSON-serializable
         import json
