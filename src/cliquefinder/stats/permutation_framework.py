@@ -20,6 +20,10 @@ References:
     - Competitive vs self-contained tests: Goeman & Bühlmann, Briefings 2007
 """
 
+# Warning convention:
+#   warnings.warn() -- user-facing (convergence, deprecated, sample size)
+#   logger.warning() -- operator-facing (fallback, retry, missing data)
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -110,6 +114,17 @@ class ExperimentalDesign(Protocol):
 
     def sample_mask(self, metadata: pd.DataFrame) -> NDArray[np.bool_]:
         """Return boolean mask for samples to include in this comparison."""
+        ...
+
+    def get_conditions(self, metadata: pd.DataFrame) -> NDArray:
+        """Return condition labels for each sample.
+
+        For simple designs, reads from ``condition_column``.  For
+        metadata-derived designs, applies a derivation function.
+
+        This method eliminates the need for ``isinstance`` checks on
+        concrete design classes when obtaining condition labels.
+        """
         ...
 
 
@@ -284,6 +299,10 @@ class TwoGroupDesign:
 
         return in_comparison
 
+    def get_conditions(self, metadata: pd.DataFrame) -> NDArray:
+        """Return condition labels from the condition column."""
+        return metadata[self.condition_column].values
+
 
 @dataclass
 class MetadataDerivedDesign:
@@ -323,6 +342,10 @@ class MetadataDerivedDesign:
     def derive_conditions(self, metadata: pd.DataFrame) -> pd.Series:
         """Apply derivation function to create condition labels."""
         return metadata.apply(self.derivation_fn, axis=1)
+
+    def get_conditions(self, metadata: pd.DataFrame) -> NDArray:
+        """Return derived condition labels for each sample."""
+        return self.derive_conditions(metadata).values
 
     def sample_mask(self, metadata: pd.DataFrame) -> NDArray[np.bool_]:
         """Return mask for samples with valid derived conditions."""
@@ -377,6 +400,23 @@ class SamplePermutationGenerator:
     def permute_labels(self, condition_labels: NDArray) -> NDArray:
         """Return permuted condition labels."""
         return self.rng.permutation(condition_labels)
+
+
+# =============================================================================
+# Protocol Helpers
+# =============================================================================
+
+def _get_design_conditions(design: ExperimentalDesign, metadata: pd.DataFrame) -> NDArray:
+    """Retrieve condition labels from an ExperimentalDesign.
+
+    Uses ``design.get_conditions(metadata)`` when available (Protocol
+    method), falling back to ``metadata[design.condition_column].values``
+    for backward compatibility with older implementations.
+    """
+    if hasattr(design, "get_conditions") and callable(design.get_conditions):
+        return np.asarray(design.get_conditions(metadata))
+    # Fallback for implementations that predate get_conditions
+    return metadata[design.condition_column].values
 
 
 # =============================================================================
@@ -449,12 +489,11 @@ class PermutationTestEngine:
         rng = np.random.default_rng(seed)
         null_gen = CompetitiveNullGenerator(feature_pool, rng)
 
-        # Prepare metadata with derived conditions if needed
-        if isinstance(design, MetadataDerivedDesign):
-            working_metadata = self.metadata.copy()
-            working_metadata[design.condition_column] = design.derive_conditions(self.metadata)
-        else:
-            working_metadata = self.metadata
+        # Prepare metadata with condition labels from design.get_conditions()
+        # (Protocol-based dispatch; no concrete isinstance check needed)
+        conditions = _get_design_conditions(design, self.metadata)
+        working_metadata = self.metadata.copy()
+        working_metadata[design.condition_column] = conditions
 
         results = []
 
@@ -593,11 +632,8 @@ class TTestStatistic:
     ) -> TestResult:
         from scipy.stats import ttest_ind
 
-        # Get condition labels
-        if isinstance(design, MetadataDerivedDesign):
-            conditions = design.derive_conditions(metadata).values
-        else:
-            conditions = metadata[design.condition_column].values
+        # Get condition labels via Protocol method
+        conditions = _get_design_conditions(design, metadata)
 
         test_mask = conditions == design.test_condition
         ref_mask = conditions == design.reference_condition
@@ -637,11 +673,8 @@ class MixedModelStatistic:
     ) -> TestResult:
         from .differential import fit_linear_model
 
-        # Get condition and subject
-        if isinstance(design, MetadataDerivedDesign):
-            conditions = design.derive_conditions(metadata).values
-        else:
-            conditions = metadata[design.condition_column].values
+        # Get condition labels via Protocol method
+        conditions = _get_design_conditions(design, metadata)
 
         subjects = None
         if design.blocking_column and design.blocking_column in metadata.columns:

@@ -17,16 +17,25 @@ Usage:
         --covariates Sex
 """
 
+# Warning convention:
+#   warnings.warn() -- user-facing (convergence, deprecated, sample size)
+#   logger.warning() -- operator-facing (fallback, retry, missing data, phase failure)
+
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from cliquefinder.cli._validators import _positive_int, _probability
+
+logger = logging.getLogger(__name__)
 
 
 def register_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -87,7 +96,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Permutation settings
     parser.add_argument(
-        "--label-permutations", type=int, default=500,
+        "--label-permutations", type=_positive_int, default=500,
         help="Number of label permutations (default: 500)",
     )
     parser.add_argument(
@@ -98,14 +107,14 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Negative controls
     parser.add_argument(
-        "--negative-control-sets", type=int, default=200,
+        "--negative-control-sets", type=_positive_int, default=200,
         dest="n_neg_controls",
         help="Number of random gene sets for FPR calibration (default: 200)",
     )
 
     # INDRA settings
     parser.add_argument(
-        "--min-evidence", type=int, default=1,
+        "--min-evidence", type=_positive_int, default=1,
         help="Minimum INDRA evidence count (default: 1)",
     )
     parser.add_argument(
@@ -117,7 +126,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # General settings
     parser.add_argument(
-        "--n-rotations", type=int, default=9999,
+        "--n-rotations", type=_positive_int, default=9999,
         help="ROAST rotations (default: 9999)",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -130,7 +139,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Run bootstrap stability analysis (annotation, not a gate)",
     )
     parser.add_argument(
-        "--n-bootstraps", type=int, default=200,
+        "--n-bootstraps", type=_positive_int, default=200,
         help="Number of bootstrap resamples for stability (default: 200)",
     )
 
@@ -142,7 +151,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # Verdict threshold (N-1)
     parser.add_argument(
-        "--alpha", type=float, default=0.05,
+        "--alpha", type=_probability, default=0.05,
         help="Significance threshold for phase gates (default: 0.05)",
     )
 
@@ -317,8 +326,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         with open(enrichment_out, "w") as f:
             json.dump(enrichment.to_dict(), f, indent=2)
     except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
+        logger.warning("Phase 1 (covariate_adjusted) failed: %s", e)
         report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
         # protein_df remains None from initialization above; no reassignment needed
     report.save(args.output / "validation_report.json")
@@ -390,8 +398,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 with open(spec_out, "w") as f:
                     json.dump(specificity.to_dict(), f, indent=2)
         except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 2 (specificity) failed: {e}")
+            logger.warning("Phase 2 (specificity) failed: %s", e)
             report.add_phase("specificity", {"status": "failed", "error": str(e)})
         report.save(args.output / "validation_report.json")
 
@@ -459,8 +466,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         with open(perm_out, "w") as f:
             json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
     except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 3 (label_permutation) failed: {e}")
+        logger.warning("Phase 3 (label_permutation) failed: %s", e)
         report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
     report.save(args.output / "validation_report.json")
 
@@ -515,8 +521,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         with open(matched_out, "w") as f:
             json.dump(matched_enrichment.to_dict(), f, indent=2)
     except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
+        logger.warning("Phase 4 (matched_reanalysis) failed: %s", e)
         report.add_phase("matched_reanalysis", {"status": "failed", "error": str(e)})
     report.save(args.output / "validation_report.json")
 
@@ -567,8 +572,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         with open(neg_out, "w") as f:
             json.dump(neg_result.to_dict(), f, indent=2)
     except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 5 (negative_controls) failed: {e}")
+        logger.warning("Phase 5 (negative_controls) failed: %s", e)
         report.add_phase("negative_controls", {"status": "failed", "error": str(e)})
     report.save(args.output / "validation_report.json")
 

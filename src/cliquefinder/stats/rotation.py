@@ -110,6 +110,10 @@ The design follows the existing permutation_gpu.py patterns for seamless
 integration with the cliquefinder infrastructure.
 """
 
+# Warning convention:
+#   warnings.warn() -- user-facing (convergence, deprecated, sample size)
+#   logger.warning() -- operator-facing (fallback, retry, missing data)
+
 from __future__ import annotations
 
 import warnings

@@ -16,15 +16,22 @@ Outputs:
     - Median/mean control p-values
     - Competitive z-score (when protein_results provided): cross-phase
       consistent metric matching Phases 1/3/4
+
+Warning convention:
+    warnings.warn() -- user-facing (convergence, deprecated, sample size)
+    logger.warning() -- operator-facing (fallback, retry, missing data)
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -298,8 +305,7 @@ def run_negative_control_sets(
             )
         except Exception as e:
             if i == 0:
-                import warnings
-                warnings.warn(f"Control set 0 failed: {e}")
+                logger.warning("Control set 0 failed: %s", e)
             control_pvalues[i] = np.nan
 
     # Remove failed controls

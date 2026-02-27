@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from cliquefinder.cli._validators import _positive_int
 from cliquefinder.cohort import resolve_cohort_from_args
 
 
@@ -206,7 +207,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--min-targets",
-        type=int,
+        type=_positive_int,
         default=10,
         help="Minimum INDRA targets in data for a regulator (default: 10). "
              "Only with --discover-gene-sets.",
@@ -292,7 +293,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     # Filtering
     parser.add_argument(
         "--min-proteins",
-        type=int,
+        type=_positive_int,
         default=3,
         help="Minimum proteins required per clique (default: 3)",
     )
@@ -318,7 +319,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--workers", "-j",
-        type=int,
+        type=_positive_int,
         default=1,
         help="Parallel workers (default: 1)",
     )
@@ -349,7 +350,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--n-permutations",
-        type=int,
+        type=_positive_int,
         default=1000,
         help="Number of permutations for null distribution (default: 1000)",
     )
@@ -380,7 +381,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--n-rotations",
-        type=int,
+        type=_positive_int,
         default=9999,
         help="Number of rotations for ROAST (default: 9999)",
     )
@@ -467,7 +468,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     parser.add_argument(
         "--min-evidence",
-        type=int,
+        type=_positive_int,
         default=1,
         help="Minimum INDRA evidence count for network edges (default: 1)",
     )
