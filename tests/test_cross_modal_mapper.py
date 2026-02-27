@@ -173,8 +173,8 @@ class TestCaching:
             species='human'
         )
 
-        # Check cache directory has files
-        cache_files = list(temp_cache_dir.glob('*.pkl'))
+        # Check cache directory has files (JSON format after S-2 security fix)
+        cache_files = list(temp_cache_dir.rglob('*.json'))
         assert len(cache_files) > 0
 
         # Second call - should use cache (faster)
@@ -204,7 +204,7 @@ class TestCaching:
             rna_id_type='ensembl_gene',
             species='human'
         )
-        n_caches_1 = len(list(temp_cache_dir.glob('*.pkl')))
+        n_caches_1 = len(list(temp_cache_dir.rglob('*.json')))
 
         # Query 2 (different)
         mapper.unify_ids(
@@ -213,7 +213,7 @@ class TestCaching:
             rna_id_type='ensembl_gene',
             species='human'
         )
-        n_caches_2 = len(list(temp_cache_dir.glob('*.pkl')))
+        n_caches_2 = len(list(temp_cache_dir.rglob('*.json')))
 
         # Should have more cache files
         assert n_caches_2 > n_caches_1

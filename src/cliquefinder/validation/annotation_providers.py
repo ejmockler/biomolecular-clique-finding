@@ -40,12 +40,15 @@ Examples:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Set, List, Optional
+from typing import Any, Dict, Set, List, Optional
 from pathlib import Path
-import pickle
+import json
 import gzip
 import urllib.request
+import logging
 import warnings
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     'AnnotationProvider',
@@ -480,12 +483,12 @@ class CachedAnnotationProvider(AnnotationProvider):
 
     Args:
         provider: Underlying annotation provider to cache
-        cache_file: Path to cache file (pickle format)
+        cache_file: Path to cache file (JSON format)
 
     Examples:
         >>> from cliquefinder.validation.annotation_providers import GOAnnotationProvider
         >>> provider = GOAnnotationProvider()
-        >>> cached = CachedAnnotationProvider(provider, cache_file='go_cache.pkl')
+        >>> cached = CachedAnnotationProvider(provider, cache_file='go_cache.json')
         >>>
         >>> # First call: queries provider and caches
         >>> annotations = cached.get_annotations('ENSG00000141510')
@@ -500,19 +503,48 @@ class CachedAnnotationProvider(AnnotationProvider):
         cache_file: Optional[Path] = None
     ):
         self.provider = provider
-        self.cache_file = cache_file or (Path.home() / '.cache' / 'biocore' / 'annotations.pkl')
+        self.cache_file = cache_file or (Path.home() / '.cache' / 'biocore' / 'annotations.json')
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Load cache if exists
         self._cache: Dict = {}
         if self.cache_file.exists():
-            with open(self.cache_file, 'rb') as f:
-                self._cache = pickle.load(f)
+            try:
+                with open(self.cache_file, 'r') as f:
+                    raw = json.load(f)
+                self._cache = self._deserialize_cache(raw)
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Corrupted cache file {self.cache_file}, ignoring: {e}")
+                self._cache = {}
+
+    @staticmethod
+    def _serialize_value(value: Any) -> Any:
+        """Serialize a cache value for JSON, converting sets to tagged lists."""
+        if isinstance(value, set):
+            return {"__set__": True, "values": sorted(value)}
+        elif isinstance(value, dict):
+            return {k: CachedAnnotationProvider._serialize_value(v) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _deserialize_value(value: Any) -> Any:
+        """Deserialize a cache value from JSON, restoring sets from tagged lists."""
+        if isinstance(value, dict):
+            if value.get("__set__") is True and "values" in value:
+                return set(value["values"])
+            return {k: CachedAnnotationProvider._deserialize_value(v) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _deserialize_cache(raw: Dict) -> Dict:
+        """Deserialize full cache dict from JSON."""
+        return {k: CachedAnnotationProvider._deserialize_value(v) for k, v in raw.items()}
 
     def _save_cache(self):
         """Save cache to disk."""
-        with open(self.cache_file, 'wb') as f:
-            pickle.dump(self._cache, f)
+        serializable = {k: self._serialize_value(v) for k, v in self._cache.items()}
+        with open(self.cache_file, 'w') as f:
+            json.dump(serializable, f, indent=2)
 
     def get_annotations(self, gene_id: str) -> Dict[str, Set[str]]:
         key = f"gene:{gene_id}"

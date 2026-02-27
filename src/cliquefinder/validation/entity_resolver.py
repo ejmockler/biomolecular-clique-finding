@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,16 +130,21 @@ class GeneEntityResolver:
             Dict mapping ensembl_id -> ResolvedEntity
         """
         # Check disk cache first
-        cache_key = f"ensembl_resolution_{hash(tuple(sorted(ensembl_ids)))}.pkl"
+        cache_key = f"ensembl_resolution_{hash(tuple(sorted(ensembl_ids)))}.json"
         cache_path = self.cache_dir / cache_key
 
         if cache_path.exists():
             try:
-                with open(cache_path, 'rb') as f:
-                    cached = pickle.load(f)
+                with open(cache_path, 'r') as f:
+                    raw = json.load(f)
+                cached = {
+                    eid: ResolvedEntity(**data) for eid, data in raw.items()
+                }
                 if verbose:
                     logger.info(f"Loaded {len(cached)} cached resolutions")
                 return cached
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                logger.warning(f"Corrupted cache file {cache_path}, ignoring: {e}")
             except Exception:
                 pass
 
@@ -191,8 +195,11 @@ class GeneEntityResolver:
 
         # Cache results
         try:
-            with open(cache_path, 'wb') as f:
-                pickle.dump(results, f)
+            serializable = {
+                eid: entity.to_dict() for eid, entity in results.items()
+            }
+            with open(cache_path, 'w') as f:
+                json.dump(serializable, f, indent=2)
         except Exception:
             pass
 

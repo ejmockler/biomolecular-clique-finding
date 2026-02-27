@@ -27,7 +27,6 @@ from __future__ import annotations
 from typing import Dict, List, Set, Optional
 from pathlib import Path
 from abc import ABC, abstractmethod
-import pickle
 import json
 import logging
 import threading
@@ -195,12 +194,15 @@ class MyGeneInfoMapper(IDMapper):
             raise ValueError(f"Unsupported ID type: {source_type} or {target_type}")
 
         # Check cache
-        cache_key = f"{source_type}_to_{target_type}_{hash(tuple(sorted(source_ids)))}.pkl"
+        cache_key = f"{source_type}_to_{target_type}_{hash(tuple(sorted(source_ids)))}.json"
         cache_path = self.cache_dir / cache_key
 
         if cache_path.exists():
-            with open(cache_path, 'rb') as f:
-                return pickle.load(f)
+            try:
+                with open(cache_path, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"Corrupted cache file {cache_path}, ignoring: {e}")
 
         # Query mygene.info in parallel batches (1000 IDs per batch)
         results = {}
@@ -243,8 +245,8 @@ class MyGeneInfoMapper(IDMapper):
                    f"({len(results)/len(source_ids)*100:.1f}%)")
 
         # Cache results
-        with open(cache_path, 'wb') as f:
-            pickle.dump(results, f)
+        with open(cache_path, 'w') as f:
+            json.dump(results, f, indent=2)
 
         return results
 
