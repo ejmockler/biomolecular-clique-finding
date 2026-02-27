@@ -59,6 +59,10 @@ Examples:
     ... )
 """
 
+# Warning convention:
+#   warnings.warn() -- user-facing (convergence, deprecated, sample size)
+#   logger.warning() -- operator-facing (fallback, retry, missing data)
+
 from __future__ import annotations
 
 from enum import Enum

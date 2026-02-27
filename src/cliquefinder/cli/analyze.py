@@ -15,6 +15,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+from cliquefinder.cli._validators import _positive_int
+
 
 def _detect_log_transform_status(input_path: Path, data: np.ndarray) -> tuple[bool, str]:
     """
@@ -75,7 +77,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         help="Metadata columns for stratification (default: none)")
     parser.add_argument("--no-stratify", action="store_true",
                         help="Disable stratification (analyze all samples as one cohort)")
-    parser.add_argument("--min-evidence", type=int, default=2,
+    parser.add_argument("--min-evidence", type=_positive_int, default=2,
                         help="Minimum evidence for CoGEx relationships")
     parser.add_argument("--min-correlation", type=float, default=0.7,
                         help="Minimum correlation for cliques")
@@ -131,7 +133,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     # Discovery mode
     parser.add_argument("--discover", action="store_true",
                         help="Discovery mode: auto-find regulators from INDRA")
-    parser.add_argument("--min-targets", type=int, default=10,
+    parser.add_argument("--min-targets", type=_positive_int, default=10,
                         help="Discovery: min INDRA targets in dataset")
     parser.add_argument("--max-targets", type=int, default=100,
                         help="Discovery: max INDRA targets (exclude hub regulators, default: 100)")
@@ -159,7 +161,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                              "'pearson' uses linear correlation only, 'spearman' uses rank correlation only")
 
     # Parallelism
-    parser.add_argument("--workers", "-j", type=int, default=1,
+    parser.add_argument("--workers", "-j", type=_positive_int, default=1,
                         help="Parallel workers (default: 1)")
     parser.add_argument("--parallel-mode", choices=["threads", "processes", "hybrid"],
                         default="threads", help="Parallelism strategy")

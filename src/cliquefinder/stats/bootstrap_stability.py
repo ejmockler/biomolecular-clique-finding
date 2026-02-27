@@ -4,19 +4,25 @@ Bootstrap stability for validation pipeline.
 Resamples within each condition group (with replacement) and re-runs
 protein-level differential analysis + competitive z-score extraction.
 Reports the fraction of bootstrap resamples that produce a significant
-enrichment z-score — a measure of result reliability.
+enrichment z-score -- a measure of result reliability.
 
 This is a report annotation, NOT a verdict gate. Low stability (< 0.7)
 flags sensitivity to sample composition without overriding the verdict.
+
+Warning convention:
+    warnings.warn() -- user-facing (convergence, deprecated, sample size)
+    logger.warning() -- operator-facing (fallback, retry, missing data)
 """
 
 from __future__ import annotations
 
-import warnings
+import logging
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 def run_bootstrap_stability(
@@ -127,7 +133,7 @@ def run_bootstrap_stability(
         except Exception as e:
             n_failures += 1
             if n_failures == 1:
-                warnings.warn(f"Bootstrap {i} failed: {type(e).__name__}: {e}")
+                logger.warning("Bootstrap %d failed: %s: %s", i, type(e).__name__, e)
             z_scores[i] = np.nan
 
     valid_z = z_scores[~np.isnan(z_scores)]

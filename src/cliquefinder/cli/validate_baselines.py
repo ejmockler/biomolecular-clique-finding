@@ -29,6 +29,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from cliquefinder.cli._validators import _positive_int, _probability
+
+# Warning convention:
+#   warnings.warn() — user-facing (convergence, deprecated, sample size)
+#   logger.warning() — operator-facing (fallback, retry, missing data)
 logger = logging.getLogger(__name__)
 
 
@@ -404,8 +409,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             with open(enrichment_out, "w") as f:
                 json.dump(enrichment.to_dict(), f, indent=2)
         except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
+            logger.warning("Phase 1 (covariate_adjusted) failed: %s", e)
             report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
             # protein_df remains None from initialization above; no reassignment needed
         _save_checkpoint(report, args.output)
@@ -484,8 +488,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     with open(spec_out, "w") as f:
                         json.dump(specificity.to_dict(), f, indent=2)
             except Exception as e:
-                import warnings
-                warnings.warn(f"Phase 2 (specificity) failed: {e}")
+                logger.warning("Phase 2 (specificity) failed: %s", e)
                 report.add_phase("specificity", {"status": "failed", "error": str(e)})
             _save_checkpoint(report, args.output)
         report.save(args.output / "validation_report.json")
@@ -559,8 +562,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             with open(perm_out, "w") as f:
                 json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
         except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 3 (label_permutation) failed: {e}")
+            logger.warning("Phase 3 (label_permutation) failed: %s", e)
             report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
         _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
@@ -621,8 +623,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             with open(matched_out, "w") as f:
                 json.dump(matched_enrichment.to_dict(), f, indent=2)
         except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
+            logger.warning("Phase 4 (matched_reanalysis) failed: %s", e)
             report.add_phase("matched_reanalysis", {"status": "failed", "error": str(e)})
         _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
@@ -679,8 +680,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             with open(neg_out, "w") as f:
                 json.dump(neg_result.to_dict(), f, indent=2)
         except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 5 (negative_controls) failed: {e}")
+            logger.warning("Phase 5 (negative_controls) failed: %s", e)
             report.add_phase("negative_controls", {"status": "failed", "error": str(e)})
         _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
