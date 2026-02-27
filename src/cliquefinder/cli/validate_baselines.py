@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def register_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -146,7 +149,76 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Significance threshold for phase gates (default: 0.05)",
     )
 
+    # Checkpoint / resume (ARCH-6)
+    parser.add_argument(
+        "--force-restart", action="store_true", default=False,
+        help="Ignore any existing checkpoint and re-run all phases from scratch",
+    )
+
+    # Tunable thresholds (STAT-15)
+    parser.add_argument(
+        "--specificity-z-threshold", type=float, default=1.5,
+        dest="specificity_z_threshold",
+        help=(
+            "Minimum z-score for a contrast to be considered 'present' in "
+            "Phase 2 specificity analysis (default: 1.5). Lower values make "
+            "the specificity call more sensitive; higher values more conservative."
+        ),
+    )
+    parser.add_argument(
+        "--negative-control-percentile", type=float, default=10.0,
+        dest="neg_ctrl_percentile",
+        help=(
+            "Percentile threshold for Phase 5 negative control pass/fail "
+            "(default: 10.0). The target gene set must rank below this "
+            "percentile among random control sets. Lower values are stricter."
+        ),
+    )
+    parser.add_argument(
+        "--interaction-n-perms", type=int, default=200,
+        dest="interaction_n_perms",
+        help=(
+            "Number of permutations for Phase 2 interaction z-test "
+            "(default: 200). Higher values give more precise p-values "
+            "but increase runtime linearly."
+        ),
+    )
+
     parser.set_defaults(func=run_validate_baselines)
+
+
+def _load_checkpoint(output_dir: Path) -> "ValidationReport":
+    """Load existing checkpoint if resuming a previous run.
+
+    Returns a ValidationReport populated with any previously completed
+    phase results, allowing the orchestrator to skip those phases.
+    """
+    from cliquefinder.stats.validation_report import ValidationReport
+
+    checkpoint_path = output_dir / "validation_checkpoint.json"
+    if checkpoint_path.exists():
+        try:
+            with open(checkpoint_path) as f:
+                data = json.load(f)
+            report = ValidationReport()
+            report.phases = data.get("phases", {})
+            n_phases = len(report.phases)
+            logger.info(
+                f"Loaded checkpoint with {n_phases} completed phase(s) "
+                f"from {checkpoint_path}"
+            )
+            return report
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Corrupt checkpoint file, starting fresh: {e}")
+    return ValidationReport()
+
+
+def _save_checkpoint(report: "ValidationReport", output_dir: Path) -> None:
+    """Persist current report state so the run can resume later."""
+    checkpoint_path = output_dir / "validation_checkpoint.json"
+    with open(checkpoint_path, "w") as f:
+        json.dump(report.to_dict(), f, indent=2)
+    logger.debug(f"Checkpoint saved to {checkpoint_path}")
 
 
 def run_validate_baselines(args: argparse.Namespace) -> int:
@@ -160,7 +232,19 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
-    report = ValidationReport()
+    # --- ARCH-6: Resume from checkpoint if available ---
+    args.output.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "force_restart", False):
+        report = ValidationReport()
+        # Remove stale checkpoint so subsequent phases don't load it
+        checkpoint_path = args.output / "validation_checkpoint.json"
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+            print("  Force restart: removed existing checkpoint")
+    else:
+        report = _load_checkpoint(args.output)
+        if report.phases:
+            print(f"  Resuming from checkpoint: {list(report.phases.keys())} already complete")
 
     # -----------------------------------------------------------------
     # Seed propagation strategy (M3 audit finding)
@@ -227,9 +311,6 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     primary_contrast_name = list(contrasts.keys())[0]
     primary_contrast = contrasts[primary_contrast_name]
 
-    # Output directory
-    args.output.mkdir(parents=True, exist_ok=True)
-
     # --- Query INDRA network ---
     from cliquefinder.cli.differential import query_network_targets
     print(f"\nQuerying INDRA network for {args.network_query}...")
@@ -286,296 +367,331 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     # =====================================================================
     # PHASE 1: Covariate-adjusted enrichment
     # =====================================================================
-    print(f"\n{'=' * 70}")
-    print("PHASE 1: COVARIATE-ADJUSTED ENRICHMENT")
-    print("=" * 70)
-
     from cliquefinder.stats.differential import (
         run_protein_differential,
         run_network_enrichment_test,
     )
 
     protein_df = None  # Initialize; downstream phases (e.g., Phase 5) check this
-    try:
-        protein_df = run_protein_differential(
-            data=data,
-            feature_ids=feature_ids,
-            sample_condition=metadata[condition_col],
-            contrast=primary_contrast,
-            eb_moderation=True,
-            target_gene_ids=target_gene_ids,
-            verbose=True,
-            covariates_df=covariates_df,
-            covariate_design=covariate_design,
-        )
 
-        enrichment = run_network_enrichment_test(protein_df, verbose=True)
-        report.add_phase("covariate_adjusted", enrichment.to_dict())
+    if "covariate_adjusted" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 1: COVARIATE-ADJUSTED ENRICHMENT  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 1: COVARIATE-ADJUSTED ENRICHMENT")
+        print("=" * 70)
 
-        # Save phase-specific output
-        enrichment_out = args.output / "phase1_covariate_enrichment.json"
-        with open(enrichment_out, "w") as f:
-            json.dump(enrichment.to_dict(), f, indent=2)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
-        report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
-        # protein_df remains None from initialization above; no reassignment needed
+        try:
+            protein_df = run_protein_differential(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=metadata[condition_col],
+                contrast=primary_contrast,
+                eb_moderation=True,
+                target_gene_ids=target_gene_ids,
+                verbose=True,
+                covariates_df=covariates_df,
+                covariate_design=covariate_design,
+            )
+
+            enrichment = run_network_enrichment_test(protein_df, verbose=True)
+            report.add_phase("covariate_adjusted", enrichment.to_dict())
+
+            # Save phase-specific output
+            enrichment_out = args.output / "phase1_covariate_enrichment.json"
+            with open(enrichment_out, "w") as f:
+                json.dump(enrichment.to_dict(), f, indent=2)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Phase 1 (covariate_adjusted) failed: {e}")
+            report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
+            # protein_df remains None from initialization above; no reassignment needed
+        _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
     # PHASE 2: Multi-contrast specificity
     # =====================================================================
     if len(contrasts) > 1:
-        print(f"\n{'=' * 70}")
-        print("PHASE 2: MULTI-CONTRAST SPECIFICITY")
-        print("=" * 70)
+        if "specificity" in report.phases:
+            print(f"\n{'=' * 70}")
+            print("PHASE 2: MULTI-CONTRAST SPECIFICITY  [SKIPPED — checkpoint]")
+            print("=" * 70)
+        else:
+            print(f"\n{'=' * 70}")
+            print("PHASE 2: MULTI-CONTRAST SPECIFICITY")
+            print("=" * 70)
 
-        try:
-            from cliquefinder.stats.specificity import compute_specificity
+            try:
+                from cliquefinder.stats.specificity import compute_specificity
 
-            enrichment_by_contrast = {}
-            for name, contrast_tuple in contrasts.items():
-                print(f"\n  Running contrast: {name} ({contrast_tuple[0]} vs {contrast_tuple[1]})")
+                enrichment_by_contrast = {}
+                for name, contrast_tuple in contrasts.items():
+                    print(f"\n  Running contrast: {name} ({contrast_tuple[0]} vs {contrast_tuple[1]})")
 
-                # Filter to samples in this contrast's groups.
-                # M-6 note: each sub-contrast uses a different sample subset
-                # (only samples belonging to the two conditions in that contrast),
-                # so the main covariate_design (built from the primary contrast's
-                # full sample set) cannot be reused here. Each sub-contrast
-                # correctly recomputes its own NaN mask from the subsetted
-                # metadata and covariates.
-                mask = metadata[condition_col].isin(contrast_tuple)
-                sub_data = data[:, mask.values]
-                sub_meta = metadata[mask]
-                sub_cov = covariates_df[mask] if covariates_df is not None else None
+                    # Filter to samples in this contrast's groups.
+                    # M-6 note: each sub-contrast uses a different sample subset
+                    # (only samples belonging to the two conditions in that contrast),
+                    # so the main covariate_design (built from the primary contrast's
+                    # full sample set) cannot be reused here. Each sub-contrast
+                    # correctly recomputes its own NaN mask from the subsetted
+                    # metadata and covariates.
+                    mask = metadata[condition_col].isin(contrast_tuple)
+                    sub_data = data[:, mask.values]
+                    sub_meta = metadata[mask]
+                    sub_cov = covariates_df[mask] if covariates_df is not None else None
 
-                try:
-                    sub_results = run_protein_differential(
-                        data=sub_data,
+                    try:
+                        sub_results = run_protein_differential(
+                            data=sub_data,
+                            feature_ids=feature_ids,
+                            sample_condition=sub_meta[condition_col],
+                            contrast=contrast_tuple,
+                            eb_moderation=True,
+                            target_gene_ids=target_gene_ids,
+                            verbose=False,
+                            covariates_df=sub_cov,
+                        )
+                        sub_enrichment = run_network_enrichment_test(sub_results, verbose=False)
+                        enrichment_by_contrast[name] = sub_enrichment.to_dict()
+                        print(f"    z={sub_enrichment.z_score:.2f}, "
+                              f"p={sub_enrichment.empirical_pvalue:.4f}")
+                    except Exception as e:
+                        print(f"    Error: {e}")
+
+                if len(enrichment_by_contrast) > 1:
+                    specificity = compute_specificity(
+                        enrichment_by_contrast,
+                        primary_contrast=primary_contrast_name,
+                        z_threshold=getattr(args, "specificity_z_threshold", 1.5),
+                        data=data,
                         feature_ids=feature_ids,
-                        sample_condition=sub_meta[condition_col],
-                        contrast=contrast_tuple,
-                        eb_moderation=True,
+                        metadata=metadata,
+                        condition_col=condition_col,
+                        contrast_tuples=contrasts,
                         target_gene_ids=target_gene_ids,
-                        verbose=False,
-                        covariates_df=sub_cov,
+                        covariates_df=covariates_df,
+                        n_interaction_perms=getattr(args, "interaction_n_perms", 200),
+                        seed=args.seed,
                     )
-                    sub_enrichment = run_network_enrichment_test(sub_results, verbose=False)
-                    enrichment_by_contrast[name] = sub_enrichment.to_dict()
-                    print(f"    z={sub_enrichment.z_score:.2f}, "
-                          f"p={sub_enrichment.empirical_pvalue:.4f}")
-                except Exception as e:
-                    print(f"    Error: {e}")
+                    report.add_phase("specificity", specificity.to_dict())
+                    print(f"\n  Specificity: {specificity.specificity_label}")
+                    print(f"  {specificity.summary}")
 
-            if len(enrichment_by_contrast) > 1:
-                specificity = compute_specificity(
-                    enrichment_by_contrast,
-                    primary_contrast=primary_contrast_name,
-                    data=data,
-                    feature_ids=feature_ids,
-                    metadata=metadata,
-                    condition_col=condition_col,
-                    contrast_tuples=contrasts,
-                    target_gene_ids=target_gene_ids,
-                    covariates_df=covariates_df,
-                    n_interaction_perms=200,
-                    seed=args.seed,
-                )
-                report.add_phase("specificity", specificity.to_dict())
-                print(f"\n  Specificity: {specificity.specificity_label}")
-                print(f"  {specificity.summary}")
-
-                spec_out = args.output / "phase2_specificity.json"
-                with open(spec_out, "w") as f:
-                    json.dump(specificity.to_dict(), f, indent=2)
-        except Exception as e:
-            import warnings
-            warnings.warn(f"Phase 2 (specificity) failed: {e}")
-            report.add_phase("specificity", {"status": "failed", "error": str(e)})
+                    spec_out = args.output / "phase2_specificity.json"
+                    with open(spec_out, "w") as f:
+                        json.dump(specificity.to_dict(), f, indent=2)
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Phase 2 (specificity) failed: {e}")
+                report.add_phase("specificity", {"status": "failed", "error": str(e)})
+            _save_checkpoint(report, args.output)
         report.save(args.output / "validation_report.json")
 
     # =====================================================================
     # PHASE 3: Label permutation null (stratified + free)
     # =====================================================================
-    print(f"\n{'=' * 70}")
-    print("PHASE 3: LABEL PERMUTATION NULL")
-    print("=" * 70)
+    if "label_permutation" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 3: LABEL PERMUTATION NULL  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 3: LABEL PERMUTATION NULL")
+        print("=" * 70)
 
-    try:
-        from cliquefinder.stats.label_permutation import run_label_permutation_null
+        try:
+            from cliquefinder.stats.label_permutation import run_label_permutation_null
 
-        # Stratified permutation
-        stratify_by = None
-        if args.stratify_col and args.stratify_col in metadata.columns:
-            stratify_by = metadata[args.stratify_col].values
-            print(f"  Stratification: {args.stratify_col}")
+            # Stratified permutation
+            stratify_by = None
+            if args.stratify_col and args.stratify_col in metadata.columns:
+                stratify_by = metadata[args.stratify_col].values
+                print(f"  Stratification: {args.stratify_col}")
 
-        # M-6: Pass covariate_design to ensure the same NaN mask is used
-        # across all permutations. Covariates do not change when labels are
-        # permuted, so the same design (and sample_mask) applies throughout.
-        print(f"\n  Running stratified permutation ({args.label_permutations} permutations)...")
-        strat_result = run_label_permutation_null(
-            data=data,
-            feature_ids=feature_ids,
-            sample_condition=metadata[condition_col],
-            contrast=primary_contrast,
-            target_gene_ids=target_gene_ids,
-            n_permutations=args.label_permutations,
-            stratify_by=stratify_by,
-            covariates_df=covariates_df,
-            covariate_design=covariate_design,
-            seed=_seed_phase3_strat,
-            verbose=True,
-        )
-        strat_dict = strat_result.to_dict()
-        strat_dict["mode"] = "stratified"
+            # M-6: Pass covariate_design to ensure the same NaN mask is used
+            # across all permutations. Covariates do not change when labels are
+            # permuted, so the same design (and sample_mask) applies throughout.
+            print(f"\n  Running stratified permutation ({args.label_permutations} permutations)...")
+            strat_result = run_label_permutation_null(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=metadata[condition_col],
+                contrast=primary_contrast,
+                target_gene_ids=target_gene_ids,
+                n_permutations=args.label_permutations,
+                stratify_by=stratify_by,
+                covariates_df=covariates_df,
+                covariate_design=covariate_design,
+                seed=_seed_phase3_strat,
+                verbose=True,
+            )
+            strat_dict = strat_result.to_dict()
+            strat_dict["mode"] = "stratified"
 
-        # Free permutation
-        print(f"\n  Running free permutation ({args.label_permutations} permutations)...")
-        free_result = run_label_permutation_null(
-            data=data,
-            feature_ids=feature_ids,
-            sample_condition=metadata[condition_col],
-            contrast=primary_contrast,
-            target_gene_ids=target_gene_ids,
-            n_permutations=args.label_permutations,
-            stratify_by=None,
-            covariates_df=covariates_df,
-            covariate_design=covariate_design,
-            seed=_seed_phase3_free,
-            verbose=True,
-        )
-        free_dict = free_result.to_dict()
-        free_dict["mode"] = "free"
+            # Free permutation
+            print(f"\n  Running free permutation ({args.label_permutations} permutations)...")
+            free_result = run_label_permutation_null(
+                data=data,
+                feature_ids=feature_ids,
+                sample_condition=metadata[condition_col],
+                contrast=primary_contrast,
+                target_gene_ids=target_gene_ids,
+                n_permutations=args.label_permutations,
+                stratify_by=None,
+                covariates_df=covariates_df,
+                covariate_design=covariate_design,
+                seed=_seed_phase3_free,
+                verbose=True,
+            )
+            free_dict = free_result.to_dict()
+            free_dict["mode"] = "free"
 
-        report.add_phase("label_permutation", {
-            "stratified": strat_dict,
-            "free": free_dict,
-            "permutation_pvalue": strat_result.permutation_pvalue,
-        })
+            report.add_phase("label_permutation", {
+                "stratified": strat_dict,
+                "free": free_dict,
+                "permutation_pvalue": strat_result.permutation_pvalue,
+            })
 
-        perm_out = args.output / "phase3_label_permutation.json"
-        with open(perm_out, "w") as f:
-            json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 3 (label_permutation) failed: {e}")
-        report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
+            perm_out = args.output / "phase3_label_permutation.json"
+            with open(perm_out, "w") as f:
+                json.dump({"stratified": strat_dict, "free": free_dict}, f, indent=2)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Phase 3 (label_permutation) failed: {e}")
+            report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
+        _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
     # PHASE 4: Sex-matched subsampling reanalysis
     # =====================================================================
-    print(f"\n{'=' * 70}")
-    print("PHASE 4: MATCHED SUBSAMPLING REANALYSIS")
-    print("=" * 70)
+    if "matched_reanalysis" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 4: MATCHED SUBSAMPLING REANALYSIS  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 4: MATCHED SUBSAMPLING REANALYSIS")
+        print("=" * 70)
 
-    try:
-        from cliquefinder.stats.matching import exact_match_covariates
+        try:
+            from cliquefinder.stats.matching import exact_match_covariates
 
-        match_result = exact_match_covariates(
-            metadata=metadata,
-            group_col=condition_col,
-            match_vars=args.match_vars,
-            groups=list(primary_contrast),
-            seed=_seed_phase4,
-        )
+            match_result = exact_match_covariates(
+                metadata=metadata,
+                group_col=condition_col,
+                match_vars=args.match_vars,
+                groups=list(primary_contrast),
+                seed=_seed_phase4,
+            )
 
-        print(f"  Original: {match_result.n_original} → Matched: {match_result.n_matched}")
+            print(f"  Original: {match_result.n_original} → Matched: {match_result.n_matched}")
 
-        # M-6 note: matched subsampling produces a different sample subset
-        # than the primary analysis, so the main covariate_design (built from
-        # the full sample set) does not apply. The matched subset correctly
-        # recomputes its own NaN mask from the subsetted covariates.
-        matched_data = data[:, match_result.matched_indices]
-        matched_meta = metadata.iloc[match_result.matched_indices]
-        matched_cov = covariates_df.iloc[match_result.matched_indices] if covariates_df is not None else None
+            # M-6 note: matched subsampling produces a different sample subset
+            # than the primary analysis, so the main covariate_design (built from
+            # the full sample set) does not apply. The matched subset correctly
+            # recomputes its own NaN mask from the subsetted covariates.
+            matched_data = data[:, match_result.matched_indices]
+            matched_meta = metadata.iloc[match_result.matched_indices]
+            matched_cov = covariates_df.iloc[match_result.matched_indices] if covariates_df is not None else None
 
-        matched_protein_df = run_protein_differential(
-            data=matched_data,
-            feature_ids=feature_ids,
-            sample_condition=matched_meta[condition_col],
-            contrast=primary_contrast,
-            eb_moderation=True,
-            target_gene_ids=target_gene_ids,
-            verbose=True,
-            covariates_df=matched_cov,
-        )
+            matched_protein_df = run_protein_differential(
+                data=matched_data,
+                feature_ids=feature_ids,
+                sample_condition=matched_meta[condition_col],
+                contrast=primary_contrast,
+                eb_moderation=True,
+                target_gene_ids=target_gene_ids,
+                verbose=True,
+                covariates_df=matched_cov,
+            )
 
-        matched_enrichment = run_network_enrichment_test(matched_protein_df, verbose=True)
-        report.add_phase("matched_reanalysis", {
-            **matched_enrichment.to_dict(),
-            "n_original": match_result.n_original,
-            "n_matched": match_result.n_matched,
-            "match_vars": match_result.match_vars,
-        })
+            matched_enrichment = run_network_enrichment_test(matched_protein_df, verbose=True)
+            report.add_phase("matched_reanalysis", {
+                **matched_enrichment.to_dict(),
+                "n_original": match_result.n_original,
+                "n_matched": match_result.n_matched,
+                "match_vars": match_result.match_vars,
+            })
 
-        matched_out = args.output / "phase4_matched_enrichment.json"
-        with open(matched_out, "w") as f:
-            json.dump(matched_enrichment.to_dict(), f, indent=2)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
-        report.add_phase("matched_reanalysis", {"status": "failed", "error": str(e)})
+            matched_out = args.output / "phase4_matched_enrichment.json"
+            with open(matched_out, "w") as f:
+                json.dump(matched_enrichment.to_dict(), f, indent=2)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Phase 4 (matched_reanalysis) failed: {e}")
+            report.add_phase("matched_reanalysis", {"status": "failed", "error": str(e)})
+        _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
     # PHASE 5: Negative control gene sets
     # =====================================================================
-    print(f"\n{'=' * 70}")
-    print("PHASE 5: NEGATIVE CONTROL GENE SETS")
-    print("=" * 70)
+    if "negative_controls" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 5: NEGATIVE CONTROL GENE SETS  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 5: NEGATIVE CONTROL GENE SETS")
+        print("=" * 70)
 
-    try:
-        from cliquefinder.stats.negative_controls import run_negative_control_sets
-        from cliquefinder.stats.rotation import RotationTestEngine
+        try:
+            from cliquefinder.stats.negative_controls import run_negative_control_sets
+            from cliquefinder.stats.rotation import RotationTestEngine
 
-        # M-6 note: RotationTestEngine.fit() builds its own design matrix
-        # from the full data + metadata + covariates. It uses the same
-        # covariate columns listed in args.covariates, so its internal NaN
-        # mask is consistent with the covariate_design built above. The
-        # engine operates on the full sample set (not a subset), matching
-        # Phase 1's scope.
-        conditions_list = list(primary_contrast)
-        engine = RotationTestEngine(data, feature_ids, metadata)
-        engine.fit(
-            conditions=conditions_list,
-            contrast=primary_contrast,
-            condition_column=condition_col,
-            covariates=args.covariates,
-        )
+            # M-6 note: RotationTestEngine.fit() builds its own design matrix
+            # from the full data + metadata + covariates. It uses the same
+            # covariate columns listed in args.covariates, so its internal NaN
+            # mask is consistent with the covariate_design built above. The
+            # engine operates on the full sample set (not a subset), matching
+            # Phase 1's scope.
+            conditions_list = list(primary_contrast)
+            engine = RotationTestEngine(data, feature_ids, metadata)
+            engine.fit(
+                conditions=conditions_list,
+                contrast=primary_contrast,
+                condition_column=condition_col,
+                covariates=args.covariates,
+            )
 
-        # protein_df may be None if Phase 1 failed. Pass it through;
-        # run_negative_control_sets() handles None gracefully (skips
-        # competitive z-score computation).
-        neg_result = run_negative_control_sets(
-            engine=engine,
-            target_gene_ids=target_gene_ids,
-            target_set_id=f"{args.network_query}_targets",
-            n_control_sets=args.n_neg_controls,
-            seed=_seed_phase5,
-            protein_results=protein_df,
-            data=data,
-            matching="both",
-            verbose=True,
-        )
+            # protein_df may be None if Phase 1 failed. Pass it through;
+            # run_negative_control_sets() handles None gracefully (skips
+            # competitive z-score computation).
+            neg_result = run_negative_control_sets(
+                engine=engine,
+                target_gene_ids=target_gene_ids,
+                target_set_id=f"{args.network_query}_targets",
+                n_control_sets=args.n_neg_controls,
+                seed=_seed_phase5,
+                protein_results=protein_df,
+                data=data,
+                matching="both",
+                verbose=True,
+            )
 
-        report.add_phase("negative_controls", neg_result.to_dict())
+            report.add_phase("negative_controls", neg_result.to_dict())
 
-        neg_out = args.output / "phase5_negative_controls.json"
-        with open(neg_out, "w") as f:
-            json.dump(neg_result.to_dict(), f, indent=2)
-    except Exception as e:
-        import warnings
-        warnings.warn(f"Phase 5 (negative_controls) failed: {e}")
-        report.add_phase("negative_controls", {"status": "failed", "error": str(e)})
+            neg_out = args.output / "phase5_negative_controls.json"
+            with open(neg_out, "w") as f:
+                json.dump(neg_result.to_dict(), f, indent=2)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Phase 5 (negative_controls) failed: {e}")
+            report.add_phase("negative_controls", {"status": "failed", "error": str(e)})
+        _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
     # AGGREGATE REPORT
     # =====================================================================
-    report.compute_verdict(alpha=args.alpha)
+    report.compute_verdict(
+        alpha=args.alpha,
+        neg_ctrl_percentile=getattr(args, "neg_ctrl_percentile", 10.0),
+    )
     report.save(args.output / "validation_report.json")
     report.print_summary()
 

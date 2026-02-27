@@ -824,6 +824,7 @@ def run_stratified_analysis(
 
     # Analyze each regulator
     results = []
+    n_failed = 0  # ARCH-3: Track failures for aggregate threshold check
 
     if use_regulator_parallelism and parallel_mode == "processes":
         # Process-based parallelism - TRUE multi-core execution
@@ -879,6 +880,7 @@ def run_stratified_analysis(
                         pct = 100 * completed / len(modules)
                         logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
                 except Exception as e:
+                    n_failed += 1
                     logger.error(f"Failed to get result for {args[0]}: {e}")
 
     elif use_regulator_parallelism:
@@ -927,6 +929,7 @@ def run_stratified_analysis(
                         pct = 100 * completed / len(modules)
                         logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
                 except Exception as e:
+                    n_failed += 1
                     logger.error(f"Failed to get result for {module.regulator_name}: {e}")
     else:
         # Sequential execution (n_workers=1)
@@ -947,7 +950,35 @@ def run_stratified_analysis(
                 )
                 results.append(result)
             except Exception as e:
+                n_failed += 1
                 logger.error(f"Failed to analyze {module.regulator_name}: {e}")
+
+    # --- ARCH-3: Aggregate failure tracking ---
+    # Check failure rate and abort or warn if too many regulators failed.
+    # This prevents silent degradation (e.g., Neo4j dying mid-run).
+    _FAILURE_ABORT_THRESHOLD = 0.5   # Abort if >50% fail
+    _FAILURE_WARN_THRESHOLD = 0.1    # Warn if >10% fail
+
+    n_total = len(modules)
+    failure_rate = n_failed / n_total if n_total > 0 else 0.0
+
+    if n_failed > 0:
+        logger.info(
+            f"Regulator analysis complete: {len(results)} succeeded, "
+            f"{n_failed} failed out of {n_total} ({failure_rate:.0%} failure rate)"
+        )
+
+    if failure_rate > _FAILURE_ABORT_THRESHOLD:
+        raise RuntimeError(
+            f"Analysis aborted: {n_failed}/{n_total} regulators failed "
+            f"({failure_rate:.0%}). This exceeds the {_FAILURE_ABORT_THRESHOLD:.0%} "
+            f"threshold — results would be unreliable."
+        )
+    elif failure_rate > _FAILURE_WARN_THRESHOLD:
+        logger.warning(
+            f"{n_failed}/{n_total} regulators failed ({failure_rate:.0%}). "
+            f"Results may be incomplete."
+        )
 
     return results
 
