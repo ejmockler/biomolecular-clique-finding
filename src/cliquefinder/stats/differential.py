@@ -20,10 +20,14 @@ References:
 
 from __future__ import annotations
 
+import logging
 import warnings
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, Sequence
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -471,68 +475,79 @@ def batched_ols_gpu(
     n_params = X.shape[1]
     n_conditions = len(conditions)
 
-    # Convert to MLX arrays
-    Y_mx = mx.array(Y)
-    X_mx = mx.array(X)
+    # ── Pattern-grouped OLS: correct per-feature NaN handling ──────────
+    # Different features may have different missing-value patterns.
+    # The correct OLS solution for feature g is:
+    #   β̂_g = (X[S_g]'X[S_g])^-1 X[S_g]' y_g[S_g]
+    # where S_g is the set of non-missing samples for feature g.
+    #
+    # We group features by their exact missingness pattern so that features
+    # sharing the same pattern share one (X_g'X_g)^-1 inversion.
+    # ─────────────────────────────────────────────────────────────────────
 
-    # Handle NaN values by creating masks
-    # For simplicity, we'll process all features together and mask results
     nan_mask = np.isnan(Y)  # (n_samples, n_features)
 
-    # Replace NaN with 0 for computation (will be masked out)
-    Y_clean = np.where(nan_mask, 0.0, Y)
-    Y_mx_clean = mx.array(Y_clean)
+    # Group features by missingness pattern
+    pattern_groups: dict[tuple[bool, ...], list[int]] = defaultdict(list)
+    for j in range(n_features):
+        pattern = tuple(~nan_mask[:, j])  # which samples are valid
+        pattern_groups[pattern].append(j)
 
-    # Compute (X'X)^-1
-    # Note: MLX linalg.inv may require CPU stream, so we compute on CPU and convert back
-    XtX = X_mx.T @ X_mx
-    try:
-        # Convert to numpy for inversion (MLX inv may not support GPU)
-        XtX_np = np.array(XtX)
-        XtX_inv_np = np.linalg.inv(XtX_np)
-        XtX_inv = mx.array(XtX_inv_np)
-    except np.linalg.LinAlgError as e:
-        # Singular matrix - fall back to sequential
-        raise ValueError(f"Singular design matrix: {e}")
+    # Allocate per-feature result arrays
+    beta_np = np.full((n_params, n_features), np.nan)
+    residual_var_np = np.full(n_features, np.nan)
+    df_resid_np = np.full(n_features, np.nan, dtype=np.float64)
+    n_valid_np = np.full(n_features, 0, dtype=np.float64)
+    # Store per-feature (X_g'X_g)^-1 for SE computation in contrasts
+    XtX_inv_per_feature: dict[int, NDArray[np.float64]] = {}
 
-    # Solve for coefficients: β = (X'X)^-1 X'Y
-    # Shape: (n_params, n_features)
-    beta = XtX_inv @ (X_mx.T @ Y_mx_clean)
+    for pattern, feature_indices in pattern_groups.items():
+        valid = np.array(pattern)  # boolean mask for valid samples
+        n_obs = int(np.sum(valid))
 
-    # Predictions and residuals
-    Y_pred = X_mx @ beta
-    residuals = Y_mx_clean - Y_pred
+        if n_obs <= n_params:
+            # Rank-deficient: mark these features but don't skip yet
+            # (they'll be caught by the insufficient-data check below)
+            for idx in feature_indices:
+                n_valid_np[idx] = n_obs
+            continue
 
-    # Residual sum of squares (RSS) per feature
-    # Mask out NaN positions before computing RSS
-    valid_mask_mx = mx.array(~nan_mask)  # (n_samples, n_features)
-    residuals_masked = residuals * valid_mask_mx
-    rss = mx.sum(residuals_masked ** 2, axis=0)  # (n_features,)
+        X_g = X[valid, :]  # (n_obs, n_params)
 
-    # Count valid observations per feature
-    n_valid = mx.sum(valid_mask_mx, axis=0)  # (n_features,)
+        # Compute (X_g'X_g)^-1 for this pattern using lstsq for stability
+        XtX_g = X_g.T @ X_g
+        try:
+            XtX_inv_g = np.linalg.inv(XtX_g)
+        except np.linalg.LinAlgError:
+            # Fall back to pseudoinverse for near-singular patterns
+            try:
+                XtX_inv_g = np.linalg.pinv(XtX_g)
+            except np.linalg.LinAlgError:
+                for idx in feature_indices:
+                    n_valid_np[idx] = n_obs
+                continue
 
-    # Residual degrees of freedom: n_valid - n_params
-    df_resid = n_valid - n_params
+        # Extract Y for this pattern's features and valid samples
+        fi = np.array(feature_indices)
+        Y_g = Y[valid, :][:, fi]  # (n_obs, len(feature_indices))
 
-    # Residual variance: σ² = RSS / df_resid
-    residual_var = rss / mx.maximum(df_resid, 1.0)  # Avoid division by zero
+        # Coefficients: β = (X_g'X_g)^-1 X_g' Y_g
+        beta_g = XtX_inv_g @ (X_g.T @ Y_g)  # (n_params, len(feature_indices))
 
-    # Standard errors: SE(β) = sqrt(σ² * diag((X'X)^-1))
-    # Diagonal of (X'X)^-1
-    XtX_inv_diag = mx.diagonal(XtX_inv)  # (n_params,)
+        # Residuals and RSS
+        residuals_g = Y_g - X_g @ beta_g
+        rss_g = np.sum(residuals_g ** 2, axis=0)
 
-    # SE matrix: (n_params, n_features)
-    # Each feature has variance residual_var[j], so SE[i,j] = sqrt(residual_var[j] * XtX_inv_diag[i])
-    se_matrix = mx.sqrt(residual_var[None, :] * XtX_inv_diag[:, None])
+        # Degrees of freedom
+        df_g = n_obs - n_params
 
-    # Convert back to numpy for contrast computation
-    beta_np = np.array(beta)  # (n_params, n_features)
-    se_np = np.array(se_matrix)  # (n_params, n_features)
-    residual_var_np = np.array(residual_var)  # (n_features,)
-    df_resid_np = np.array(df_resid)  # (n_features,)
-    n_valid_np = np.array(n_valid)  # (n_features,)
-    XtX_inv_np = np.array(XtX_inv)  # (n_params, n_params)
+        # Store results
+        for local_idx, global_idx in enumerate(feature_indices):
+            beta_np[:, global_idx] = beta_g[:, local_idx]
+            residual_var_np[global_idx] = rss_g[local_idx] / max(df_g, 1)
+            df_resid_np[global_idx] = df_g
+            n_valid_np[global_idx] = n_obs
+            XtX_inv_per_feature[global_idx] = XtX_inv_g
 
     # Build transformation matrix from coefficients to condition means
     # For dummy coding: condition_mean[i] = intercept (i=0) or intercept + coef[i] (i>0)
@@ -546,13 +561,12 @@ def batched_ols_gpu(
     for j in range(n_features):
         feature_id = feature_ids[j]
         beta_j = beta_np[:, j]  # (n_params,)
-        se_j = se_np[:, j]  # (n_params,)
         res_var_j = residual_var_np[j]
-        df_j = max(int(df_resid_np[j]), 1)
+        df_j = max(int(df_resid_np[j]), 1) if np.isfinite(df_resid_np[j]) else 0
         n_obs_j = int(n_valid_np[j])
 
         # Check for insufficient data
-        if n_obs_j < 3 or df_j < 1:
+        if n_obs_j < 3 or df_j < 1 or np.any(np.isnan(beta_j)):
             results.append(ProteinResult(
                 feature_id=feature_id,
                 contrasts=[],
@@ -579,6 +593,9 @@ def batched_ols_gpu(
             ))
             continue
 
+        # Get the per-feature (X_g'X_g)^-1 for this feature's pattern
+        XtX_inv_j = XtX_inv_per_feature[j]
+
         # Compute condition means: means = L @ beta
         condition_means = L @ beta_j  # (n_conditions,)
 
@@ -592,8 +609,8 @@ def batched_ols_gpu(
             c_param = L.T @ contrast_vec  # (n_params,)
 
             # Standard error: SE = sqrt(c' * Cov(β) * c)
-            # where Cov(β) = σ² * (X'X)^-1
-            se_squared = res_var_j * (c_param @ XtX_inv_np @ c_param)
+            # where Cov(β) = σ² * (X_g'X_g)^-1 (per-pattern inverse)
+            se_squared = res_var_j * (c_param @ XtX_inv_j @ c_param)
 
             if se_squared < 0:
                 warnings.warn(f"Negative variance for {feature_id}, contrast {contrast_name}")
@@ -823,7 +840,8 @@ def test_contrasts(
     # Other coefficients = difference from reference
     try:
         intercept = coef_df.loc['const', 'coef'] if 'const' in coef_df.index else coef_df.iloc[0]['coef']
-    except:
+    except (KeyError, IndexError) as e:
+        logger.warning("Intercept lookup by name failed, using positional: %s", e)
         intercept = coef_df['coef'].iloc[0]
 
     condition_means = np.zeros(n_conditions)
@@ -1157,37 +1175,82 @@ def run_protein_differential(
         print(f"  Valid samples: {n_valid}")
         print(f"  Residual df: {matrices.df_residual}")
 
-    # Handle NaN values per protein - compute valid sample count
+    # ── Pattern-grouped OLS: correct per-feature NaN handling ──────────
+    # Different features may have different missing-value patterns.
+    # The correct OLS solution for feature g is:
+    #   β̂_g = (X[S_g]'X[S_g])^-1 X[S_g]' y_g[S_g]
+    # where S_g is the set of non-missing samples for feature g.
+    #
+    # We group features by their exact missingness pattern so that features
+    # sharing the same pattern share one (X_g'X_g)^-1 inversion.
+    # ─────────────────────────────────────────────────────────────────────
+
     nan_mask = np.isnan(data_valid)  # (n_features, n_valid)
     n_valid_per_feature = np.sum(~nan_mask, axis=1)  # (n_features,)
+    n_params = matrices.X.shape[1]
 
-    # Replace NaN with 0 for computation (will handle in variance calculation)
-    data_clean = np.where(nan_mask, 0.0, data_valid)
+    # Group features by missingness pattern (rows = features, columns = samples)
+    pattern_groups: dict[tuple[bool, ...], list[int]] = defaultdict(list)
+    for j in range(n_features):
+        pattern = tuple(~nan_mask[j, :])  # which samples are valid for this feature
+        pattern_groups[pattern].append(j)
 
-    # Compute OLS coefficients for all proteins: β = Y @ X @ (X'X)^-1'
-    # Y shape: (n_features, n_samples)
-    # X shape: (n_samples, n_params)
-    # β shape: (n_features, n_params)
-    beta = data_clean @ matrices.X @ matrices.XtX_inv.T
+    # Allocate per-feature result arrays
+    beta = np.full((n_features, n_params), np.nan)
+    sigma2 = np.full(n_features, np.nan)
+    df_per_feature = np.full(n_features, 0, dtype=np.float64)
+    c_var_factor_per_feature = np.full(n_features, np.nan)
 
-    # Predictions: Ŷ = β @ X'
-    Y_pred = beta @ matrices.X.T
+    for pattern, feature_indices in pattern_groups.items():
+        valid = np.array(pattern)  # boolean mask for valid samples
+        n_obs = int(np.sum(valid))
 
-    # Residuals: e = Y - Ŷ
-    residuals = data_clean - Y_pred
+        if n_obs <= n_params:
+            # Rank-deficient: leave as NaN (caught by valid_features filter)
+            df_per_feature[feature_indices] = max(n_obs - n_params, 0)
+            continue
 
-    # Mask out NaN positions for RSS computation
-    residuals_masked = np.where(nan_mask, 0.0, residuals)
+        X_g = matrices.X[valid, :]  # (n_obs, n_params)
 
-    # Residual sum of squares per feature
-    rss = np.sum(residuals_masked ** 2, axis=1)  # (n_features,)
+        # Compute (X_g'X_g)^-1 for this pattern
+        XtX_g = X_g.T @ X_g
+        try:
+            XtX_inv_g = np.linalg.inv(XtX_g)
+        except np.linalg.LinAlgError:
+            # Fall back to pseudoinverse for near-singular patterns
+            try:
+                XtX_inv_g = np.linalg.pinv(XtX_g)
+            except np.linalg.LinAlgError:
+                df_per_feature[feature_indices] = max(n_obs - n_params, 0)
+                continue
 
-    # Residual variance: σ² = RSS / df
-    # Use per-feature df if some proteins have missing values
-    df_per_feature = n_valid_per_feature - matrices.X.shape[1]
+        # Per-pattern c_var_factor: c' @ (X_g'X_g)^-1 @ c
+        c_var_g = float(matrices.c @ XtX_inv_g @ matrices.c)
+        if c_var_g < 0:
+            c_var_g = abs(c_var_g)
+
+        # Extract Y for this pattern's features and valid samples
+        fi = np.array(feature_indices)
+        Y_g = data_valid[fi, :][:, valid]  # (len(feature_indices), n_obs)
+
+        # Coefficients: β = Y_g @ X_g @ (X_g'X_g)^-1'
+        beta_g = Y_g @ X_g @ XtX_inv_g.T  # (len(feature_indices), n_params)
+
+        # Residuals and RSS
+        Y_pred_g = beta_g @ X_g.T  # (len(feature_indices), n_obs)
+        residuals_g = Y_g - Y_pred_g
+        rss_g = np.sum(residuals_g ** 2, axis=1)  # (len(feature_indices),)
+
+        # Degrees of freedom
+        df_g = n_obs - n_params
+
+        # Store results
+        beta[fi, :] = beta_g
+        sigma2[fi] = rss_g / max(df_g, 1)
+        df_per_feature[fi] = df_g
+        c_var_factor_per_feature[fi] = c_var_g
+
     df_per_feature = np.maximum(df_per_feature, 1)  # Avoid division by zero
-
-    sigma2 = rss / df_per_feature
 
     # Filter to features with valid variance estimates
     valid_features = (sigma2 > 0) & np.isfinite(sigma2) & (n_valid_per_feature >= 3)
@@ -1198,9 +1261,11 @@ def run_protein_differential(
             print(f"  Excluded {n_invalid} features with invalid variance or insufficient data")
 
     # Apply Empirical Bayes variance shrinkage
+    # fit_f_dist and squeeze_var support per-feature df arrays
     if eb_moderation:
         # Estimate EB hyperparameters from valid features only
         sigma2_valid = sigma2[valid_features]
+        df_valid = df_per_feature[valid_features]
 
         if len(sigma2_valid) < 3:
             warnings.warn("Insufficient features for EB estimation, disabling moderation")
@@ -1208,39 +1273,47 @@ def run_protein_differential(
             d0 = np.inf
             s0_sq = 1.0
             sigma2_post = sigma2.copy()
-            df_total = float(matrices.df_residual)
+            df_total = df_per_feature.astype(np.float64)
         else:
-            d0, s0_sq = fit_f_dist(sigma2_valid, matrices.df_residual)
+            # Use median df for EB hyperparameter estimation (robust pooling)
+            median_df = int(np.median(df_valid))
+            d0, s0_sq = fit_f_dist(sigma2_valid, median_df)
 
             if verbose:
                 if np.isinf(d0):
                     print(f"  EB priors: d0=Inf (no shrinkage), s0²={s0_sq:.6f}")
                 else:
                     print(f"  EB priors: d0={d0:.2f}, s0²={s0_sq:.6f}")
-                    shrinkage_weight = d0 / (d0 + matrices.df_residual)
+                    shrinkage_weight = d0 / (d0 + median_df)
                     print(f"  Shrinkage: {100*shrinkage_weight:.1f}% prior, "
                           f"{100*(1-shrinkage_weight):.1f}% sample")
 
-            # Apply shrinkage to ALL features (including those filtered out)
-            sigma2_post, df_total = squeeze_var(sigma2, matrices.df_residual, d0, s0_sq)
+            # Apply shrinkage per feature using per-feature df
+            if np.isinf(d0):
+                sigma2_post = sigma2.copy()
+                df_total = df_per_feature.astype(np.float64)
+            else:
+                # Per-feature squeeze: s2_post_g = (d0*s0² + df_g*s²_g) / (d0 + df_g)
+                sigma2_post = (d0 * s0_sq + df_per_feature * sigma2) / (d0 + df_per_feature)
+                df_total = d0 + df_per_feature
     else:
         # No EB moderation - use standard OLS
         sigma2_post = sigma2.copy()
-        df_total = float(matrices.df_residual)
+        df_total = df_per_feature.astype(np.float64)
         d0 = np.inf
         s0_sq = np.nan
 
     # Compute log2FC from contrast: log2FC = β @ c
     log2fc = beta @ matrices.c
 
-    # Standard error: SE = sqrt(σ²_post × c_var_factor)
-    se = np.sqrt(sigma2_post * matrices.c_var_factor)
+    # Standard error: SE = sqrt(σ²_post × c_var_factor_per_feature)
+    se = np.sqrt(sigma2_post * c_var_factor_per_feature)
     se = np.maximum(se, 1e-10)  # Prevent division by zero
 
     # Moderated t-statistic: t = log2FC / SE
     t_statistic = log2fc / se
 
-    # P-values from t-distribution with moderated df
+    # P-values from t-distribution with per-feature moderated df
     if eb_moderation and not np.isinf(d0):
         p_value = 2 * scipy_stats.t.sf(np.abs(t_statistic), df_total)
     else:
@@ -1253,7 +1326,7 @@ def run_protein_differential(
         'log2fc': log2fc,
         't_statistic': t_statistic,
         'p_value': p_value,
-        'df': df_total if not np.isinf(d0) else matrices.df_residual,
+        'df': df_total if not np.isscalar(df_total) else np.full(n_features, df_total),
         'sigma2_post': sigma2_post,
         'sigma2': sigma2,
         'n_samples': n_valid_per_feature,
