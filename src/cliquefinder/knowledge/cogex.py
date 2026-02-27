@@ -499,19 +499,73 @@ class CoGExClient:
             "3. .env file: CoGExClient(env_file=Path('~/.env'))"
         )
 
-    def _get_client(self) -> Neo4jClient:
+    def _get_client(self, force_reconnect: bool = False) -> Neo4jClient:
         """
         Get or create Neo4j client (lazy initialization).
+
+        Args:
+            force_reconnect: If True, discard existing client and create a new one.
+                Used by _execute_query to recover from dead connections.
 
         Returns:
             Connected Neo4jClient instance
         """
-        if self._client is None:
-            url, user, password = self._load_credentials()
-            self._client = Neo4jClient(url=url, auth=(user, password))
-            logger.info(f"Connected to INDRA CoGEx at {url}")
+        if self._client is not None and not force_reconnect:
+            return self._client
+
+        url, user, password = self._load_credentials()
+        self._client = Neo4jClient(url=url, auth=(user, password))
+        logger.info(f"Connected to INDRA CoGEx at {url}")
 
         return self._client
+
+    # Connection error keywords used by _execute_query to detect infrastructure
+    # failures (as opposed to query logic errors like bad Cypher syntax).
+    _CONNECTION_ERROR_KEYWORDS = (
+        'connection', 'timeout', 'unavailable', 'refused', 'reset', 'broken',
+    )
+
+    def _execute_query(self, query: str, **params):
+        """
+        Execute a Cypher query with automatic reconnection on connection failure.
+
+        On the first attempt, uses the existing (possibly cached) client.  If
+        the error looks like an infrastructure / connection issue, the client is
+        discarded, a fresh connection is established, and the query is retried
+        exactly once.  Non-connection errors (e.g. bad Cypher syntax) are
+        re-raised immediately.
+
+        Args:
+            query: Cypher query string.
+            **params: Query parameters forwarded to ``client.query_tx``.
+
+        Returns:
+            Query result rows from ``Neo4jClient.query_tx``.
+
+        Raises:
+            RuntimeError: If the query fails after a reconnect attempt.
+        """
+        try:
+            client = self._get_client()
+            return client.query_tx(query, **params)
+        except Exception as e:
+            error_str = str(e).lower()
+            is_connection_error = any(
+                word in error_str for word in self._CONNECTION_ERROR_KEYWORDS
+            )
+
+            if is_connection_error:
+                logger.warning(f"Connection lost, attempting reconnect: {e}")
+                self._client = None
+                try:
+                    client = self._get_client(force_reconnect=True)
+                    return client.query_tx(query, **params)
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"Query failed after reconnect attempt: {e2}"
+                    ) from e2
+            else:
+                raise  # Re-raise non-connection errors as-is
 
     def ping(self) -> bool:
         """
@@ -587,8 +641,7 @@ class CoGExClient:
         """
 
         try:
-            client = self._get_client()
-            results = client.query_tx(
+            results = self._execute_query(
                 query,
                 regulator_id=regulator_curie,
                 stmt_types=stmt_types,
@@ -746,8 +799,7 @@ class CoGExClient:
         """
 
         try:
-            client = self._get_client()
-            results = client.query_tx(
+            results = self._execute_query(
                 query,
                 target_ids=target_curies,
                 stmt_types=stmt_types,
@@ -879,10 +931,28 @@ class INDRAModuleExtractor:
         """
         self.client = client
         self.id_mapper = id_mapper
+        self._gene_cache: Dict[str, Optional[GeneId]] = {}
+        self._mygene_client = None  # Lazy singleton for MyGene.info client
+
+    def _get_mygene_client(self):
+        """
+        Lazy singleton for MyGene.info client.
+
+        Avoids instantiating a new ``mygene.MyGeneInfo()`` on every call to
+        ``resolve_gene_name``, which would create redundant HTTP sessions.
+        """
+        if self._mygene_client is None:
+            import mygene
+            self._mygene_client = mygene.MyGeneInfo()
+        return self._mygene_client
 
     def resolve_gene_name(self, name: str) -> Optional[GeneId]:
         """
         Resolve gene symbol OR UniProt accession to HGNC identifier.
+
+        Results are cached in ``self._gene_cache`` so repeated lookups for the
+        same gene name are O(1) dict lookups instead of redundant HGNC/UniProt
+        queries.
 
         Resolution strategy (in order):
         1. INDRA HGNC client - for gene symbols (fast, authoritative)
@@ -895,6 +965,20 @@ class INDRAModuleExtractor:
         Returns:
             GeneId tuple (namespace, id) or None if not found
             Example: ("HGNC", "11998") for TP53 or P04637
+        """
+        if name in self._gene_cache:
+            return self._gene_cache[name]
+
+        result = self._resolve_gene_name_uncached(name)
+        self._gene_cache[name] = result
+        return result
+
+    def _resolve_gene_name_uncached(self, name: str) -> Optional[GeneId]:
+        """
+        Resolve gene symbol OR UniProt accession to HGNC identifier (uncached).
+
+        This contains the actual resolution logic; ``resolve_gene_name`` adds a
+        caching layer on top.
         """
         # Strategy 1: Try as gene symbol via INDRA HGNC client (fast, authoritative)
         # Try original name first, then upper-cased for case-insensitive resolution
@@ -922,8 +1006,7 @@ class INDRAModuleExtractor:
         # Use querymany with proper scopes for batch-friendly resolution
         if self.id_mapper:
             try:
-                import mygene
-                mg = mygene.MyGeneInfo()
+                mg = self._get_mygene_client()
 
                 # Use querymany (not query) with proper scopes
                 # scopes='uniprot' for UniProt, 'symbol,alias' for gene names
