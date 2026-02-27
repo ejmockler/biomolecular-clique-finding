@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import json
+import os
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Set, Optional, Tuple
@@ -179,11 +181,19 @@ _worker_conditions = None
 _worker_params = None
 
 
-def _init_worker(matrix_data, feature_ids, sample_ids, sample_metadata,
+def _init_worker(mmap_path, feature_ids, sample_ids, sample_metadata,
                  quality_flags, stratify_by, min_samples, conditions,
                  min_correlation, min_clique_size, use_fast_maximum, correlation_method):
-    """Initialize worker process with shared data."""
+    """Initialize worker process with memory-mapped data.
+
+    Workers load the expression matrix via np.load(mmap_mode='r') so the OS
+    shares physical pages across all processes (copy-on-write), avoiding
+    per-worker copies of the potentially large matrix.
+    """
     global _worker_validator, _worker_conditions, _worker_params
+
+    # Load expression matrix from memory-mapped file (read-only, shared)
+    matrix_data = np.load(mmap_path, mmap_mode='r')
 
     # Reconstruct BioMatrix in this process
     matrix = BioMatrix(
@@ -828,60 +838,76 @@ def run_stratified_analysis(
 
     if use_regulator_parallelism and parallel_mode == "processes":
         # Process-based parallelism - TRUE multi-core execution
-        # Each process gets its own copy of the data and validator
+        # Workers load expression matrix via memory-mapped file (ARCH-5),
+        # so the OS shares physical pages across processes (copy-on-write).
         logger.info(f"Using {n_workers} PROCESS workers for true multi-core parallelism")
-
-        # Prepare data for worker initialization (must be picklable)
-        init_args = (
-            matrix.data,  # numpy array - picklable
-            list(matrix.feature_ids),  # list of strings
-            list(matrix.sample_ids),  # list of strings
-            matrix.sample_metadata,  # DataFrame - picklable
-            matrix.quality_flags,  # numpy array
-            stratify_by,
-            min_samples,
-            conditions,
-            min_correlation,
-            min_clique_size,
-            use_fast_maximum,
-            correlation_method
-        )
 
         # Prepare regulator args (tuples of picklable data)
         regulator_args = [
-            (module.regulator_name, module.regulator_id, module.indra_target_names, rna_filter_genes) # Added rna_filter_genes
+            (module.regulator_name, module.regulator_id, module.indra_target_names, rna_filter_genes)
             for module in modules
         ]
 
         # Use 'spawn' context for clean process creation (avoids fork issues)
         ctx = mp.get_context('spawn')
 
-        completed = 0
-        with ProcessPoolExecutor(
-            max_workers=n_workers,
-            mp_context=ctx,
-            initializer=_init_worker,
-            initargs=init_args
-        ) as executor:
-            futures = {
-                executor.submit(_process_regulator_worker, args): args
-                for args in regulator_args
-            }
+        # Write expression matrix to temp file for memory-mapped loading
+        mmap_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as tmp:
+                mmap_path = tmp.name
+                np.save(tmp, matrix.data)
 
-            for future in as_completed(futures):
-                args = futures[future]
-                completed += 1
-                try:
-                    result = future.result()
-                    if result:
-                        results.append(result)
-                    # Progress logging every 10 regulators or at milestones
-                    if completed % 10 == 0 or completed == len(modules):
-                        pct = 100 * completed / len(modules)
-                        logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
-                except Exception as e:
-                    n_failed += 1
-                    logger.error(f"Failed to get result for {args[0]}: {e}")
+            logger.info(
+                f"Wrote expression matrix to mmap file: {mmap_path} "
+                f"({matrix.data.nbytes / 1024 / 1024:.1f} MB)"
+            )
+
+            init_args = (
+                mmap_path,  # path to memory-mapped .npy file
+                list(matrix.feature_ids),  # list of strings
+                list(matrix.sample_ids),  # list of strings
+                matrix.sample_metadata,  # DataFrame - picklable (small)
+                matrix.quality_flags,  # numpy array (small)
+                stratify_by,
+                min_samples,
+                conditions,
+                min_correlation,
+                min_clique_size,
+                use_fast_maximum,
+                correlation_method
+            )
+
+            completed = 0
+            with ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=ctx,
+                initializer=_init_worker,
+                initargs=init_args
+            ) as executor:
+                futures = {
+                    executor.submit(_process_regulator_worker, args): args
+                    for args in regulator_args
+                }
+
+                for future in as_completed(futures):
+                    args = futures[future]
+                    completed += 1
+                    try:
+                        result = future.result()
+                        if result:
+                            results.append(result)
+                        if completed % 10 == 0 or completed == len(modules):
+                            pct = 100 * completed / len(modules)
+                            logger.info(f"Progress: {completed}/{len(modules)} regulators ({pct:.1f}%)")
+                    except Exception as e:
+                        n_failed += 1
+                        logger.error(f"Failed to get result for {args[0]}: {e}")
+        finally:
+            # Clean up temporary mmap file
+            if mmap_path and os.path.exists(mmap_path):
+                os.unlink(mmap_path)
+                logger.debug(f"Cleaned up mmap file: {mmap_path}")
 
     elif use_regulator_parallelism:
         # Thread-based parallelism for regulators (default)

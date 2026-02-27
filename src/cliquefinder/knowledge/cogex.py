@@ -83,6 +83,16 @@ except ImportError:
     INDRA_AVAILABLE = False
     norm_id = None  # Placeholder
 
+# Neo4j typed exceptions for defence-in-depth error classification (ARCH-4-NOTE)
+try:
+    from neo4j.exceptions import ServiceUnavailable, SessionExpired, TransientError
+    _NEO4J_EXCEPTIONS_AVAILABLE = True
+except ImportError:
+    _NEO4J_EXCEPTIONS_AVAILABLE = False
+    ServiceUnavailable = None  # type: ignore[assignment,misc]
+    SessionExpired = None  # type: ignore[assignment,misc]
+    TransientError = None  # type: ignore[assignment,misc]
+
 __all__ = [
     'GeneId',
     'INDRAEdge',
@@ -529,47 +539,74 @@ class CoGExClient:
         'connection', 'timeout', 'unavailable', 'refused', 'reset', 'broken',
     )
 
-    def _execute_query(self, query: str, **params):
+    def _execute_query(self, query: str, max_retries: int = 1, **params):
         """
         Execute a Cypher query with automatic reconnection on connection failure.
 
-        On the first attempt, uses the existing (possibly cached) client.  If
-        the error looks like an infrastructure / connection issue, the client is
-        discarded, a fresh connection is established, and the query is retried
-        exactly once.  Non-connection errors (e.g. bad Cypher syntax) are
-        re-raised immediately.
+        Defence-in-depth strategy (ARCH-4-NOTE):
+        1. If ``neo4j.exceptions`` typed classes are importable, catch
+           ``ServiceUnavailable``, ``SessionExpired``, and ``TransientError``
+           first — these are *definite* connection/transient failures.
+        2. For any other ``Exception``, fall back to string-keyword matching
+           against ``_CONNECTION_ERROR_KEYWORDS``.
+        3. Non-connection errors (syntax, constraint, etc.) are never retried.
 
         Args:
             query: Cypher query string.
+            max_retries: Number of retry attempts after a connection error
+                (default 1, meaning at most 2 total attempts).
             **params: Query parameters forwarded to ``client.query_tx``.
 
         Returns:
             Query result rows from ``Neo4jClient.query_tx``.
 
         Raises:
-            RuntimeError: If the query fails after a reconnect attempt.
+            RuntimeError: If the query fails after all retries, or on a
+                non-retryable error.
         """
-        try:
-            client = self._get_client()
-            return client.query_tx(query, **params)
-        except Exception as e:
-            error_str = str(e).lower()
-            is_connection_error = any(
-                word in error_str for word in self._CONNECTION_ERROR_KEYWORDS
-            )
+        last_error = None
 
-            if is_connection_error:
-                logger.warning(f"Connection lost, attempting reconnect: {e}")
-                self._client = None
-                try:
-                    client = self._get_client(force_reconnect=True)
-                    return client.query_tx(query, **params)
-                except Exception as e2:
+        for attempt in range(1 + max_retries):
+            try:
+                client = self._get_client()
+                return client.query_tx(query, **params)
+            except Exception as e:
+                last_error = e
+
+                # --- Classify the error ---
+                is_connection_error = False
+
+                # (a) Typed Neo4j exceptions — definite connection/transient
+                if _NEO4J_EXCEPTIONS_AVAILABLE:
+                    typed_classes = (ServiceUnavailable, SessionExpired, TransientError)
+                    if isinstance(e, typed_classes):
+                        is_connection_error = True
+
+                # (b) Fallback: string-keyword heuristic
+                if not is_connection_error:
+                    error_str = str(e).lower()
+                    is_connection_error = any(
+                        word in error_str
+                        for word in self._CONNECTION_ERROR_KEYWORDS
+                    )
+
+                if not is_connection_error:
+                    raise  # Non-retryable (syntax, constraint, etc.)
+
+                # Connection error — reset client and maybe retry
+                logger.warning(
+                    "Connection error on attempt %d/%d: %s",
+                    attempt + 1, 1 + max_retries, e,
+                )
+                self._client = None  # force reconnect on next attempt
+
+                if attempt >= max_retries:
                     raise RuntimeError(
-                        f"Query failed after reconnect attempt: {e2}"
-                    ) from e2
-            else:
-                raise  # Re-raise non-connection errors as-is
+                        f"Query failed after {1 + max_retries} attempts: {e}"
+                    ) from e
+
+        # Should never reach here, but satisfy type checkers
+        raise RuntimeError(f"Query failed: {last_error}")  # pragma: no cover
 
     def ping(self) -> bool:
         """
