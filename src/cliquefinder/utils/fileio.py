@@ -11,10 +11,16 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 
-def atomic_write_json(path: str | os.PathLike, data: Any, *, indent: int = 2) -> None:
+def atomic_write_json(
+    path: str | os.PathLike,
+    data: Any,
+    *,
+    indent: int = 2,
+    default: Callable | None = None,
+) -> None:
     """Write *data* as JSON atomically via temp-file + rename.
 
     The data is first serialized to a temporary file in the same
@@ -30,6 +36,10 @@ def atomic_write_json(path: str | os.PathLike, data: Any, *, indent: int = 2) ->
         JSON-serializable object.
     indent:
         JSON indentation (default 2).
+    default:
+        Custom serializer function passed to ``json.dump()``.  For
+        example, ``default=str`` converts non-serializable objects to
+        their string representation.
     """
     path = str(path)
     dir_path = os.path.dirname(path) or "."
@@ -39,7 +49,7 @@ def atomic_write_json(path: str | os.PathLike, data: Any, *, indent: int = 2) ->
             mode="w", dir=dir_path, suffix=".tmp", delete=False
         ) as tmp:
             tmp_path = tmp.name
-            json.dump(data, tmp, indent=indent)
+            json.dump(data, tmp, indent=indent, default=default)
         os.replace(tmp_path, path)
     except BaseException:
         # Clean up the temp file on any failure

@@ -1149,19 +1149,20 @@ def validate_ols_implementation(
     import statsmodels.api as sm
     from .differential import build_contrast_matrix
 
-    np.random.seed(random_state)
+    # SET-TEST-5: Use modern Generator API instead of legacy np.random.seed
+    rng = np.random.default_rng(random_state)
 
     # Generate synthetic data
     conditions = [f"C{i}" for i in range(n_conditions)]
-    sample_condition = np.random.choice(conditions, size=n_samples)
+    sample_condition = rng.choice(conditions, size=n_samples)
 
     # Generate feature data with some true effects
-    Y = np.random.randn(n_features, n_samples)
+    Y = rng.standard_normal((n_features, n_samples))
 
     # Add condition effects
     for i, cond in enumerate(conditions):
         mask = sample_condition == cond
-        Y[:, mask] += np.random.randn(n_features, 1) * 0.5
+        Y[:, mask] += rng.standard_normal((n_features, 1)) * 0.5
 
     # Define contrast
     contrast = (conditions[0], conditions[1])

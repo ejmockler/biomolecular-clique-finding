@@ -72,6 +72,8 @@ from pathlib import Path
 import os
 import json
 import logging
+import random
+import time
 
 # INDRA imports
 try:
@@ -605,6 +607,15 @@ class CoGExClient:
                         f"Query failed after {1 + max_retries} attempts: {e}"
                     ) from e
 
+                # KG-3: Exponential backoff with jitter before retry
+                # Avoids hammering a recovering server
+                delay = (2 ** attempt) + random.uniform(0, 1)
+                logger.info(
+                    "Backing off %.2f seconds before retry %d/%d",
+                    delay, attempt + 2, 1 + max_retries,
+                )
+                time.sleep(delay)
+
         # Should never reach here, but satisfy type checkers
         raise RuntimeError(f"Query failed: {last_error}")  # pragma: no cover
 
@@ -633,7 +644,8 @@ class CoGExClient:
         self,
         regulator: GeneId,
         stmt_types: Optional[List[str]] = None,
-        min_evidence: int = 2
+        min_evidence: int = 2,
+        max_results: int = 50_000,
     ) -> List[INDRAEdge]:
         """
         Query all downstream targets for any upstream regulator from INDRA.
@@ -649,6 +661,9 @@ class CoGExClient:
                 Default: All regulatory types
             min_evidence: Minimum evidence count threshold
                 Default: 2 for high-confidence relationships (≥2 independent sources)
+            max_results: Maximum number of result rows from the Cypher query.
+                Default: 50,000. Prevents unbounded memory usage for hub genes.
+                A warning is emitted if this limit is reached.
 
         Returns:
             List of INDRAEdge objects (INDRA-sourced relationships)
@@ -667,7 +682,8 @@ class CoGExClient:
         # INDRA CoGEx uses lowercase normalized CURIEs (e.g., "hgnc:11998")
         regulator_curie = norm_id(regulator[0], regulator[1])
 
-        # Construct Cypher query
+        # Construct Cypher query — KG-1: server-side LIMIT to prevent
+        # unbounded result sets for hub genes (e.g., TP53, MYC)
         query = """
             MATCH p=(reg:BioEntity)-[r:indra_rel]->(target:BioEntity)
             WHERE reg.id = $regulator_id
@@ -677,6 +693,7 @@ class CoGExClient:
                    target.id as target_id, target.name as target_name,
                    r.stmt_type as stmt_type, r.evidence_count as evidence_count,
                    r.stmt_hash as stmt_hash, r.source_counts as source_counts
+            LIMIT $max_results
         """
 
         try:
@@ -684,8 +701,17 @@ class CoGExClient:
                 query,
                 regulator_id=regulator_curie,
                 stmt_types=stmt_types,
-                min_evidence=min_evidence
+                min_evidence=min_evidence,
+                max_results=max_results,
             )
+
+            if len(results) >= max_results:
+                logger.warning(
+                    "get_downstream_targets hit max_results limit (%d) for "
+                    "regulator %s:%s. Results may be truncated. Consider "
+                    "increasing max_results.",
+                    max_results, regulator[0], regulator[1],
+                )
 
             # Parse results into INDRAEdge objects
             edges = []
@@ -833,6 +859,8 @@ class CoGExClient:
 
         # Chunked Cypher query: batch large CURIE lists to avoid Neo4j
         # query size limits and unbounded memory usage (ARCH-14).
+        # KG-2: Server-side LIMIT per chunk prevents the Neo4j server from
+        # materializing all matches before Python truncation.
         query = """
             MATCH (reg:BioEntity)-[r:indra_rel]->(target:BioEntity)
             WHERE target.id IN $target_ids
@@ -842,6 +870,7 @@ class CoGExClient:
                    target.id as target_id, target.name as target_name,
                    r.stmt_type as stmt_type, r.evidence_count as evidence_count,
                    r.stmt_hash as stmt_hash, r.source_counts as source_counts
+            LIMIT $chunk_limit
         """
 
         try:
@@ -849,16 +878,19 @@ class CoGExClient:
             # Uses _execute_query for auto-reconnection (ARCH-4 + ARCH-14)
             all_results = []
             chunk_size = self.CURIE_CHUNK_SIZE
+            remaining = max_results
             for i in range(0, len(target_curies), chunk_size):
                 chunk = target_curies[i:i + chunk_size]
                 chunk_results = self._execute_query(
                     query,
                     target_ids=chunk,
                     stmt_types=stmt_types,
-                    min_evidence=min_evidence
+                    min_evidence=min_evidence,
+                    chunk_limit=remaining,
                 )
                 all_results.extend(chunk_results)
-                if len(all_results) >= max_results:
+                remaining = max_results - len(all_results)
+                if remaining <= 0:
                     logger.warning(
                         "discover_regulators hit max_results limit (%d). "
                         "Results may be truncated. Consider increasing "
@@ -949,6 +981,16 @@ class CoGExClient:
                 self._client.close()
             self._client = None
             logger.info("Closed INDRA CoGEx connection")
+
+    # KG-4: Context manager protocol for resource cleanup
+    def __enter__(self):
+        """Support ``with CoGExClient(...) as client:`` usage."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Close connection on context manager exit."""
+        self.close()
+        return False
 
 
 class INDRAModuleExtractor:

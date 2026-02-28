@@ -1233,8 +1233,8 @@ def run_permutation_clique_test(
     if isinstance(summarization_method, str):
         summarization_method = SummarizationMethod(summarization_method)
 
-    if random_state is not None:
-        np.random.seed(random_state)
+    # SET-TEST-5: Use modern Generator API instead of legacy np.random.seed
+    rng = np.random.default_rng(random_state)
 
     n_features, n_samples = data.shape
 
@@ -1386,7 +1386,7 @@ def run_permutation_clique_test(
 
             # Sample random genes from pool (without replacement)
             if size <= len(regulated_genes_list):
-                random_genes = list(np.random.choice(
+                random_genes = list(rng.choice(
                     regulated_genes_list, size=size, replace=False
                 ))
             else:
@@ -1529,8 +1529,8 @@ def run_matched_single_gene_comparison(
         >>> print(f"Median |t| cliques: {clique_df['abs_tvalue'].median():.2f}")
         >>> print(f"Median |t| genes: {gene_df['abs_tvalue'].median():.2f}")
     """
-    if random_state is not None:
-        np.random.seed(random_state)
+    # SET-TEST-5: Use modern Generator API instead of legacy np.random.seed
+    rng = np.random.default_rng(random_state)
 
     # Build feature index
     feature_to_idx = {f: i for i, f in enumerate(feature_ids)}
@@ -1625,7 +1625,7 @@ def run_matched_single_gene_comparison(
 
     # Sample same number of genes as cliques
     n_to_sample = min(n_cliques_tested, len(regulated_list))
-    sampled_genes = np.random.choice(regulated_list, size=n_to_sample, replace=False)
+    sampled_genes = rng.choice(regulated_list, size=n_to_sample, replace=False)
 
     for gene in sampled_genes:
         if gene not in feature_to_idx:

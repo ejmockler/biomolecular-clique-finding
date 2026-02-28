@@ -227,7 +227,7 @@ class TestARCH6Checkpoint:
             assert checkpoint_path.exists()
 
             # Load and verify
-            loaded = _load_checkpoint(output_dir)
+            loaded, _protein_df = _load_checkpoint(output_dir)
             assert "covariate_adjusted" in loaded.phases
             assert "label_permutation" in loaded.phases
             assert loaded.phases["covariate_adjusted"]["empirical_pvalue"] == 0.001
@@ -237,7 +237,7 @@ class TestARCH6Checkpoint:
         from cliquefinder.cli.validate_baselines import _load_checkpoint
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            loaded = _load_checkpoint(Path(tmpdir))
+            loaded, _protein_df = _load_checkpoint(Path(tmpdir))
             assert len(loaded.phases) == 0
 
     def test_load_corrupt_checkpoint_returns_fresh(self):
@@ -247,7 +247,7 @@ class TestARCH6Checkpoint:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
             (output_dir / "validation_checkpoint.json").write_text("not valid json{{{")
-            loaded = _load_checkpoint(output_dir)
+            loaded, _protein_df = _load_checkpoint(output_dir)
             assert len(loaded.phases) == 0
 
     def test_completed_phases_skipped_on_resume(self):
@@ -265,7 +265,7 @@ class TestARCH6Checkpoint:
             output_dir = Path(tmpdir)
             _save_checkpoint(report, output_dir)
 
-            loaded = _load_checkpoint(output_dir)
+            loaded, _protein_df = _load_checkpoint(output_dir)
 
             # The orchestrator checks: if "covariate_adjusted" in report.phases
             # We verify this condition holds

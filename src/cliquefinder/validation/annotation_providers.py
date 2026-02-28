@@ -188,8 +188,8 @@ class GOAnnotationProvider(AnnotationProvider):
     Gene Ontology annotation provider.
 
     Downloads and parses GO annotations from:
-    - http://current.geneontology.org/annotations/goa_human.gaf.gz
-    - GO term definitions from http://purl.obolibrary.org/obo/go.obo
+    - https://current.geneontology.org/annotations/goa_human.gaf.gz
+    - GO term definitions from https://purl.obolibrary.org/obo/go.obo
 
     Supports three GO namespaces:
     - biological_process: What biological processes the gene participates in
@@ -262,7 +262,7 @@ class GOAnnotationProvider(AnnotationProvider):
         if cached_path.exists():
             return cached_path
 
-        url = 'http://current.geneontology.org/annotations/goa_human.gaf.gz'
+        url = 'https://current.geneontology.org/annotations/goa_human.gaf.gz'
         print(f"Downloading GO annotations from {url}...")
         urllib.request.urlretrieve(url, cached_path)
         print(f"✓ Downloaded to {cached_path}")
@@ -274,7 +274,7 @@ class GOAnnotationProvider(AnnotationProvider):
         if cached_path.exists():
             return cached_path
 
-        url = 'http://purl.obolibrary.org/obo/go.obo'
+        url = 'https://purl.obolibrary.org/obo/go.obo'
         print(f"Downloading GO term definitions from {url}...")
         urllib.request.urlretrieve(url, cached_path)
         print(f"✓ Downloaded to {cached_path}")

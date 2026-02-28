@@ -193,11 +193,14 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=run_validate_baselines)
 
 
-def _load_checkpoint(output_dir: Path) -> "ValidationReport":
+def _load_checkpoint(output_dir: Path):
     """Load existing checkpoint if resuming a previous run.
 
-    Returns a ValidationReport populated with any previously completed
-    phase results, allowing the orchestrator to skip those phases.
+    Returns a tuple of (ValidationReport, protein_df_or_None) populated
+    with any previously completed phase results, allowing the orchestrator
+    to skip those phases.  When Phase 1 was previously completed, the
+    serialised ``protein_df`` is restored so downstream phases (e.g.
+    Phase 5 negative controls) can use it.
     """
     from cliquefinder.stats.validation_report import ValidationReport
 
@@ -213,17 +216,38 @@ def _load_checkpoint(output_dir: Path) -> "ValidationReport":
                 f"Loaded checkpoint with {n_phases} completed phase(s) "
                 f"from {checkpoint_path}"
             )
-            return report
+            # VAL-3: Restore protein_df from checkpoint if available
+            protein_df = None
+            protein_df_dict = data.get("protein_df_dict")
+            if protein_df_dict:
+                protein_df = pd.DataFrame(protein_df_dict)
+                logger.info(
+                    f"Restored protein_df from checkpoint "
+                    f"({protein_df.shape[0]} rows x {protein_df.shape[1]} cols)"
+                )
+            return report, protein_df
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Corrupt checkpoint file, starting fresh: {e}")
-    return ValidationReport()
+    return ValidationReport(), None
 
 
-def _save_checkpoint(report: "ValidationReport", output_dir: Path) -> None:
-    """Persist current report state so the run can resume later."""
+def _save_checkpoint(
+    report: "ValidationReport",
+    output_dir: Path,
+    protein_df: "pd.DataFrame | None" = None,
+) -> None:
+    """Persist current report state so the run can resume later.
+
+    When *protein_df* is not None it is serialised into the checkpoint
+    JSON under the ``protein_df_dict`` key so that a resumed run can
+    supply it to downstream phases (VAL-3).
+    """
     checkpoint_path = output_dir / "validation_checkpoint.json"
-    with open(checkpoint_path, "w") as f:
-        json.dump(report.to_dict(), f, indent=2)
+    data = report.to_dict()
+    # VAL-3: Persist protein_df so Phase 5 can use it on resume
+    if protein_df is not None:
+        data["protein_df_dict"] = protein_df.to_dict()
+    atomic_write_json(checkpoint_path, data)
     logger.debug(f"Checkpoint saved to {checkpoint_path}")
 
 
@@ -240,6 +264,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
 
     # --- ARCH-6: Resume from checkpoint if available ---
     args.output.mkdir(parents=True, exist_ok=True)
+    checkpoint_protein_df = None  # VAL-3: may be restored from checkpoint
     if getattr(args, "force_restart", False):
         report = ValidationReport()
         # Remove stale checkpoint so subsequent phases don't load it
@@ -248,7 +273,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             checkpoint_path.unlink()
             print("  Force restart: removed existing checkpoint")
     else:
-        report = _load_checkpoint(args.output)
+        report, checkpoint_protein_df = _load_checkpoint(args.output)
         if report.phases:
             print(f"  Resuming from checkpoint: {list(report.phases.keys())} already complete")
 
@@ -273,14 +298,17 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     if _base_seed is not None:
         from numpy.random import SeedSequence
         _ss = SeedSequence(_base_seed)
-        (_ss_boot, _ss_p3s, _ss_p3f, _ss_p4, _ss_p5) = _ss.spawn(5)
+        # VAL-6: Phase 2 appended at END to preserve existing seed streams
+        (_ss_boot, _ss_p3s, _ss_p3f, _ss_p4, _ss_p5, _ss_p2) = _ss.spawn(6)
         _seed_bootstrap = int(_ss_boot.generate_state(1)[0])
+        _seed_phase2 = int(_ss_p2.generate_state(1)[0])
         _seed_phase3_strat = int(_ss_p3s.generate_state(1)[0])
         _seed_phase3_free = int(_ss_p3f.generate_state(1)[0])
         _seed_phase4 = int(_ss_p4.generate_state(1)[0])
         _seed_phase5 = int(_ss_p5.generate_state(1)[0])
     else:
         _seed_bootstrap = None
+        _seed_phase2 = None
         _seed_phase3_strat = None
         _seed_phase3_free = None
         _seed_phase4 = None
@@ -309,6 +337,9 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
 
     # Align
     common_samples = [s for s in matrix.sample_ids if s in metadata.index]
+    # CLI-6: Guard against zero common samples
+    if len(common_samples) == 0:
+        raise ValueError("No common samples between protein data and sample metadata")
     metadata = metadata.loc[common_samples]
     sample_indices = [list(matrix.sample_ids).index(s) for s in common_samples]
     data = matrix.data[:, sample_indices]
@@ -416,6 +447,10 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         print(f"\n{'=' * 70}")
         print("PHASE 1: COVARIATE-ADJUSTED ENRICHMENT  [SKIPPED — checkpoint]")
         print("=" * 70)
+        # VAL-3: Restore protein_df from checkpoint so Phase 5 can use it
+        if checkpoint_protein_df is not None:
+            protein_df = checkpoint_protein_df
+            print(f"  Restored protein_df from checkpoint ({protein_df.shape[0]} rows)")
     else:
         print(f"\n{'=' * 70}")
         print("PHASE 1: COVARIATE-ADJUSTED ENRICHMENT")
@@ -444,7 +479,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             logger.warning("Phase 1 (covariate_adjusted) failed: %s", e)
             report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
             # protein_df remains None from initialization above; no reassignment needed
-        _save_checkpoint(report, args.output)
+        _save_checkpoint(report, args.output, protein_df=protein_df)
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
@@ -498,6 +533,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         print(f"    Error: {e}")
 
                 if len(enrichment_by_contrast) > 1:
+                    # VAL-6: Use SeedSequence-derived seed for Phase 2
                     specificity = compute_specificity(
                         enrichment_by_contrast,
                         primary_contrast=primary_contrast_name,
@@ -510,7 +546,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         target_gene_ids=target_gene_ids,
                         covariates_df=covariates_df,
                         n_interaction_perms=getattr(args, "interaction_n_perms", 200),
-                        seed=args.seed,
+                        seed=_seed_phase2,
                     )
                     report.add_phase("specificity", specificity.to_dict())
                     print(f"\n  Specificity: {specificity.specificity_label}")

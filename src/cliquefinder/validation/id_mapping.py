@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Dict, List, Set, Optional
 from pathlib import Path
 from abc import ABC, abstractmethod
+import hashlib
 import json
 import logging
 import threading
@@ -194,7 +195,7 @@ class MyGeneInfoMapper(IDMapper):
             raise ValueError(f"Unsupported ID type: {source_type} or {target_type}")
 
         # Check cache
-        cache_key = f"{source_type}_to_{target_type}_{hash(tuple(sorted(source_ids)))}.json"
+        cache_key = f"{source_type}_to_{target_type}_{hashlib.sha256(','.join(sorted(source_ids)).encode()).hexdigest()[:16]}.json"
         cache_path = self.cache_dir / cache_key
 
         if cache_path.exists():

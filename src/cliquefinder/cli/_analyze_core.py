@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from cliquefinder import BioMatrix
+from cliquefinder.utils.fileio import atomic_write_json
 from cliquefinder.validation.id_mapping import MyGeneInfoMapper
 from cliquefinder.knowledge.cogex import (
     CoGExClient,
@@ -279,6 +280,11 @@ def build_gene_symbol_mapping(
         Dict mapping Input ID → gene symbol
     """
     logger.info(f"Mapping {len(ensembl_ids)} {source_type} IDs to gene symbols...")
+
+    # CLI-7: Guard against empty ensembl_ids (prevents ZeroDivisionError)
+    if not ensembl_ids:
+        logger.warning("No Ensembl IDs found for mapping")
+        return {}
 
     if source_type == 'symbol':
         # Identity mapping for symbols
@@ -1034,8 +1040,7 @@ def save_results(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save parameters JSON (lightweight, for reproducibility)
-    with open(output_dir / 'analysis_parameters.json', 'w') as f:
-        json.dump(parameters, f, indent=2, default=str)
+    atomic_write_json(output_dir / 'analysis_parameters.json', parameters, default=str)
 
     # Accumulate data for flat files
     summary_rows = []
@@ -1314,8 +1319,7 @@ def save_results(
             }
         }
 
-        with open(output_dir / 'multiple_testing_report.json', 'w') as f:
-            json.dump(multiple_testing_report, f, indent=2)
+        atomic_write_json(output_dir / 'multiple_testing_report.json', multiple_testing_report)
         logger.info(f"  multiple_testing_report.json: M_eff aggregated statistics")
 
     # Print quick stats (using filtered summary_df)

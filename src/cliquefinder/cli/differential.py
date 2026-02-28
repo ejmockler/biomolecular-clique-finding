@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from cliquefinder.cli._validators import _positive_int
+from cliquefinder.utils.fileio import atomic_write_json
 from cliquefinder.cohort import resolve_cohort_from_args
 
 
@@ -839,8 +840,7 @@ def run_differential(args: argparse.Namespace) -> int:
 
             # Save enrichment results
             enrichment_output = args.output / "enrichment_results.json"
-            with open(enrichment_output, "w") as f:
-                json.dump(enrichment.to_dict(), f, indent=2)
+            atomic_write_json(enrichment_output, enrichment.to_dict())
             print(f"Enrichment results: {enrichment_output}")
 
             # Label permutation null (if requested)
@@ -870,8 +870,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 )
 
                 perm_output = args.output / "label_permutation_null.json"
-                with open(perm_output, "w") as f:
-                    json.dump(perm_result.to_dict(), f, indent=2)
+                atomic_write_json(perm_output, perm_result.to_dict())
                 print(f"Label permutation results: {perm_output}")
 
             # Create result-like object for downstream compatibility
@@ -947,8 +946,7 @@ def run_differential(args: argparse.Namespace) -> int:
             params["permutation_seed"] = args.permutation_seed
 
         params_output = args.output / "analysis_parameters.json"
-        with open(params_output, "w") as f:
-            json.dump(params, f, indent=2)
+        atomic_write_json(params_output, params)
         print(f"Parameters: {params_output}")
 
         # Print summary
@@ -1111,8 +1109,7 @@ def run_differential(args: argparse.Namespace) -> int:
                 )
 
                 neg_output = args.output / "negative_control_sets.json"
-                with open(neg_output, "w") as f:
-                    json.dump(neg_result.to_dict(), f, indent=2)
+                atomic_write_json(neg_output, neg_result.to_dict())
                 print(f"Negative control results: {neg_output}")
 
         # Save parameters
@@ -1141,8 +1138,7 @@ def run_differential(args: argparse.Namespace) -> int:
             params["condition_col"] = condition_col
             params["contrast"] = contrast_tuple
         params_output = args.output / "analysis_parameters.json"
-        with open(params_output, "w") as f:
-            json.dump(params, f, indent=2)
+        atomic_write_json(params_output, params)
         print(f"Parameters: {params_output}")
 
         # Print summary
@@ -1324,8 +1320,7 @@ def run_differential(args: argparse.Namespace) -> int:
         if args.genetic_contrast:
             params["genetic_contrast"] = args.genetic_contrast
         params_output = args.output / "analysis_parameters.json"
-        with open(params_output, "w") as f:
-            json.dump(params, f, indent=2)
+        atomic_write_json(params_output, params)
         print(f"Parameters: {params_output}")
 
         # Print summary
@@ -1414,8 +1409,7 @@ def run_differential(args: argparse.Namespace) -> int:
             "n_network_targets": len(network_targets) if network_targets else 0,
         }
         params_output = args.output / "analysis_parameters.json"
-        with open(params_output, "w") as f:
-            json.dump(params, f, indent=2)
+        atomic_write_json(params_output, params)
         print(f"Parameters: {params_output}")
 
         # Print summary

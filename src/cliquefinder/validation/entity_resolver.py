@@ -20,6 +20,7 @@ Examples:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -130,7 +131,7 @@ class GeneEntityResolver:
             Dict mapping ensembl_id -> ResolvedEntity
         """
         # Check disk cache first
-        cache_key = f"ensembl_resolution_{hash(tuple(sorted(ensembl_ids)))}.json"
+        cache_key = f"ensembl_resolution_{hashlib.sha256(','.join(sorted(ensembl_ids)).encode()).hexdigest()[:16]}.json"
         cache_path = self.cache_dir / cache_key
 
         if cache_path.exists():
