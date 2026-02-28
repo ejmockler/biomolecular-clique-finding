@@ -340,8 +340,9 @@ def impute_aft_model(
             # Threshold is far below the distribution - use threshold directly
             imputed_values = np.full(n_missing_feature, censoring_threshold)
         else:
-            # Draw uniform on (0, phi_threshold) and invert
-            u = rng.uniform(0, phi_threshold, size=n_missing_feature)
+            # Draw uniform on (tiny, phi_threshold) and invert
+            # STAT-CORE-11: Lower bound > 0 prevents norm.ppf(0) = -inf
+            u = rng.uniform(np.finfo(np.float64).tiny, phi_threshold, size=n_missing_feature)
             imputed_values = stats.norm.ppf(u, loc=mu, scale=sigma)
 
             # Ensure values are below threshold (numerical safety)

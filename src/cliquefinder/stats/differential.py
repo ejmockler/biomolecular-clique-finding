@@ -399,12 +399,10 @@ def satterthwaite_df(
             containment_df = 1.0
 
         # ── Contrast variance V_c = c' Cov(beta) c ───────────────────
-        if use_mlx and MLX_AVAILABLE and cov_beta.size > 16:
-            c_mx = mx.array(contrast_vector, dtype=mx.float32)
-            cov_mx = mx.array(cov_beta, dtype=mx.float32)
-            V_c = float(mx.matmul(mx.matmul(c_mx, cov_mx), c_mx))
-        else:
-            V_c = float(contrast_vector @ cov_beta @ contrast_vector)
+        # GPU-4 fix: Always use float64 NumPy. These covariance matrices are
+        # tiny (~10x10) where GPU provides zero benefit and float32 loses
+        # precision in the quadratic form cancellation.
+        V_c = float(contrast_vector @ cov_beta @ contrast_vector)
 
         if V_c <= 0 or not np.isfinite(V_c):
             # Cannot compute Satterthwaite refinement; return containment
@@ -817,8 +815,10 @@ def fit_linear_model(
 
                 # For mixed models, compute naive between-within approximation as fallback
                 # This is used if Satterthwaite df computation fails
+                # STAT-CORE-15: residual df = max(n_groups - n_fixed, n_obs - n_fixed)
+                # The extra -1 was incorrect (over-counted the random effect variance parameter)
                 n_groups = len(df['subject'].unique())
-                residual_df = max(n_groups - n_fixed, len(df) - n_fixed - 1)
+                residual_df = max(n_groups - n_fixed, len(df) - n_fixed)
 
                 # NOTE: The actual Satterthwaite df will be computed per-contrast in test_contrasts()
                 # We pass n_groups so that Satterthwaite can be computed there
@@ -1598,9 +1598,8 @@ def run_network_enrichment_test(
 
     # Binomial test for directional bias (two-sided test vs 50%)
     # Tests whether the fraction of negative t-stats differs from 50%
-    direction_pvalue = float(scipy_stats.binom_test(
-        n_negative, n_targets, p=0.5, alternative='two-sided'
-    )) if hasattr(scipy_stats, 'binom_test') else float(
+    # STAT-CORE-5: Use binomtest (binom_test was removed in SciPy 1.12)
+    direction_pvalue = float(
         scipy_stats.binomtest(n_negative, n_targets, p=0.5, alternative='two-sided').pvalue
     )
 

@@ -195,8 +195,15 @@ def summarize_to_protein(
     elif method == SummarizationMethod.LOGSUM:
         # Sum in original space, return in log space
         # log(sum(exp(x))) = logsumexp(x)
+        # STAT-CORE-7: Mask NaN as -inf before logsumexp (exp(-inf)=0, contributes nothing)
         from scipy.special import logsumexp
-        return logsumexp(feature_data, axis=0)
+        masked = np.where(np.isnan(feature_data), -np.inf, feature_data)
+        result = logsumexp(masked, axis=0)
+        # Restore NaN for columns where all values were NaN
+        all_nan_cols = np.all(np.isnan(feature_data), axis=0)
+        result = np.asarray(result, dtype=np.float64)
+        result[all_nan_cols] = np.nan
+        return result
 
     elif method == SummarizationMethod.PCA:
         # First principal component

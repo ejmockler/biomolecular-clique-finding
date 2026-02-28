@@ -616,6 +616,10 @@ def _batched_ols_gpu(
 ) -> NDArray[np.float64]:
     """
     GPU implementation using MLX.
+
+    Uses algebraic identity RSS = Y'Y - beta'X'Y to avoid catastrophic
+    cancellation in float32 residual subtraction (GPU-3 fix). Y'Y and
+    the final RSS combination are computed on CPU in float64.
     """
     # Convert to MLX arrays
     Y_mx = mx.array(Y, dtype=mx.float32)
@@ -623,32 +627,39 @@ def _batched_ols_gpu(
     XtX_inv_mx = mx.array(matrices.XtX_inv, dtype=mx.float32)
     c_mx = mx.array(matrices.c, dtype=mx.float32)
 
-    # Compute coefficients: β = Y @ X @ (X'X)^-1'
+    # Compute coefficients: beta = Y @ X @ (X'X)^-1'
     # Shape: (n_batch, n_params)
     beta = mx.matmul(mx.matmul(Y_mx, X_mx), XtX_inv_mx.T)
 
-    # Predictions: ŷ = β @ X'
-    # Shape: (n_batch, n_samples)
-    Y_pred = mx.matmul(beta, X_mx.T)
-
-    # Residuals: e = Y - ŷ
-    residuals = Y_mx - Y_pred
-
-    # Residual sum of squares: RSS = sum(e², axis=1)
-    # Shape: (n_batch,)
-    rss = mx.sum(residuals ** 2, axis=1)
-
-    # Residual variance: σ² = RSS / df_residual (GPU)
-    sigma2 = rss / matrices.df_residual
-
-    # Contrast estimate: est = β @ c (GPU)
+    # Contrast estimate: est = beta @ c (GPU)
     # Shape: (n_batch,)
     estimate = mx.matmul(beta, c_mx)
 
-    # Evaluate MLX arrays and convert to CPU for EB moderation (type-safe float64)
-    mx.eval(sigma2, estimate)  # Force evaluation before conversion
-    sigma2_np = np.array(sigma2, dtype=np.float64)
+    # Evaluate MLX arrays and convert to CPU for float64 RSS computation
+    mx.eval(beta, estimate)
+    beta_np = np.array(beta, dtype=np.float64)
     estimate_np = np.array(estimate, dtype=np.float64)
+
+    # GPU-3 fix: Compute RSS via algebraic identity to avoid catastrophic
+    # cancellation. When R^2 ~ 1, Y - Y_pred loses all significant digits
+    # in float32. Instead use: RSS = Y'Y - beta' X'Y (all float64 on CPU).
+    YtY = np.sum(Y ** 2, axis=1)  # float64, shape (n_batch,)
+    XtY = Y @ matrices.X  # float64 (Y is float64, matrices.X is float64)
+    rss = YtY - np.sum(beta_np * XtY, axis=1)
+    # Guard against floating-point negativity (can happen with near-perfect fit)
+    n_negative = np.sum(rss < 0)
+    if n_negative > 0:
+        warnings.warn(
+            f"GPU-3: {n_negative} negative RSS values encountered "
+            f"(min={np.min(rss):.2e}), flooring to 0.0. "
+            f"This indicates near-perfect model fit.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    rss = np.maximum(rss, 0.0)
+
+    # Residual variance: sigma2 = RSS / df_residual (CPU, float64)
+    sigma2_np = rss / matrices.df_residual
 
     # Apply Empirical Bayes variance shrinkage on CPU (all float64, no type mixing)
     if matrices.eb_d0 is not None and matrices.eb_s0_sq is not None:
@@ -804,13 +815,16 @@ def batched_median_polish_gpu(
         return np.empty((0, n_samples), dtype=np.float64)
 
     # Initialize accumulators
+    # GPU-5 fix: Accumulate row/col effects on CPU in float64 to avoid
+    # rounding error buildup over 10 iterations. GPU is kept for the
+    # expensive median computation step only.
     if use_mlx:
-        row_effects = mx.zeros((batch_size, n_proteins), dtype=mx.float32)
-        col_effects = mx.zeros((batch_size, n_samples), dtype=mx.float32)
+        row_effects_np = np.zeros((batch_size, n_proteins), dtype=np.float64)
+        col_effects_np = np.zeros((batch_size, n_samples), dtype=np.float64)
         residuals = mx.array(data_arr, dtype=mx.float32)  # Work on copy
     else:
-        row_effects = np.zeros((batch_size, n_proteins), dtype=np.float64)
-        col_effects = np.zeros((batch_size, n_samples), dtype=np.float64)
+        row_effects_np = np.zeros((batch_size, n_proteins), dtype=np.float64)
+        col_effects_np = np.zeros((batch_size, n_samples), dtype=np.float64)
         residuals = data_arr.copy()
 
     # Iterative median polish
@@ -824,25 +838,31 @@ def batched_median_polish_gpu(
             row_medians = mx.median(residuals, axis=2)  # (batch, n_proteins)
             # Replace any NaN with 0 for numerical stability
             row_medians = mx.where(mx.isnan(row_medians), mx.zeros_like(row_medians), row_medians)
-            residuals = residuals - row_medians[:, :, None]
-            row_effects = row_effects + row_medians
+            residuals = residuals - row_medians[:, :, None]  # Still float32 on GPU
+            # Accumulate in float64 on CPU
+            mx.eval(row_medians)
+            row_med_np = np.array(row_medians, dtype=np.float64)
+            row_effects_np += row_med_np
         else:
             row_medians = np.nanmedian(residuals, axis=2)  # (batch, n_proteins)
             row_medians = np.nan_to_num(row_medians, nan=0.0)
             residuals = residuals - row_medians[:, :, np.newaxis]
-            row_effects = row_effects + row_medians
+            row_effects_np += row_medians
 
         # Column sweep: subtract column medians
         if use_mlx:
             col_medians = mx.median(residuals, axis=1)  # (batch, n_samples)
             col_medians = mx.where(mx.isnan(col_medians), mx.zeros_like(col_medians), col_medians)
-            residuals = residuals - col_medians[:, None, :]
-            col_effects = col_effects + col_medians
+            residuals = residuals - col_medians[:, None, :]  # Still float32 on GPU
+            # Accumulate in float64 on CPU
+            mx.eval(col_medians)
+            col_med_np = np.array(col_medians, dtype=np.float64)
+            col_effects_np += col_med_np
         else:
             col_medians = np.nanmedian(residuals, axis=1)  # (batch, n_samples)
             col_medians = np.nan_to_num(col_medians, nan=0.0)
             residuals = residuals - col_medians[:, np.newaxis, :]
-            col_effects = col_effects + col_medians
+            col_effects_np += col_medians
 
         # Check convergence: max adjustment across all batches
         if use_mlx:
@@ -858,25 +878,24 @@ def batched_median_polish_gpu(
             converged = True
             break
 
-    # Extract overall effect from row effects
+    # Extract overall effect from row effects (all in float64 now)
     # We take the median of row effects for each batch element
     # This matches the sequential algorithm in summarization.py
     if use_mlx:
-        overall = mx.median(row_effects, axis=1)  # (batch,)
-        overall = mx.where(mx.isnan(overall), mx.zeros_like(overall), overall)
-        # Adjust row_effects by subtracting overall (for consistency with sequential)
-        row_effects = row_effects - overall[:, None]
-        # Combine overall + col_effects for final abundances
-        sample_abundances = overall[:, None] + col_effects  # (batch, n_samples)
-        # Convert back to NumPy for compatibility
-        return np.array(sample_abundances, dtype=np.float64)
-    else:
-        overall = np.nanmedian(row_effects, axis=1)  # (batch,)
+        overall = np.nanmedian(row_effects_np, axis=1)  # (batch,) float64
         overall = np.nan_to_num(overall, nan=0.0)
         # Adjust row_effects by subtracting overall (for consistency with sequential)
-        row_effects = row_effects - overall[:, np.newaxis]
+        row_effects_np = row_effects_np - overall[:, np.newaxis]
+        # Combine overall + col_effects for final abundances (all float64)
+        sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
+        return sample_abundances
+    else:
+        overall = np.nanmedian(row_effects_np, axis=1)  # (batch,)
+        overall = np.nan_to_num(overall, nan=0.0)
+        # Adjust row_effects by subtracting overall (for consistency with sequential)
+        row_effects_np = row_effects_np - overall[:, np.newaxis]
         # Combine overall + col_effects for final abundances
-        sample_abundances = overall[:, np.newaxis] + col_effects  # (batch, n_samples)
+        sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
         return sample_abundances
 
 
@@ -1331,10 +1350,16 @@ def run_permutation_test_gpu(
     import time
     from .clique_analysis import map_feature_ids_to_symbols
 
+    # GPU-7 fix: Gracefully fall back to CPU when MLX is unavailable.
+    # All internal functions (batched_ols_contrast_test, batched_median_polish_gpu)
+    # already have CPU paths, so the function works correctly without MLX.
+    use_gpu = MLX_AVAILABLE
     if not MLX_AVAILABLE:
-        raise ImportError(
-            "MLX not available. Install with: pip install mlx\n"
-            "Or use the CPU parallel implementation instead."
+        warnings.warn(
+            "MLX not available, falling back to CPU for permutation test. "
+            "Install MLX for GPU acceleration: pip install mlx",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     overall_start = time.time()
@@ -1468,7 +1493,7 @@ def run_permutation_test_gpu(
             protein_batch[i] = data[indices, :]
 
         # Batched median polish (GPU)
-        Y_batch = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=True)
+        Y_batch = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
 
         # Store results
         for i, clique_id in enumerate(clique_ids_batch):
@@ -1515,7 +1540,7 @@ def run_permutation_test_gpu(
         matrices.eb_df_total = float(matrices.df_residual)
 
     # Run batched OLS (with or without Empirical Bayes moderation)
-    t_obs = batched_ols_contrast_test(Y_observed, matrices, use_gpu=True)
+    t_obs = batched_ols_contrast_test(Y_observed, matrices, use_gpu=use_gpu)
 
     # Compute p-values from t-distribution with appropriate df (STAT-CORE-6)
     # Always use t-distribution regardless of d0 or eb_moderation.
@@ -1586,10 +1611,10 @@ def run_permutation_test_gpu(
                     batch_idx += 1
 
             # BATCHED MEDIAN POLISH (GPU) - single call for entire batch
-            Y_chunk = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=True)
+            Y_chunk = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
 
             # BATCHED OLS (GPU)
-            t_chunk = batched_ols_contrast_test(Y_chunk, matrices, use_gpu=True)
+            t_chunk = batched_ols_contrast_test(Y_chunk, matrices, use_gpu=use_gpu)
 
             # Compute log2FC from beta coefficients
             beta_chunk = Y_chunk @ matrices.X @ matrices.XtX_inv.T
