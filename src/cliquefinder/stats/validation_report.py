@@ -290,6 +290,15 @@ class ValidationReport:
                 "permutation null is not — effect may not be robust to "
                 "label reassignment."
             )
+        elif gate_adjusted and not gate_permutation and not perm:
+            # VAL-1: Phase 1 passes but Phase 3 was never run (not failed,
+            # just absent).  Cannot validate without the permutation null.
+            self.verdict = "inconclusive"
+            self.summary = (
+                "Covariate-adjusted enrichment is significant but label "
+                "permutation phase was not run — cannot confirm robustness "
+                "to label reassignment."
+            )
         elif not gate_adjusted and gate_permutation:
             self.verdict = "inconclusive"
             self.summary = (

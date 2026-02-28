@@ -322,10 +322,10 @@ def impute_aft_model(
             # Not enough data - use global parameters
             all_observed = data[~missing_mask]
             mu = np.nanmean(all_observed) if len(all_observed) > 0 else censoring_threshold
-            sigma = np.nanstd(all_observed) if len(all_observed) > 1 else 1.0
+            sigma = np.nanstd(all_observed, ddof=1) if len(all_observed) > 1 else 1.0
         else:
             mu = np.mean(observed)
-            sigma = np.std(observed)
+            sigma = np.std(observed, ddof=1) if len(observed) > 1 else np.nanstd(data[~missing_mask], ddof=1)
             if sigma < 1e-10:
                 sigma = 1.0  # Prevent division by zero
 
@@ -396,7 +396,7 @@ def impute_qrilc(
     # Global parameters as fallback
     all_observed = data[~missing_mask]
     global_mu = np.mean(all_observed) if len(all_observed) > 0 else 0.0
-    global_sigma = np.std(all_observed) if len(all_observed) > 1 else 1.0
+    global_sigma = np.std(all_observed, ddof=1) if len(all_observed) > 1 else 1.0
 
     # Per-sample imputation (captures sample-level technical variation)
     for j in range(n_samples):
@@ -523,6 +523,15 @@ def impute_missing_values(
     """
     if isinstance(method, str):
         method = ImputationMethod(method)
+
+    # Guard against all-NaN input: return unchanged data with zero imputations
+    if np.all(np.isnan(data)):
+        return ImputationResult(
+            data=data.astype(np.float64).copy(),
+            method=method.value if isinstance(method, ImputationMethod) else str(method),
+            n_imputed=0,
+            imputation_mask=np.isnan(data),
+        )
 
     # Standardize missing value encoding to NaN
     work_data = data.astype(np.float64).copy()

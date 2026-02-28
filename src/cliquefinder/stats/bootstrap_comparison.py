@@ -295,6 +295,10 @@ def run_bootstrap_comparison(
         sample_indices = [sample_to_idx[s] for s in bootstrap_samples]
         bootstrap_data = data[:, sample_indices]
         bootstrap_meta = metadata.loc[bootstrap_samples].copy()
+        # SET-TEST-4: Bootstrap with-replacement creates duplicate index entries.
+        # Reset to unique integer index so downstream .loc[] operations work
+        # correctly (avoids ambiguous indexing on duplicated sample IDs).
+        bootstrap_meta = bootstrap_meta.reset_index(drop=True)
 
         # Run method comparison (OLS + ROAST only for speed)
         try:

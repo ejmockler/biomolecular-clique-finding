@@ -382,9 +382,12 @@ def estimate_effective_tests(
 
     elif method == 'li-ji':
         # Li & Ji (2005): M_eff = 1 + (M-1) * (1 - Var(λ)/M)
-        # Simpler, works well for moderate correlation
-        lambda_var = np.var(eigenvalues)
-        m_eff = 1 + (len(eigenvalues) - 1) * (1 - lambda_var / len(eigenvalues))
+        # Variance must be computed over all M eigenvalues (zero-padded),
+        # and M is the original test count before filtering near-zero eigenvalues.
+        eigenvalues_padded = np.zeros(M)
+        eigenvalues_padded[:len(eigenvalues)] = eigenvalues
+        lambda_var = np.var(eigenvalues_padded)
+        m_eff = 1 + (M - 1) * (1 - lambda_var / M)
 
     else:
         raise ValueError(f"Unknown method '{method}'. Use 'nyholt' or 'li-ji'")

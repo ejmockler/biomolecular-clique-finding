@@ -715,6 +715,14 @@ def run_differential(args: argparse.Namespace) -> int:
             contrasts = {f"{conditions[0]}_vs_{conditions[1]}": (conditions[0], conditions[1])}
             print(f"\nAuto-detected contrast: {conditions[0]} vs {conditions[1]}")
 
+    # CLI-2: Guard against None contrasts (no --contrast and < 2 conditions)
+    if contrasts is None:
+        conditions = sorted(metadata[condition_col].dropna().unique())
+        print(f"Error: No contrasts could be derived. Need at least 2 conditions "
+              f"in column '{condition_col}', but found: {list(conditions)}")
+        print("  Use --contrast NAME COND1 COND2 to specify contrasts explicitly.")
+        return 1
+
     # Map method strings to enums
     summarization = SummarizationMethod(args.summarization)
     normalization = NormalizationMethod(args.normalization)

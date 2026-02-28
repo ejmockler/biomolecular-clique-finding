@@ -597,37 +597,51 @@ def _vsn_proper_mlx(
         # Apply transformation
         y = mx.arcsinh((data_mx - a[None, :]) / mx.maximum(b[None, :], 1e-10))
 
-        # Compute reference (handle NaN)
-        ref = mx.mean(mx.where(mx.isnan(y), 0.0, y), axis=1)
+        # Compute reference (nanmean equivalent for MLX)
+        # mx.mean(mx.where(isnan, 0, y)) divides by total columns including NaN,
+        # producing wrong results. We must divide only by the valid (non-NaN) count.
+        valid_count = mx.sum(mx.where(mx.isnan(y), 0.0, 1.0), axis=1)
+        valid_sum = mx.sum(mx.where(mx.isnan(y), 0.0, y), axis=1)
+        ref = valid_sum / mx.maximum(valid_count, mx.array(1.0))
 
-        # Re-estimate parameters (simplified for GPU)
-        a_new = mx.zeros(n_samples)
-        b_new = mx.zeros(n_samples)
+        # Re-estimate parameters per sample.
+        # MLX does not support boolean indexing, so we convert individual columns
+        # back to numpy for the median-based robust estimation. The bulk vectorized
+        # computation (transformation + reference) still benefits from GPU.
+        a_new_np = np.zeros(n_samples)
+        b_new_np = np.zeros(n_samples)
+        a_np = np.array(a)
+        b_np_arr = np.array(b)
+        ref_np = np.array(ref)
 
         for j in range(n_samples):
-            col = data_mx[:, j]
-            valid_mask = ~mx.isnan(col)
+            col = data[:, j]
+            valid_mask = ~np.isnan(col)
 
-            if mx.sum(valid_mask) == 0:
-                a_new[j] = a[j]
-                b_new[j] = b[j]
+            if np.sum(valid_mask) == 0:
+                a_new_np[j] = a_np[j]
+                b_new_np[j] = b_np_arr[j]
                 continue
 
             x = col[valid_mask]
-            y_ref = ref[valid_mask]
+            y_ref = ref_np[valid_mask]
 
-            sinh_ref = mx.sinh(mx.clip(y_ref, -10, 10))
-            a_new[j] = mx.median(x - b[j] * sinh_ref)
+            sinh_ref = np.sinh(np.clip(y_ref, -10, 10))
+            a_new_np[j] = np.median(x - b_np_arr[j] * sinh_ref)
 
-            x_centered = x - a_new[j]
-            mask_nonzero = mx.abs(sinh_ref) > 1e-10
+            x_centered = x - a_new_np[j]
+            sinh_ref_nonzero = sinh_ref[np.abs(sinh_ref) > 1e-10]
+            x_centered_nonzero = x_centered[np.abs(sinh_ref) > 1e-10]
 
-            if mx.sum(mask_nonzero) > 0:
-                b_new[j] = mx.median(mx.abs(x_centered[mask_nonzero]) / mx.abs(sinh_ref[mask_nonzero]))
+            if len(sinh_ref_nonzero) > 0:
+                b_new_np[j] = np.median(np.abs(x_centered_nonzero) / np.abs(sinh_ref_nonzero))
             else:
-                b_new[j] = b[j]
+                b_new_np[j] = b_np_arr[j]
 
-            b_new[j] = mx.maximum(b_new[j], 1e-10)
+            b_new_np[j] = max(b_new_np[j], 1e-10)
+
+        a_new = mx.array(a_new_np)
+        b_new = mx.array(b_new_np)
 
         # Check convergence
         a_change = float(mx.max(mx.abs(a_new - a)))

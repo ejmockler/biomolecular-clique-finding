@@ -325,6 +325,12 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         if len(conditions) >= 2:
             contrasts[f"{conditions[0]}_vs_{conditions[1]}"] = (conditions[0], conditions[1])
 
+    # CLI-1: Guard against empty contrasts dict
+    if not contrasts:
+        print("Error: No contrasts defined. Check --contrast arguments or ensure "
+              "metadata has at least 2 distinct conditions in the condition column.")
+        return 1
+
     primary_contrast_name = list(contrasts.keys())[0]
     primary_contrast = contrasts[primary_contrast_name]
 
@@ -340,6 +346,21 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     )
     target_gene_ids = list(network_targets.values())
     print(f"  {len(target_gene_ids)} targets found in data")
+
+    # CLI-8: Guard against empty or tiny target gene sets
+    if len(target_gene_ids) < 2:
+        print("Error: Gene set needs at least 2 genes for meaningful enrichment "
+              f"analysis, but got {len(target_gene_ids)}. Check network query "
+              f"'{args.network_query}' or --min-evidence threshold.")
+        return 1
+    elif len(target_gene_ids) < 5:
+        import warnings
+        warnings.warn(
+            f"Gene set has only {len(target_gene_ids)} genes. Results may be "
+            f"unreliable with fewer than 5 genes. Consider a broader network query.",
+            UserWarning,
+            stacklevel=1,
+        )
 
     # Build covariates DataFrame
     covariates_df = None

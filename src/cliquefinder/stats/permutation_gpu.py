@@ -72,7 +72,8 @@ def trigamma_inverse(x: float, tol: float = 1e-8, max_iter: int = 50) -> float:
 
     # Initial guess from asymptotic approximation
     # trigamma(y) ≈ 1/y + 1/(2y²) for large y, so y ≈ 1/x for small x
-    if x > 1e6:
+    # Asymptotic threshold matches R limma trigammaInverse (x > 1e7)
+    if x > 1e7:
         return 1.0 / np.sqrt(x)
     elif x < 1e-6:
         return 1.0 / x
@@ -83,11 +84,13 @@ def trigamma_inverse(x: float, tol: float = 1e-8, max_iter: int = 50) -> float:
         tri = polygamma(1, y)  # trigamma(y)
         tri_deriv = polygamma(2, y)  # tetragamma(y) = d/dy trigamma(y)
 
-        # Newton step: y_new = y - f(y)/f'(y) where f(y) = trigamma(y) - x
+        # R limma reciprocal formulation (trigammaInverse.R):
+        # Uses dif = tri * (1 - tri/x) / tri_deriv which has better
+        # convergence properties than the standard Newton step.
         if abs(tri_deriv) < 1e-15:
             break
-        delta = (tri - x) / tri_deriv
-        y_new = y - delta
+        dif = tri * (1.0 - tri / x) / tri_deriv
+        y_new = y + dif
 
         # Ensure y stays positive
         if y_new <= 0:
@@ -95,7 +98,7 @@ def trigamma_inverse(x: float, tol: float = 1e-8, max_iter: int = 50) -> float:
         else:
             y = y_new
 
-        if abs(delta) < tol * abs(y):
+        if abs(-dif / y) < tol:
             break
 
     return max(y, 1e-10)
@@ -173,8 +176,10 @@ def fit_f_dist(
     if evar_adjusted <= 0:
         # Variance is lower than expected under F-distribution
         # This means very strong shrinkage (d0 -> inf)
+        # Match R limma fitFDist.R: use arithmetic mean of raw variances
+        # (not geometric mean via exp(emean)) when no covariate is provided
         d0 = np.inf
-        s0_sq = np.exp(emean)
+        s0_sq = float(np.mean(sigma2_valid))
     else:
         # Solve for d0 using trigamma inverse
         d0 = 2.0 * trigamma_inverse(evar_adjusted)
@@ -182,7 +187,8 @@ def fit_f_dist(
         # Ensure d0 is reasonable (limma caps at very large values)
         if d0 > 1e10:
             d0 = np.inf
-            s0_sq = np.exp(emean)
+            # Match R limma fitFDist.R: arithmetic mean of raw variances
+            s0_sq = float(np.mean(sigma2_valid))
         else:
             # Compute s0² from d0
             s0_sq = np.exp(emean + digamma(d0 / 2.0) - np.log(d0 / 2.0))
@@ -1511,14 +1517,13 @@ def run_permutation_test_gpu(
     # Run batched OLS (with or without Empirical Bayes moderation)
     t_obs = batched_ols_contrast_test(Y_observed, matrices, use_gpu=True)
 
-    # Compute p-values from t-distribution with appropriate degrees of freedom
+    # Compute p-values from t-distribution with appropriate df (STAT-CORE-6)
+    # Always use t-distribution regardless of d0 or eb_moderation.
+    # The t-distribution converges to Normal as df->inf, so t.sf(x, df)
+    # is universally correct. Using norm.sf with small df was anti-conservative.
+    df_for_pval = matrices.eb_df_total if (eb_moderation and not np.isinf(d0)) else float(matrices.df_residual)
     for i, clique_id in enumerate(observed_clique_ids):
-        if not eb_moderation or np.isinf(d0):
-            # No moderation - use normal approximation (large df)
-            pval = 2 * scipy_stats.norm.sf(np.abs(t_obs[i]))
-        else:
-            # Moderated t-test: use t-distribution with d0 + df_residual df
-            pval = 2 * scipy_stats.t.sf(np.abs(t_obs[i]), matrices.eb_df_total)
+        pval = 2 * scipy_stats.t.sf(np.abs(t_obs[i]), df_for_pval)
         observed_t[clique_id] = (log2fc_obs[i], pval, t_obs[i])
 
     if verbose:

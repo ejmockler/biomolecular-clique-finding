@@ -58,7 +58,8 @@ class NegativeControlResult:
         competitive_z_fpr: Fraction of controls with competitive z >=
             target z. None if protein_results not provided.
         competitive_z_percentile: Percentile rank of target competitive z
-            among controls (100 = most enriched). None if not provided.
+            among controls (0 = most enriched, 100 = least enriched).
+            None if not provided.
     """
 
     target_pvalue: float

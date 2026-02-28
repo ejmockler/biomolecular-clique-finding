@@ -398,7 +398,7 @@ class MethodComparisonResult:
     # Failure tracking (ARCH-1)
     failed_methods: dict[str, str] = field(default_factory=dict)
 
-    def wide_format(self) -> "pd.DataFrame":
+    def wide_format(self, *, include_invalid: bool = False) -> "pd.DataFrame":
         """
         Pivot results to wide format: one row per clique.
 
@@ -415,6 +415,12 @@ class MethodComparisonResult:
 
         Cliques not tested by some methods will have NaN for those method columns.
 
+        Args:
+            include_invalid: If False (default), only include results where
+                ``is_valid`` is True (finite p-value in [0,1] and finite
+                effect size). If True, include all results including those
+                with NaN/inf p-values.
+
         Returns:
             DataFrame with one row per unique clique across all methods.
             Rows are sorted alphabetically by clique_id.
@@ -429,9 +435,17 @@ class MethodComparisonResult:
         """
         import pandas as pd
 
+        # MCOMP-2: Pre-filter to valid results unless caller opts in to invalid
+        filtered_by_method: dict[MethodName, list[UnifiedCliqueResult]] = {}
+        for method, results in self.results_by_method.items():
+            if include_invalid:
+                filtered_by_method[method] = results
+            else:
+                filtered_by_method[method] = [r for r in results if r.is_valid]
+
         # Collect all unique clique IDs across all methods
         all_ids: set[str] = set()
-        for results in self.results_by_method.values():
+        for results in filtered_by_method.values():
             all_ids.update(r.clique_id for r in results)
 
         if not all_ids:
@@ -445,7 +459,7 @@ class MethodComparisonResult:
             n_proteins: int | None = None
             n_proteins_found: int | None = None
 
-            for method, results in self.results_by_method.items():
+            for method, results in filtered_by_method.items():
                 # Find result for this clique from this method
                 result = next((r for r in results if r.clique_id == cid), None)
                 prefix = method.value
@@ -565,10 +579,31 @@ class MethodComparisonResult:
         if not pval_cols:
             return []
 
-        # A clique is a robust hit if ALL p-values are below threshold
-        # Note: This requires the clique to be tested by ALL methods
-        # NaN values mean method didn't test it, so we use dropna behavior
-        mask = (wide[pval_cols] < threshold).all(axis=1)
+        # MCOMP-1: Only consider p-value columns from methods that actually
+        # produced non-NaN results.  When a method fails entirely (all NaN),
+        # its column would cause `.all()` to return False for every row,
+        # producing empty robust_hits even when the remaining methods agree.
+        import pandas as pd
+
+        active_pval_cols = [
+            c for c in pval_cols if wide[c].notna().any()
+        ]
+
+        if not active_pval_cols:
+            return []
+
+        # A clique is a robust hit if ALL *active* methods' p-values are
+        # below threshold.  Within a row, NaN means "method didn't test this
+        # clique" — we skip those per-row via dropna-like logic: require all
+        # non-NaN values in active columns to be below threshold, and at
+        # least one non-NaN value must exist.
+        def _row_robust(row: pd.Series) -> bool:
+            vals = row[active_pval_cols].dropna()
+            if vals.empty:
+                return False
+            return bool((vals < threshold).all())
+
+        mask = wide.apply(_row_robust, axis=1)
 
         return wide.loc[mask, "clique_id"].tolist()
 

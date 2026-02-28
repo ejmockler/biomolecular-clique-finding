@@ -240,6 +240,11 @@ class RotationPrecomputed:
         design_rank: Rank of the design matrix (= p)
 
         n_samples: Number of samples in the analysis
+
+        w_sqrt_vec: Square root of sample weights vector (n_samples,) or None.
+            Stored as a 1-D vector (NOT the full diagonal matrix) for memory
+            efficiency. Used in extract_gene_effects to weight Y before
+            QR projection, ensuring consistency with weighted X.
     """
 
     Q2: NDArray[np.float64]
@@ -250,6 +255,7 @@ class RotationPrecomputed:
     eb_df_total: float | None = None
     design_rank: int = 0
     n_samples: int = 0
+    w_sqrt_vec: NDArray[np.float64] | None = None
 
     def __post_init__(self):
         """Enforce true immutability for mutable fields."""
@@ -257,6 +263,11 @@ class RotationPrecomputed:
         q2 = self.Q2.copy()
         q2.flags.writeable = False
         object.__setattr__(self, 'Q2', q2)
+        # Make w_sqrt_vec read-only if present
+        if self.w_sqrt_vec is not None:
+            wv = self.w_sqrt_vec.copy()
+            wv.flags.writeable = False
+            object.__setattr__(self, 'w_sqrt_vec', wv)
 
     @property
     def residual_dims(self) -> int:
@@ -589,12 +600,16 @@ def compute_rotation_matrices_general(
         Q2 = Q2.copy()
         Q2[:, 0] = -Q2[:, 0]
 
+    # Store the weight sqrt vector for use in extract_gene_effects
+    w_sqrt_vec = np.sqrt(sample_weights) if sample_weights is not None else None
+
     return RotationPrecomputed(
         Q2=Q2,
         df_residual=df_residual,
         contrast_name=contrast_name,
         design_rank=n_params,
         n_samples=n_samples,
+        w_sqrt_vec=w_sqrt_vec,
     )
 
 
@@ -867,12 +882,17 @@ def compute_rotation_matrices(
 
     contrast_name = f"{contrast[0]}_vs_{contrast[1]}"
 
+    # Store the weight sqrt vector (1-D, not the full diag matrix) for use
+    # in extract_gene_effects to weight Y consistently with X.
+    w_sqrt_vec = np.sqrt(sample_weights[valid_mask]) if sample_weights is not None else None
+
     return RotationPrecomputed(
         Q2=Q2_full,
         df_residual=df_residual,
         contrast_name=contrast_name,
         design_rank=n_params,
         n_samples=n_samples_valid,
+        w_sqrt_vec=w_sqrt_vec,
     )
 
 
@@ -911,9 +931,18 @@ def extract_gene_effects(
             f"Sample mismatch: Y has {n_samples}, Q2 has {precomputed.Q2.shape[0]}"
         )
 
-    # Project: U = Y @ Q2 (each row is u_g = Q2' @ y_g, transposed)
+    # Apply sample weights to Y if present (SET-TEST-11).
+    # When sample_weights are used, X was already weighted by W_sqrt in the QR
+    # decomposition. For the projection Y @ Q2 to be consistent, Y must also
+    # be weighted: Y_w = Y * w_sqrt_vec (broadcast over genes).
+    if precomputed.w_sqrt_vec is not None:
+        Y_weighted = Y * precomputed.w_sqrt_vec[np.newaxis, :]  # (n_genes, n_samples)
+    else:
+        Y_weighted = Y
+
+    # Project: U = Y_weighted @ Q2 (each row is u_g = Q2' @ y_g, transposed)
     # Shape: (n_genes, d+1)
-    U = Y @ precomputed.Q2
+    U = Y_weighted @ precomputed.Q2
 
     # Compute squared norms: ρ²_g = ||u_g||²
     rho_sq = np.sum(U ** 2, axis=1)
@@ -1391,9 +1420,8 @@ def _compute_mean_stat(
     elif alt == Alternative.DOWN:
         # Negative direction
         return -np.sum(w * z, axis=1) / A
-    else:  # MIXED
-        # Absolute values for two-sided
-        return np.sum(np.abs(w) * np.abs(z), axis=1) / A
+    else:  # MIXED — two-sided signed mean, test |null| >= |obs| in p-value step
+        return np.sum(w * z, axis=1) / A
 
 
 def _compute_floormean_stat(
@@ -1403,13 +1431,20 @@ def _compute_floormean_stat(
     alt: Alternative,
     floor: float,
 ) -> NDArray[np.float64]:
-    """Floormean statistic: mean with floored absolute values."""
+    """Floormean statistic: mean with floored absolute values.
+
+    ROAST floormean: T = sum(a_g * max(|z_g|, floor)) / A for MIXED.
+    For UP: only positive z contribute, but their magnitude is floored.
+    For DOWN: only negative z contribute (abs value floored).
+    """
     if alt == Alternative.UP:
-        f = np.maximum(z, 0)
+        # Positive z contribute; floor their magnitude at sqrt(q)
+        f = np.where(z > 0, np.maximum(z, floor), 0)
         return np.sum(w * f, axis=1) / A
     elif alt == Alternative.DOWN:
-        f = np.minimum(z, 0)
-        return -np.sum(w * f, axis=1) / A
+        # Negative z contribute; floor their absolute magnitude at sqrt(q)
+        f = np.where(z < 0, np.maximum(np.abs(z), floor), 0)
+        return np.sum(np.abs(w) * f, axis=1) / A
     else:  # MIXED
         f = np.maximum(np.abs(z), floor)
         return np.sum(np.abs(w) * f, axis=1) / A
@@ -1421,25 +1456,30 @@ def _compute_mean50_stat(
     A: float,
     alt: Alternative,
 ) -> NDArray[np.float64]:
-    """Mean50 statistic: mean of top 50% genes."""
+    """Mean50 statistic: weighted mean of top 50% genes by |z|.
+
+    limma selects the top 50% genes by unweighted |z|, then computes
+    the weighted mean of the selected genes.
+    """
     n_genes = z.shape[1]
-    h = (n_genes + 1) // 2  # Top half
+    h = max(1, n_genes // 2)  # Top half
+
+    # Select top h genes by |z| (unweighted absolute z-score)
+    abs_z = np.abs(z)
+    top_idx = np.argsort(abs_z, axis=1)[:, ::-1][:, :h]
 
     if alt == Alternative.UP:
-        # Top h largest weighted z
-        wz = w * z
-        sorted_wz = np.sort(wz, axis=1)[:, ::-1]  # Descending
-        return np.mean(sorted_wz[:, :h], axis=1)
+        # Weighted z for selected genes
+        selected_wz = np.take_along_axis(w * z, top_idx, axis=1)
+        return np.mean(selected_wz, axis=1)
     elif alt == Alternative.DOWN:
-        # Top h smallest (most negative) weighted z
-        wz = w * z
-        sorted_wz = np.sort(wz, axis=1)  # Ascending
-        return -np.mean(sorted_wz[:, :h], axis=1)
+        # Negative direction: negate so large negative = large positive stat
+        selected_wz = np.take_along_axis(w * z, top_idx, axis=1)
+        return -np.mean(selected_wz, axis=1)
     else:  # MIXED
-        # Top h largest |weighted z|
-        abs_wz = np.abs(w) * np.abs(z)
-        sorted_abs = np.sort(abs_wz, axis=1)[:, ::-1]
-        return np.mean(sorted_abs[:, :h], axis=1)
+        # Weighted z for selected genes (magnitude)
+        selected_wz = np.take_along_axis(w * z, top_idx, axis=1)
+        return np.mean(selected_wz, axis=1)
 
 
 def _compute_msq_stat(
@@ -1503,9 +1543,10 @@ def compute_rotation_pvalues(
 
     - **UP**: one-sided test for up-regulation (positive effect)
     - **DOWN**: one-sided test for down-regulation (negative effect)
-    - **MIXED**: the set statistic itself uses absolute values, so the
-      upper-tail p-value effectively gives a two-sided test for
-      differential expression in either direction.
+    - **MIXED**: For most statistics the statistic itself uses absolute
+      values so the upper-tail p-value gives a two-sided test.
+      **Exception**: MEAN+MIXED uses signed z-scores, so the p-value
+      is computed as |null| >= |obs| (two-sided comparison).
 
     Args:
         observed_stats: stat -> alt -> observed value
@@ -1536,8 +1577,17 @@ def compute_rotation_pvalues(
                 p_values[stat][alt] = np.nan
                 continue
 
-            # Count null values >= observed (upper tail)
-            b = np.sum(null >= obs)
+            # MEAN+MIXED and MEAN50+MIXED: the statistic is a signed mean,
+            # so use two-sided comparison |null| >= |obs| (SET-TEST-1).
+            _signed_mixed = (
+                stat in (SetStatistic.MEAN.value, SetStatistic.MEAN50.value)
+                and alt == Alternative.MIXED.value
+            )
+            if _signed_mixed:
+                b = np.sum(np.abs(null) >= np.abs(obs))
+            else:
+                # Standard upper-tail comparison
+                b = np.sum(null >= obs)
             B = len(null)
 
             p_values[stat][alt] = (b + 1) / (B + 1)
@@ -1734,10 +1784,22 @@ class RotationTestEngine:
         # Get condition labels
         sample_conditions = self.metadata[condition_column].values
 
+        # Filter out samples with NaN conditions to prevent dimension
+        # mismatch between Q2 (from compute_rotation_matrices, which
+        # internally drops NaN rows) and the data matrix Y.  (SET-TEST-3)
+        valid_condition_mask = np.array([
+            c is not None and (not isinstance(c, float) or not np.isnan(c))
+            for c in sample_conditions
+        ], dtype=bool)
+        if not np.all(valid_condition_mask):
+            sample_conditions = sample_conditions[valid_condition_mask]
+            self.data = self.data[:, valid_condition_mask]
+            self.metadata = self.metadata[valid_condition_mask].reset_index(drop=True)
+
         # Check for >2 groups: ROAST is designed for 2-group comparisons
         if contrast is not None:
             unique_conditions = set(sample_conditions)
-            # Remove NaN-like values
+            # Remove NaN-like values (already filtered above, but defensive)
             unique_conditions = {
                 c for c in unique_conditions
                 if c is not None and (not isinstance(c, float) or not np.isnan(c))
@@ -1798,6 +1860,7 @@ class RotationTestEngine:
             eb_df_total=eb_d0 + self._precomputed.df_residual if not np.isinf(eb_d0) else None,
             design_rank=self._precomputed.design_rank,
             n_samples=self._precomputed.n_samples,
+            w_sqrt_vec=self._precomputed.w_sqrt_vec,
         )
 
         self._fitted = True
@@ -1886,6 +1949,7 @@ class RotationTestEngine:
             eb_df_total=eb_d0 + self._precomputed.df_residual if not np.isinf(eb_d0) else None,
             design_rank=self._precomputed.design_rank,
             n_samples=self._precomputed.n_samples,
+            w_sqrt_vec=self._precomputed.w_sqrt_vec,
         )
 
         self._fitted = True

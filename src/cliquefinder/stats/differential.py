@@ -1386,15 +1386,18 @@ def run_protein_differential(
             sigma2_post = sigma2.copy()
             df_total = df_per_feature.astype(np.float64)
         else:
-            # Use median df for EB hyperparameter estimation (robust pooling)
-            median_df = int(np.median(df_valid))
-            d0, s0_sq = fit_f_dist(sigma2_valid, median_df)
+            # Pass per-feature df array to fit_f_dist (GPU-8)
+            # R limma uses per-feature df. Clip df >= 2 before digamma/trigamma
+            # to avoid numerical issues with outlier features that have very small df.
+            df_valid_clipped = np.maximum(df_valid, 2).astype(np.float64)
+            d0, s0_sq = fit_f_dist(sigma2_valid, df_valid_clipped)
 
             if verbose:
                 if np.isinf(d0):
                     print(f"  EB priors: d0=Inf (no shrinkage), s0²={s0_sq:.6f}")
                 else:
                     print(f"  EB priors: d0={d0:.2f}, s0²={s0_sq:.6f}")
+                    median_df = float(np.median(df_valid_clipped))
                     shrinkage_weight = d0 / (d0 + median_df)
                     print(f"  Shrinkage: {100*shrinkage_weight:.1f}% prior, "
                           f"{100*(1-shrinkage_weight):.1f}% sample")
@@ -1420,12 +1423,12 @@ def run_protein_differential(
     # Moderated t-statistic: t = log2FC / SE
     t_statistic = log2fc / se
 
-    # P-values from t-distribution with per-feature moderated df
-    if eb_moderation and not np.isinf(d0):
-        p_value = 2 * scipy_stats.t.sf(np.abs(t_statistic), df_total)
-    else:
-        # Use normal approximation for large df or when EB disabled
-        p_value = 2 * scipy_stats.norm.sf(np.abs(t_statistic))
+    # P-values from t-distribution with per-feature df (STAT-CORE-6)
+    # Always use t-distribution regardless of d0. The t-distribution
+    # converges to Normal as df->inf, so t.sf(x, df) is universally
+    # correct. Using norm.sf when d0=inf with small residual df was
+    # anti-conservative (e.g., t.sf(2.3, 5)=0.035 vs norm.sf(2.3)=0.011).
+    p_value = 2 * scipy_stats.t.sf(np.abs(t_statistic), df_total)
 
     # Build results DataFrame
     results = pd.DataFrame({

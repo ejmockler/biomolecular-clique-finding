@@ -118,6 +118,7 @@ def tukey_median_polish(
     median_fn = np.nanmedian if na_rm else np.median
 
     converged = False
+    iteration = -1
     for iteration in range(max_iter):
         # Row sweep: subtract row medians
         row_medians = median_fn(residuals, axis=1)
