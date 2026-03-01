@@ -199,7 +199,14 @@ class DataFormat:
         if not self._compiled_id_pattern:
             return str(raw_index).strip()
 
-        match = self._compiled_id_pattern.search(str(raw_index))
+        # SEC-13: Limit input length to prevent ReDoS on user-supplied patterns
+        raw_str = str(raw_index)
+        if len(raw_str) > 10_000:
+            raise ValueError(
+                f"Input string too long ({len(raw_str)} chars, max 10000) for regex matching"
+            )
+
+        match = self._compiled_id_pattern.search(raw_str)
         if not match:
             raise ValueError(
                 f"ID pattern '{self.id_pattern}' did not match: '{raw_index}'"
@@ -219,7 +226,12 @@ class DataFormat:
         if not self._compiled_sample_pattern:
             return {}
 
-        match = self._compiled_sample_pattern.search(str(sample_id))
+        # SEC-13: Limit input length to prevent ReDoS on user-supplied patterns
+        sample_str = str(sample_id)
+        if len(sample_str) > 10_000:
+            return {}
+
+        match = self._compiled_sample_pattern.search(sample_str)
         if not match:
             return {}
         return match.groupdict()

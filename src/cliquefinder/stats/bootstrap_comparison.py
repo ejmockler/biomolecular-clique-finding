@@ -392,6 +392,11 @@ def run_bootstrap_comparison(
         effects_clean = effects[valid_both]
 
         # Selection frequencies
+        # SET-TEST-14: Per-method frequencies (sig_ols, sig_roast) use method-specific
+        # valid masks, while combined frequencies (sig_both, sig_any) use the intersection
+        # mask (valid_both). This means denominators may differ — per-method frequencies
+        # are out of all valid bootstraps for that method, while combined frequencies
+        # are out of bootstraps where both methods returned valid results.
         sig_ols = ols_pvals_clean < config.significance_threshold
         sig_roast = roast_pvals_clean < config.significance_threshold
         sig_both = (ols_pvals[valid_both] < config.significance_threshold) & \

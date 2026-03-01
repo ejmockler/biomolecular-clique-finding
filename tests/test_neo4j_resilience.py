@@ -153,12 +153,14 @@ class TestExecuteQueryReconnection:
             first = client._get_client()
             assert first is clients[0]
 
-            # Without force_reconnect, same client is returned
+            # Without clearing _client, same client is returned
             same = client._get_client()
             assert same is clients[0]
 
-            # With force_reconnect, new client is created
-            second = client._get_client(force_reconnect=True)
+            # KG-10: Reconnection is done by setting _client = None
+            # (force_reconnect parameter was removed as dead code)
+            client._client = None
+            second = client._get_client()
             assert second is clients[1]
 
     def test_successful_query_no_reconnect(self):

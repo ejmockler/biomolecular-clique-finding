@@ -215,7 +215,7 @@ class PermutationResult:
         """Standardized score: (observed - null_mean) / null_std."""
         if len(self.null_distribution) < 2:
             return np.nan
-        null_std = np.std(self.null_distribution)
+        null_std = np.std(self.null_distribution, ddof=1)
         if null_std < 1e-10:
             return np.nan
         return (self.observed.test_statistic - np.mean(self.null_distribution)) / null_std
@@ -227,7 +227,7 @@ class PermutationResult:
             'observed_statistic': self.observed.test_statistic,
             'observed_pvalue': self.observed.p_value,
             'null_mean': float(np.mean(self.null_distribution)),
-            'null_std': float(np.std(self.null_distribution)),
+            'null_std': float(np.std(self.null_distribution, ddof=1)) if len(self.null_distribution) > 1 else 0.0,
             'zscore': self.zscore,
             'empirical_pvalue': self.empirical_pvalue,
             'empirical_pvalue_onesided': self.empirical_pvalue_onesided,

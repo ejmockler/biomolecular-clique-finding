@@ -249,12 +249,21 @@ def run_method_comparison(
         print()
 
     # 4. Run each method
+    # MCOMP-10: Ensure consistent MethodName enum keys (never plain strings)
     results_by_method: dict[MethodName, list[UnifiedCliqueResult]] = {}
     failed_methods: dict[str, str] = {}
 
     for method in methods:
+        method_name = method.name
+        if not isinstance(method_name, MethodName):
+            logger.warning(
+                "Method %r returned non-MethodName name %r; coercing to string key",
+                method, method_name,
+            )
+            method_name = MethodName(str(method_name))
+
         if verbose:
-            print(f"Running {method.name.value}...", end=" ", flush=True)
+            print(f"Running {method_name.value}...", end=" ", flush=True)
 
         try:
             results = method.test(
@@ -263,7 +272,7 @@ def run_method_comparison(
                 seed=seed,
                 verbose=False,  # Method-level verbosity off
             )
-            results_by_method[method.name] = results
+            results_by_method[method_name] = results
 
             if verbose:
                 n_sig = sum(1 for r in results if r.p_value < concordance_threshold)
@@ -272,9 +281,9 @@ def run_method_comparison(
         except Exception as e:
             if verbose:
                 print(f"FAILED: {e}")
-            logger.warning("Method %s failed: %s", method.name.value, e)
-            results_by_method[method.name] = []
-            failed_methods[method.name.value] = str(e)
+            logger.warning("Method %s failed: %s", method_name.value, e)
+            results_by_method[method_name] = []
+            failed_methods[method_name.value] = str(e)
 
     # 5. Compute pairwise concordance
     if verbose:

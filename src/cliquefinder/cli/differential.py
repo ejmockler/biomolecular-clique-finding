@@ -486,7 +486,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--indra-env-file",
         type=Path,
-        default=Path(os.environ.get("INDRA_ENV_FILE", Path.home() / ".indra" / ".env")),
+        default=None,  # CLI-15: Resolve at runtime, not import time
         help="Path to .env file with INDRA CoGEx credentials "
              "(default: $INDRA_ENV_FILE or ~/.indra/.env)",
     )
@@ -514,6 +514,11 @@ def run_differential(args: argparse.Namespace) -> int:
         run_clique_differential_analysis,
     )
     from cliquefinder.stats.clique_analysis import run_permutation_clique_test
+
+    # CLI-15: Resolve indra-env-file default at runtime, not import time
+    if getattr(args, 'indra_env_file', None) is None:
+        env_from_var = os.environ.get("INDRA_ENV_FILE")
+        args.indra_env_file = Path(env_from_var) if env_from_var else Path.home() / ".indra" / ".env"
 
     # Validate argument dependencies
     if getattr(args, 'enrichment_test', False) and not args.network_query:
@@ -562,15 +567,17 @@ def run_differential(args: argparse.Namespace) -> int:
             print(f"  Warning: Ignoring --contrast (overridden by cohort resolution)")
         args.contrast = cohort_contrasts
 
-    # Align metadata with data
-    common_samples = [s for s in matrix.sample_ids if s in metadata.index]
+    # Align metadata with data (CLI-5: use set intersection for O(n) alignment)
+    metadata_set = set(metadata.index)
+    common_samples = [s for s in matrix.sample_ids if s in metadata_set]
     if len(common_samples) < len(matrix.sample_ids):
         print(f"  Warning: {len(matrix.sample_ids) - len(common_samples)} samples missing from metadata")
 
     metadata = metadata.loc[common_samples]
 
-    # Get data as array
-    sample_indices = [list(matrix.sample_ids).index(s) for s in common_samples]
+    # Get data as array (CLI-5: use dict lookup for O(1) per sample instead of list.index)
+    sample_id_to_idx = {s: i for i, s in enumerate(matrix.sample_ids)}
+    sample_indices = [sample_id_to_idx[s] for s in common_samples]
     data = matrix.data[:, sample_indices]
     feature_ids = list(matrix.feature_ids)
 
@@ -1093,8 +1100,10 @@ def run_differential(args: argparse.Namespace) -> int:
             best_clique = clique_df.iloc[0]
             target_id = best_clique['feature_set_id']
             target_genes_str = best_clique.get('clique_genes', '')
-            if target_genes_str:
-                target_gene_list = [g.strip() for g in target_genes_str.split(',')]
+            # CLI-10: Guard against NaN in clique_genes column
+            if pd.notna(target_genes_str) and target_genes_str:
+                target_gene_list = [g.strip() for g in str(target_genes_str).split(',')
+                                    if pd.notna(g) and g.strip()]
             else:
                 target_gene_list = []
 

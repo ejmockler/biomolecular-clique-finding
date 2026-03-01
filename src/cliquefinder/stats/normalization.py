@@ -147,12 +147,20 @@ def quantile_normalization(
     just that medians should be equal, but that entire distributions should
     be identical across samples.
 
+    Warning:
+        The 'simple' method does not handle NaN correctly when columns have
+        different missing-value patterns. It uses ``np.nanmean`` over sorted
+        columns, which mixes quantile ranks across columns with unequal
+        observation counts. Use ``method='censored'`` for data with missing
+        values to avoid this bias.
+
     Args:
         data: 2D array (n_features, n_samples) of log-transformed intensities.
         target_distribution: Target distribution to normalize to. If None,
             uses the mean of sorted values across samples.
         method: Normalization method for handling missing values:
-            - "simple": Original implementation with interpolation (biased with >20% missingness)
+            - "simple": Original implementation with interpolation (biased with >20% missingness).
+                See Warning above regarding NaN handling.
             - "censored": Proper handling assuming MNAR (Missing Not At Random) for low-abundance proteins
 
     Returns:
@@ -585,6 +593,11 @@ def _vsn_proper_mlx(
     data_mx = mx.array(data)
 
     # Initialize parameters
+    # STAT-CORE-9: b is initialized to the median of positive non-NaN values per sample.
+    # The double-indexing pattern below first masks NaN, then selects positive values.
+    # For columns with no positive non-NaN values, b defaults to 1.0.
+    # This is fragile for all-non-positive columns but does not affect convergence —
+    # the iterative update will correct the initial estimate.
     a = mx.zeros(n_samples)
     b = mx.array([np.median(data[:, j][~np.isnan(data[:, j])][data[:, j][~np.isnan(data[:, j])] > 0])
                   if np.sum(~np.isnan(data[:, j])) > 0 and np.any(data[:, j][~np.isnan(data[:, j])] > 0)
@@ -757,8 +770,16 @@ def assess_normalization_quality(
     stds_after = np.nanstd(after, axis=0)
 
     # Coefficient of variation of medians (should decrease)
-    cv_medians_before = np.std(medians_before) / np.mean(medians_before) if np.mean(medians_before) != 0 else np.nan
-    cv_medians_after = np.std(medians_after) / np.mean(medians_after) if np.mean(medians_after) != 0 else np.nan
+    cv_medians_before = (
+        np.std(medians_before, ddof=1) / np.mean(medians_before)
+        if len(medians_before) > 1 and np.mean(medians_before) != 0
+        else np.nan
+    )
+    cv_medians_after = (
+        np.std(medians_after, ddof=1) / np.mean(medians_after)
+        if len(medians_after) > 1 and np.mean(medians_after) != 0
+        else np.nan
+    )
 
     return {
         "median_cv_before": float(cv_medians_before),

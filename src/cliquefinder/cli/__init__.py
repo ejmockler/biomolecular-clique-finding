@@ -12,8 +12,12 @@ Commands:
 """
 
 import argparse
+import logging
 import sys
+import traceback
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 
 def main(args: Optional[List[str]] = None) -> int:
@@ -46,6 +50,13 @@ Examples:
         version="%(prog)s 0.1.0"
     )
 
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        default=False,
+        help="Show full tracebacks on error",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Import and register subcommands
@@ -65,8 +76,24 @@ Examples:
         parser.print_help()
         return 0
 
-    # Dispatch to subcommand
-    return parsed_args.func(parsed_args)
+    # CLI-14: Catch unhandled exceptions and present user-friendly errors.
+    # Full tracebacks are shown only in verbose mode.
+    try:
+        return parsed_args.func(parsed_args)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        verbose = getattr(parsed_args, "verbose", False)
+        if verbose:
+            traceback.print_exc()
+        else:
+            print(
+                f"Error: {exc}\n\nRe-run with --verbose for the full traceback.",
+                file=sys.stderr,
+            )
+        logger.debug("Unhandled exception in CLI", exc_info=True)
+        return 1
 
 
 if __name__ == "__main__":

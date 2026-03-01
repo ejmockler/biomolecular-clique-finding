@@ -252,7 +252,11 @@ class ValidationReport:
             self.summary = "Core phases not completed."
         elif gate_adjusted and gate_permutation:
             if supplementary_total == 0:
-                # No supplementary phases ran — don't penalise for missing data
+                # No supplementary phases produced results. This means
+                # they were not executed (e.g., single-contrast dataset
+                # has no Phase 2, or no negative control gene sets were
+                # configured for Phase 5). This is distinct from phases
+                # that ran but showed no effect.
                 self.verdict = "validated"
                 qualifier = ""
                 if specificity_label == "shared":
@@ -262,7 +266,8 @@ class ValidationReport:
                 self.summary = (
                     f"Signal validated{qualifier}: survives covariate "
                     f"adjustment and label permutation null. "
-                    f"No supplementary phases ran."
+                    f"Supplementary phases were not executed "
+                    f"(insufficient data or not configured)."
                 )
             elif supplementary_failed > 0 and supplementary_pass == 0:
                 # All supplementary phases that ran actually FAILED

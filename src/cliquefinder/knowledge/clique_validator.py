@@ -62,6 +62,7 @@ Examples:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
@@ -427,8 +428,9 @@ class CliqueValidator:
         # O(1) gene index lookup
         self._gene_to_idx = {str(gene): i for i, gene in enumerate(matrix.feature_ids)}
 
-        # Correlation matrix cache (per gene-set, limited utility for diverse regulators)
-        self._corr_cache: Dict[Tuple[str, frozenset], pd.DataFrame] = {}
+        # Correlation matrix cache with LRU eviction (KG-14: prevents unbounded growth)
+        self._corr_cache: OrderedDict[Tuple[str, frozenset], pd.DataFrame] = OrderedDict()
+        self._corr_cache_maxsize: int = 10_000
 
         # Condition-level data cache (MAJOR optimization)
         # Stores pre-sliced data and masks per condition to avoid redundant computation
@@ -832,6 +834,7 @@ class CliqueValidator:
         # Check gene-set cache first (useful for repeated queries with same genes)
         cache_key = (condition or 'all', frozenset(genes), method)
         if cache_key in self._corr_cache:
+            self._corr_cache.move_to_end(cache_key)  # LRU: mark as recently used
             return self._corr_cache[cache_key]
 
         # FAST PATH: Use precomputed correlation matrix if available
@@ -859,8 +862,10 @@ class CliqueValidator:
             # Convert to DataFrame
             result = pd.DataFrame(subset_corr, index=found_genes, columns=found_genes)
 
-            # Store in gene-set cache
+            # Store in gene-set cache with LRU eviction
             self._corr_cache[cache_key] = result
+            if len(self._corr_cache) > self._corr_cache_maxsize:
+                self._corr_cache.popitem(last=False)  # Evict oldest entry
             return result
 
         # SLOW PATH: Compute correlation from scratch
@@ -917,8 +922,10 @@ class CliqueValidator:
         # Convert to DataFrame
         result = pd.DataFrame(corr, index=found_genes, columns=found_genes)
 
-        # Store in gene-set cache (limited utility but helps repeated queries)
+        # Store in gene-set cache with LRU eviction (limited utility but helps repeated queries)
         self._corr_cache[cache_key] = result
+        if len(self._corr_cache) > self._corr_cache_maxsize:
+            self._corr_cache.popitem(last=False)  # Evict oldest entry
         return result
 
     def build_correlation_graph(

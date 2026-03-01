@@ -138,8 +138,15 @@ class ROASTMethod:
             logger.warning("ROAST requires sample_metadata as DataFrame")
             return []
 
+        # MCOMP-9: Defensively copy data — the experiment's data array
+        # has flags.writeable=False (immutable dataclass), which would
+        # cause ValueError if the engine attempts any in-place mutation.
+        data = experiment.data
+        if not data.flags.writeable:
+            data = data.copy()
+
         engine = RotationTestEngine(
-            data=experiment.data,
+            data=data,
             gene_ids=list(experiment.feature_ids),
             metadata=experiment.sample_metadata,
         )
@@ -216,7 +223,12 @@ class ROASTMethod:
                 # Get observed statistic (observed_stats is nested: {stat: {alt: value}})
                 observed = rot_result.observed_stats.get(stat_key, {}).get(alt_key, np.nan)
 
-                # For effect_size, use mean z-score with 'up' direction (interpretable)
+                # For effect_size, use mean z-score with 'up' direction.
+                # Positive effect_size indicates upregulation of the gene set,
+                # consistent with limma's ROAST convention where "up" tests
+                # for positive mean log-fold-change. This provides an
+                # interpretable signed effect size regardless of which
+                # alternative (mixed/up/down) was used for p-value selection.
                 mean_z = rot_result.observed_stats.get("mean", {}).get("up", 0.0)
 
                 # Get clique size metadata

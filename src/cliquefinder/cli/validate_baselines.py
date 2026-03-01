@@ -335,13 +335,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         if cohort_contrasts:
             args.contrast = cohort_contrasts
 
-    # Align
-    common_samples = [s for s in matrix.sample_ids if s in metadata.index]
+    # Align (CLI-5: use set + dict for O(n) alignment instead of O(n^2))
+    metadata_set = set(metadata.index)
+    common_samples = [s for s in matrix.sample_ids if s in metadata_set]
     # CLI-6: Guard against zero common samples
     if len(common_samples) == 0:
         raise ValueError("No common samples between protein data and sample metadata")
     metadata = metadata.loc[common_samples]
-    sample_indices = [list(matrix.sample_ids).index(s) for s in common_samples]
+    sample_id_to_idx = {s: i for i, s in enumerate(matrix.sample_ids)}
+    sample_indices = [sample_id_to_idx[s] for s in common_samples]
     data = matrix.data[:, sample_indices]
     feature_ids = list(matrix.feature_ids)
     print(f"  Aligned: {len(common_samples)} samples")

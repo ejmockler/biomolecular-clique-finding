@@ -504,7 +504,15 @@ class CachedAnnotationProvider(AnnotationProvider):
     ):
         self.provider = provider
         self.cache_file = cache_file or (Path.home() / '.cache' / 'biocore' / 'annotations.json')
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # SEC-17: Reject symlinked cache directories to prevent symlink attacks
+        cache_dir = self.cache_file.parent
+        if cache_dir.exists() and cache_dir.is_symlink():
+            raise ValueError(
+                f"Cache directory {cache_dir} is a symlink, which is not allowed "
+                f"for security reasons. Remove the symlink and retry."
+            )
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Load cache if exists
         self._cache: Dict = {}

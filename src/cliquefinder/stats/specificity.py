@@ -16,11 +16,14 @@ Specificity scoring:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -235,8 +238,20 @@ def _run_interaction_permutation(
             null_z_primary[i] = zp
             null_z_secondary[i] = zs
             null_dz[i] = zp - zs
-        except Exception:
+        except Exception as exc:
             n_failures += 1
+            # VAL-10: Log failed interaction permutations instead of
+            # silently swallowing them
+            if n_failures <= 3:
+                logger.warning(
+                    "Interaction permutation %d failed: %s: %s",
+                    i, type(exc).__name__, exc,
+                )
+            elif n_failures == 4:
+                logger.warning(
+                    "Suppressing further interaction permutation failure warnings "
+                    "(3 already logged)"
+                )
             continue
 
     valid_null = null_dz[~np.isnan(null_dz)]
@@ -375,6 +390,14 @@ def compute_specificity(
 
     max_secondary_z = max(secondary_z)
 
+    # VAL-8: Specificity ratio = primary_z / max_secondary_z.
+    # Interpretation:
+    #   > 1.0  : primary enrichment exceeds all secondary contrasts (specific)
+    #   0 - 1  : secondary contrast is stronger (not specific)
+    #   < 0    : primary and secondary z-scores have opposite signs, meaning the
+    #            enrichment direction differs across contrasts. Negative ratios are
+    #            left as-is rather than clamped, so callers can detect sign flips.
+    #   inf    : no secondary contrast has positive z (perfectly specific or degenerate)
     if max_secondary_z <= 0:
         ratio = float("inf") if primary.z_score > 0 else 0.0
     else:

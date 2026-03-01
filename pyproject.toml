@@ -19,6 +19,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
+# SEC-15: Dependencies use >= (minimum version) rather than pinned versions.
+# This is intentional for a library/framework package — pinning exact versions
+# would cause conflicts for downstream users who need different versions of
+# shared dependencies. For reproducible deployments, use a lockfile (pip freeze
+# or pip-compile) in your application environment.
 dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",

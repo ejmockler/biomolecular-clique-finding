@@ -21,6 +21,7 @@ References:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -148,6 +149,10 @@ def analyze_missing_values(
         mechanism = MissingMechanism.MIXED
 
     # Estimate censoring threshold (for MNAR)
+    # STAT-CORE-18: This 0.1th percentile threshold is used for diagnostics only
+    # (characterizing the missing data mechanism), not for imputation decisions.
+    # For typical datasets (~10k features x ~100 samples), ~10 data points
+    # define this quantile, so it should be treated as a rough estimate.
     censoring_threshold = None
     if mechanism in (MissingMechanism.MNAR, MissingMechanism.MIXED):
         # Use low percentile of observed values as threshold estimate
@@ -286,7 +291,9 @@ def impute_aft_model(
     Args:
         data: 2D array with NaN for missing (censored) values.
         censoring_threshold: Detection limit. If None, estimated from data.
-        n_draws: Number of random draws (1 for point estimate, >1 for MI).
+        n_draws: Deprecated. Accepted for backward compatibility but has no
+            effect. Multiple imputation is not implemented; a single draw
+            is always performed.
         random_state: Random seed for reproducibility.
 
     Returns:
@@ -296,6 +303,15 @@ def impute_aft_model(
         This implementation uses a per-feature AFT model. MSstats also
         considers run effects, which we simplify here.
     """
+    if n_draws != 1:
+        warnings.warn(
+            "n_draws parameter is deprecated and has no effect. "
+            "Multiple imputation is not implemented; a single draw "
+            "is always performed. This parameter will be removed in "
+            "a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     rng = np.random.default_rng(random_state)
 
     imputed = data.copy()

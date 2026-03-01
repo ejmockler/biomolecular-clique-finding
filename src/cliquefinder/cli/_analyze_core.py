@@ -858,11 +858,32 @@ def run_stratified_analysis(
         ctx = mp.get_context('spawn')
 
         # Write expression matrix to temp file for memory-mapped loading
+        # SEC-14: Create with restricted permissions (owner-only read/write)
         mmap_path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as tmp:
-                mmap_path = tmp.name
-                np.save(tmp, matrix.data)
+            old_umask = os.umask(0o077)  # Restrict to owner-only
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as tmp:
+                    mmap_path = tmp.name
+                    np.save(tmp, matrix.data)
+            finally:
+                os.umask(old_umask)  # Restore original umask
+
+            # GPU-15: Best-effort cleanup on normal interpreter exit (e.g. uncaught
+            # exception that bypasses the finally block below). This does NOT help
+            # with SIGKILL, which terminates the process immediately — that is an
+            # inherent limitation of temp file cleanup.
+            import atexit
+            _mmap_cleanup_path = mmap_path  # capture in closure
+
+            def _cleanup_mmap():
+                if _mmap_cleanup_path and os.path.exists(_mmap_cleanup_path):
+                    try:
+                        os.unlink(_mmap_cleanup_path)
+                    except OSError:
+                        pass
+
+            atexit.register(_cleanup_mmap)
 
             logger.info(
                 f"Wrote expression matrix to mmap file: {mmap_path} "

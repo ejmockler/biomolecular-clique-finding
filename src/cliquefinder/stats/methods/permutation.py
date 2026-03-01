@@ -146,6 +146,16 @@ class PermutationMethod:
             logger.warning(f"Permutation test failed: {e}")
             return []
 
+        # MCOMP-11: Guard against duplicate clique_ids in null_df
+        if not null_df.empty and null_df["clique_id"].duplicated().any():
+            n_dupes = int(null_df["clique_id"].duplicated().sum())
+            logger.warning(
+                "Duplicate clique_ids detected in permutation null_df (%d duplicates); "
+                "keeping first occurrence",
+                n_dupes,
+            )
+            null_df = null_df.drop_duplicates(subset=["clique_id"], keep="first")
+
         # MCOMP-4: Build clique lookup dict once — O(M) — instead of
         # scanning experiment.cliques per result — O(N*M).
         clique_lookup: dict[str, object] = {

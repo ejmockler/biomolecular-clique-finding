@@ -258,7 +258,11 @@ class CliqueSummary:
             'method': self.method,
             'coherence': self.coherence,
             'mean_abundance': float(np.nanmean(self.sample_abundances)),
-            'std_abundance': float(np.nanstd(self.sample_abundances)),
+            'std_abundance': float(
+                np.nanstd(self.sample_abundances, ddof=1)
+                if np.sum(~np.isnan(self.sample_abundances)) > 1
+                else 0.0
+            ),
         }
 
 

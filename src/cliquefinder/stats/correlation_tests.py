@@ -40,8 +40,10 @@ def fisher_z_transform(r: float) -> float:
     Returns:
         Fisher Z-transformed value
     """
-    # Clip to avoid infinity at |r|=1
-    r = np.clip(r, -0.9999, 0.9999)
+    # Clip to strictly within (-1, 1) to avoid infinity at |r|=1.
+    # STAT-CORE-19: Use 1 - 1e-10 for better precision near perfect correlations.
+    _CLIP_BOUND = 1.0 - 1e-10
+    r = np.clip(r, -_CLIP_BOUND, _CLIP_BOUND)
     return 0.5 * np.log((1 + r) / (1 - r))
 
 

@@ -130,7 +130,11 @@ def build_covariate_design_matrix(
         cov_valid = ~covariates_df.isna().any(axis=1).values
         valid_mask = valid_mask & cov_valid
 
-        # Build covariate columns from valid rows
+        # VAL-5: Build covariate columns from ALL rows (including those with NaN in
+        # other columns). Categorical dummies are created before the NaN filter is
+        # applied because dummy-coding must see all category levels to produce
+        # consistent column sets. Rows with NaN are excluded later via valid_mask,
+        # so the extra dummy rows do not enter the regression.
         cov_parts: list[NDArray] = []
         for col in covariates_df.columns:
             series = covariates_df[col]
@@ -278,6 +282,16 @@ def build_covariate_design_matrix(
 
     # Transform to parameter space via the L matrix
     # L maps condition means to parameters (dummy coding)
+    # VAL-9: This assumes condition columns occupy positions 0..n_condition_params-1
+    # in X (intercept first, then condition dummies). Assert this invariant.
+    assert len(condition_col_indices) == n_condition_params, (
+        f"Expected {n_condition_params} condition columns but found "
+        f"{len(condition_col_indices)}: {condition_col_indices}"
+    )
+    assert condition_col_indices == list(range(n_condition_params)), (
+        f"Condition columns must be the first {n_condition_params} columns of X, "
+        f"got indices {condition_col_indices}"
+    )
     L = np.zeros((n_conditions, n_condition_params))
     L[:, 0] = 1.0  # All conditions include intercept
     for i in range(1, min(n_conditions, n_condition_params)):
@@ -287,6 +301,9 @@ def build_covariate_design_matrix(
     c_condition = L.T @ contrast_vec_condition
 
     # Zero-pad for covariate and interaction columns
+    # VAL-11: n_covariate_params includes both main covariate effects AND any
+    # interaction columns (condition x covariate). The contrast vector is zero
+    # for all of these, so the count does not affect the tested contrast.
     n_covariate_params = len(covariate_col_indices)
     n_pad = n_params - n_condition_params
     if n_pad > 0:

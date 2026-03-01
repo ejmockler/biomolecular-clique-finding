@@ -78,8 +78,12 @@ class LabelPermutationResult:
     null_std: float = 1.0
 
     def to_dict(self) -> dict:
-        """Serialize to JSON-compatible dict."""
-        return {
+        """Serialize to JSON-compatible dict.
+
+        Handles empty/None null_z_scores gracefully by returning
+        NaN quantiles instead of crashing.
+        """
+        base = {
             "observed_z": self.observed_z,
             "permutation_pvalue": self.permutation_pvalue,
             "n_permutations": self.n_permutations,
@@ -87,14 +91,27 @@ class LabelPermutationResult:
             "stratify_column": self.stratify_column,
             "null_mean": self.null_mean,
             "null_std": self.null_std,
-            "null_z_quantiles": {
+        }
+
+        # VAL-12: Guard against empty/None null_z_scores
+        if self.null_z_scores is not None and len(self.null_z_scores) > 0:
+            base["null_z_quantiles"] = {
                 "q05": float(np.percentile(self.null_z_scores, 5)),
                 "q25": float(np.percentile(self.null_z_scores, 25)),
                 "q50": float(np.percentile(self.null_z_scores, 50)),
                 "q75": float(np.percentile(self.null_z_scores, 75)),
                 "q95": float(np.percentile(self.null_z_scores, 95)),
-            },
-        }
+            }
+        else:
+            base["null_z_quantiles"] = {
+                "q05": float("nan"),
+                "q25": float("nan"),
+                "q50": float("nan"),
+                "q75": float("nan"),
+                "q95": float("nan"),
+            }
+
+        return base
 
 
 def generate_stratified_permutation(

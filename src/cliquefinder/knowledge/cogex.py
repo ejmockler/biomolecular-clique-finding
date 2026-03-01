@@ -84,7 +84,12 @@ try:
     INDRA_AVAILABLE = True
 except ImportError:
     INDRA_AVAILABLE = False
-    norm_id = None  # Placeholder
+    def norm_id(*args, **kwargs):  # type: ignore[misc]
+        """Stub that raises ImportError when INDRA is not installed."""
+        raise ImportError(
+            "INDRA is required for CoGEx client. "
+            "Install with: pip install indra"
+        )
 
 # Neo4j typed exceptions for defence-in-depth error classification (ARCH-4-NOTE)
 try:
@@ -397,6 +402,11 @@ class CoGExClient:
     regulatory relationships. Handles connection management, credential loading,
     and query construction.
 
+    Note:
+        This client is not thread-safe. It uses shared internal state (connection
+        handle, caches) without locking. Use separate instances for concurrent
+        access from multiple threads.
+
     Connection Strategy:
         Lazy connection - client only connects when first query is made.
         Credential precedence:
@@ -479,7 +489,7 @@ class CoGExClient:
         """
         # Try explicit parameters first
         if self._url and self._user and self._password:
-            logger.info("Using explicit credentials")
+            logger.debug("Using explicit credentials")
             return self._url, self._user, self._password
 
         # Try environment variables
@@ -488,7 +498,7 @@ class CoGExClient:
         password = os.getenv("INDRA_NEO4J_PASSWORD")
 
         if url and user and password:
-            logger.info("Using credentials from environment variables")
+            logger.debug("Using credentials from environment variables")
             return url, user, password
 
         # Try .env file
@@ -504,7 +514,7 @@ class CoGExClient:
                     password = os.getenv("INDRA_NEO4J_PASSWORD")
 
                     if url and user and password:
-                        logger.info(f"Using credentials from .env file: {env_path}")
+                        logger.debug("Using credentials from .env file")
                         return url, user, password
                 except ImportError:
                     logger.warning("python-dotenv not installed, cannot load .env file")
@@ -516,23 +526,22 @@ class CoGExClient:
             "3. .env file: CoGExClient(env_file=Path('~/.env'))"
         )
 
-    def _get_client(self, force_reconnect: bool = False) -> Neo4jClient:
+    def _get_client(self) -> Neo4jClient:
         """
         Get or create Neo4j client (lazy initialization).
 
-        Args:
-            force_reconnect: If True, discard existing client and create a new one.
-                Used by _execute_query to recover from dead connections.
+        Reconnection is handled by _execute_query setting self._client = None
+        before calling this method again.
 
         Returns:
             Connected Neo4jClient instance
         """
-        if self._client is not None and not force_reconnect:
+        if self._client is not None:
             return self._client
 
         url, user, password = self._load_credentials()
         self._client = Neo4jClient(url=url, auth=(user, password))
-        logger.info(f"Connected to INDRA CoGEx at {url}")
+        logger.debug("Connected to INDRA CoGEx at %s", url)
 
         return self._client
 
@@ -859,13 +868,18 @@ class CoGExClient:
                 except Exception:
                     continue
             if not resolved:
-                logger.info("Could not resolve gene name to HGNC ID: %s", gene_name)
+                logger.debug("Could not resolve gene name to HGNC ID: %s", gene_name)
 
         if not target_curies:
             logger.warning("No genes in universe could be resolved to HGNC IDs")
             return {}
 
-        logger.info(f"Resolved {len(target_curies)}/{len(gene_universe)} genes for reverse query")
+        # KG-13: Single aggregate INFO message instead of per-gene spam
+        n_failed = len(gene_universe) - len(target_curies)
+        logger.info(
+            "Resolved %d/%d gene names successfully (%d unresolved)",
+            len(target_curies), len(gene_universe), n_failed,
+        )
 
         # Chunked Cypher query: batch large CURIE lists to avoid Neo4j
         # query size limits and unbounded memory usage (ARCH-14).
@@ -999,7 +1013,7 @@ class CoGExClient:
             if hasattr(self._client, 'close'):
                 self._client.close()
             self._client = None
-            logger.info("Closed INDRA CoGEx connection")
+            logger.debug("Closed INDRA CoGEx connection")
 
     # KG-4: Context manager protocol for resource cleanup
     def __enter__(self):

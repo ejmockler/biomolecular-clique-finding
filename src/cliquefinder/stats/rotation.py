@@ -1495,13 +1495,16 @@ def _compute_msq_stat(
     """
     z_sq = z ** 2
 
+    # SET-TEST-15: By design, MSQ UP/DOWN zeros the opposite direction's z-scores.
+    # This makes UP test power for upregulation and DOWN for downregulation.
+    # For directional tests, prefer the MEAN statistic which preserves sign information.
     if alt == Alternative.UP:
-        # Only positive z contribute
+        # Only positive z contribute — negative z are zeroed
         mask = z > 0
         masked_sq = np.where(mask, z_sq, 0)
         return np.sum(abs_w * masked_sq, axis=1) / A
     elif alt == Alternative.DOWN:
-        # Only negative z contribute
+        # Only negative z contribute — positive z are zeroed
         mask = z < 0
         masked_sq = np.where(mask, z_sq, 0)
         return np.sum(abs_w * masked_sq, axis=1) / A
@@ -2066,7 +2069,17 @@ class RotationTestEngine:
                     weight_list.append(set_weights[i])
 
         if len(gene_indices) < 2:
-            # Not enough genes found
+            # SET-TEST-17: Single-gene (or zero-gene) sets cannot produce
+            # meaningful set enrichment statistics.  Return NaN p-values
+            # and log a warning so callers can detect and filter these.
+            if len(gene_indices) == 1:
+                warnings.warn(
+                    f"Gene set '{set_id}' has only 1 gene in data "
+                    f"(out of {len(feature_ids)} defined). "
+                    "Set enrichment is undefined for single-gene sets; "
+                    "returning NaN p-values.",
+                    stacklevel=2,
+                )
             return RotationResult(
                 feature_set_id=set_id,
                 n_genes=len(feature_ids),

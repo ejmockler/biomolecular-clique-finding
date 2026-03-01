@@ -204,6 +204,10 @@ class AnswerALSPhenotypeInferencer(PhenotypeInferencer):
         Returns:
             Extracted subject ID (e.g., "NEUAA295HHE") or None if no match
         """
+        # SEC-13: Limit input length to prevent ReDoS on user-supplied patterns
+        if len(sample_id) > 10_000:
+            return None
+
         match = self._compiled_pattern.search(sample_id)
         if match:
             return match.group(1)

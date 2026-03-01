@@ -476,7 +476,7 @@ class TestVerdictSingleContrast:
         # No supplementary phases at all
         report.compute_verdict()
         assert report.verdict == "validated"
-        assert "No supplementary phases ran" in report.summary
+        assert "Supplementary phases were not executed" in report.summary
 
     def test_all_supplementary_fail_inconclusive(self):
         """
@@ -581,4 +581,4 @@ class TestVerdictSingleContrast:
         report.compute_verdict()
         # No supplementary phases actually ran -> validated
         assert report.verdict == "validated"
-        assert "No supplementary phases ran" in report.summary
+        assert "Supplementary phases were not executed" in report.summary
