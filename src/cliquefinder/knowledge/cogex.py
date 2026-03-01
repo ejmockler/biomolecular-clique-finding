@@ -66,6 +66,7 @@ Examples:
 from __future__ import annotations
 
 from enum import Enum
+from collections import OrderedDict
 from typing import Tuple, List, Set, Optional, Dict, Literal
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -731,8 +732,15 @@ class CoGExClient:
                 reg_id_str = row[0]  # regulator_id
                 target_id_str = row[2]  # target_id
 
-                reg_ns, reg_id_val = reg_id_str.split(":", 1)
-                target_ns, target_id_val = target_id_str.split(":", 1)
+                try:
+                    reg_ns, reg_id_val = reg_id_str.split(":", 1)
+                    target_ns, target_id_val = target_id_str.split(":", 1)
+                except (ValueError, AttributeError) as parse_err:
+                    logger.warning(
+                        "Skipping malformed CURIE record: reg_id=%r, target_id=%r (%s)",
+                        reg_id_str, target_id_str, parse_err,
+                    )
+                    continue
 
                 # Normalize namespace to uppercase for consistent ID comparison
                 reg_ns = reg_ns.upper()
@@ -753,6 +761,8 @@ class CoGExClient:
             logger.info(f"Found {len(edges)} INDRA targets for {regulator[0]}:{regulator[1]}")
             return edges
 
+        except RuntimeError:
+            raise  # Already wrapped by _execute_query; do not double-wrap
         except Exception as e:
             logger.error(f"Failed to query downstream targets: {e}")
             raise RuntimeError(f"Query failed: {e}") from e
@@ -925,8 +935,15 @@ class CoGExClient:
                 reg_id_str = row[0]  # regulator_id
                 target_id_str = row[2]  # target_id
 
-                reg_ns, reg_id_val = reg_id_str.split(":", 1)
-                target_ns, target_id_val = target_id_str.split(":", 1)
+                try:
+                    reg_ns, reg_id_val = reg_id_str.split(":", 1)
+                    target_ns, target_id_val = target_id_str.split(":", 1)
+                except (ValueError, AttributeError) as parse_err:
+                    logger.warning(
+                        "Skipping malformed CURIE record: reg_id=%r, target_id=%r (%s)",
+                        reg_id_str, target_id_str, parse_err,
+                    )
+                    continue
 
                 # Normalize namespace to uppercase
                 reg_ns = reg_ns.upper()
@@ -969,6 +986,8 @@ class CoGExClient:
 
             return filtered_regulators
 
+        except RuntimeError:
+            raise  # Already wrapped by _execute_query; do not double-wrap
         except Exception as e:
             logger.error(f"Failed to discover regulators: {e}")
             raise RuntimeError(f"Reverse query failed: {e}") from e
@@ -1043,7 +1062,8 @@ class INDRAModuleExtractor:
         """
         self.client = client
         self.id_mapper = id_mapper
-        self._gene_cache: Dict[str, Optional[GeneId]] = {}
+        self._gene_cache: OrderedDict[str, Optional[GeneId]] = OrderedDict()
+        self._gene_cache_maxsize: int = 50_000
         self._mygene_client = None  # Lazy singleton for MyGene.info client
 
     def _get_mygene_client(self):
@@ -1079,11 +1099,26 @@ class INDRAModuleExtractor:
             Example: ("HGNC", "11998") for TP53 or P04637
         """
         if name in self._gene_cache:
+            # Move to end for LRU ordering
+            self._gene_cache.move_to_end(name)
             return self._gene_cache[name]
 
         result = self._resolve_gene_name_uncached(name)
         self._gene_cache[name] = result
+
+        # Evict oldest entries when cache exceeds maxsize
+        while len(self._gene_cache) > self._gene_cache_maxsize:
+            self._gene_cache.popitem(last=False)
+
         return result
+
+    def clear_gene_cache(self) -> None:
+        """Clear the gene name resolution cache.
+
+        Useful for long-running processes to reclaim memory, or after
+        updating the underlying HGNC/UniProt data.
+        """
+        self._gene_cache.clear()
 
     def _resolve_gene_name_uncached(self, name: str) -> Optional[GeneId]:
         """

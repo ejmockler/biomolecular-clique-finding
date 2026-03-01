@@ -423,7 +423,7 @@ class CoherenceAnalyzer:
         metadata = self.matrix.sample_metadata
         for group_key, group_df in metadata.groupby(self.stratify_by, observed=True):
             if isinstance(group_key, tuple):
-                condition = '_'.join(str(v) for v in group_key)
+                condition = '||'.join(str(v) for v in group_key)
             else:
                 condition = str(group_key)
 

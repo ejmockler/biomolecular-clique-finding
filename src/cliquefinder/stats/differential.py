@@ -1344,7 +1344,12 @@ def run_protein_differential(
         fi = np.array(feature_indices)
         Y_g = data_valid[fi, :][:, valid]  # (len(feature_indices), n_obs)
 
-        # Coefficients: β = Y_g @ X_g @ (X_g'X_g)^-1'
+        # Coefficients: β = Y_g @ X_g @ (X_g'X_g)^{-T}
+        # STAT-CORE-8: The .T on XtX_inv_g is mathematically correct.
+        # Standard OLS: β_col = (X'X)^{-1} X' Y_col  [column-major, Y is (n,p)]
+        # Row-major:    β_row = Y_row @ X @ ((X'X)^{-1}).T  [Y is (p,n)]
+        # When XtX_inv comes from pinv(), it may not be exactly symmetric
+        # even though X'X is symmetric, so the .T is necessary.
         beta_g = Y_g @ X_g @ XtX_inv_g.T  # (len(feature_indices), n_params)
 
         # Residuals and RSS

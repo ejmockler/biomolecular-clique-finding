@@ -272,7 +272,7 @@ class CliqueVisualizer:
         if condition_colors is None:
             # Default: orange tint for first phenotype, blue tint for second
             # Infer phenotypes from data
-            phenotypes = sorted(set(cond.split('_')[0] for cond in stratum_order))
+            phenotypes = sorted(set(cond.split('||')[0] if '||' in cond else cond.split('_')[0] for cond in stratum_order))
             default_color_schemes = {
                 phenotypes[0]: ['#fff7ed', '#fb923c', '#f97316'],  # Orange: light → dark
                 phenotypes[1] if len(phenotypes) > 1 else 'OTHER': ['#eff6ff', '#60a5fa', '#2563eb'],  # Blue
@@ -280,8 +280,8 @@ class CliqueVisualizer:
 
             colors = {}
             for condition in stratum_order:
-                phenotype = condition.split('_')[0]
-                sex_idx = 0 if condition.endswith('_F') else 1
+                phenotype = condition.split('||')[0] if '||' in condition else condition.split('_')[0]
+                sex_idx = 0 if condition.endswith('_F') or condition.endswith('||F') else 1
                 scheme = default_color_schemes.get(phenotype, ['#f3f4f6', '#9ca3af', '#6b7280'])
                 colors[condition] = [scheme[0], scheme[1 + sex_idx]]
         else:
@@ -309,7 +309,7 @@ class CliqueVisualizer:
             )
 
             # Set title with sample count
-            phenotype, sex = stratum.split('_')
+            phenotype, sex = stratum.split('||') if '||' in stratum else stratum.split('_')
             sex_label = 'Female' if sex == 'F' else 'Male'
 
             if show_sample_counts:
@@ -1089,7 +1089,7 @@ class CliqueVisualizer:
         phenotypes = []
         for key in ['CTRL_F', 'CTRL_M', 'CASE_F', 'CASE_M']:
             if key in gene_lists:
-                phenotype = key.split('_')[0]
+                phenotype = key.split('||')[0] if '||' in key else key.split('_')[0]
                 if phenotype not in phenotypes:
                     phenotypes.append(phenotype)
 

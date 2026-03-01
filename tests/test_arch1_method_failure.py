@@ -388,8 +388,8 @@ class TestAllMethodsFail:
                 verbose=False,
             )
 
-        # No methods succeeded
-        assert result.methods_run == []
+        # No methods succeeded (frozen dataclass converts list -> tuple)
+        assert len(result.methods_run) == 0
         assert result.n_cliques_tested == 0
 
         # All methods recorded as failed
@@ -398,8 +398,8 @@ class TestAllMethodsFail:
         assert "lmm" in result.failed_methods
         assert "ols crash" in result.failed_methods["ols"]
 
-        # No concordance possible
-        assert result.pairwise_concordance == []
+        # No concordance possible (frozen dataclass converts list -> tuple)
+        assert len(result.pairwise_concordance) == 0
         assert np.isnan(result.mean_spearman_rho)
         assert np.isnan(result.mean_cohen_kappa)
 
@@ -449,8 +449,10 @@ class TestBackwardCompatibility:
             # NOTE: NOT passing failed_methods — testing default
         )
 
-        assert mcr.failed_methods == {}
-        assert isinstance(mcr.failed_methods, dict)
+        assert len(mcr.failed_methods) == 0
+        # After MCOMP-6 frozen fix, failed_methods is wrapped in MappingProxyType
+        from types import MappingProxyType
+        assert isinstance(mcr.failed_methods, (dict, MappingProxyType))
 
 
 # ---------------------------------------------------------------------------

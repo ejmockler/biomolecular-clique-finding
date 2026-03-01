@@ -24,7 +24,7 @@ References:
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
@@ -1528,17 +1528,16 @@ def run_permutation_test_gpu(
                 print(f"    Shrinkage weight: {100*shrinkage_weight:.1f}% prior, {100*(1-shrinkage_weight):.1f}% sample")
 
         # Update matrices with EB priors for all subsequent computations
-        matrices.eb_d0 = d0
-        matrices.eb_s0_sq = s0_sq
-        matrices.eb_df_total = d0 + matrices.df_residual if not np.isinf(d0) else float(matrices.df_residual)
+        # GPU-9: Use dataclasses.replace() instead of mutating after construction
+        eb_df_total = d0 + matrices.df_residual if not np.isinf(d0) else float(matrices.df_residual)
+        matrices = replace(matrices, eb_d0=d0, eb_s0_sq=s0_sq, eb_df_total=eb_df_total)
     else:
         # No EB moderation - use standard OLS
         if verbose:
             print(f"    EB moderation: disabled (using standard t-statistics)")
         d0 = np.inf
-        matrices.eb_d0 = None
-        matrices.eb_s0_sq = None
-        matrices.eb_df_total = float(matrices.df_residual)
+        # GPU-9: Use dataclasses.replace() instead of mutating after construction
+        matrices = replace(matrices, eb_d0=None, eb_s0_sq=None, eb_df_total=float(matrices.df_residual))
 
     # Run batched OLS (with or without Empirical Bayes moderation)
     t_obs = batched_ols_contrast_test(Y_observed, matrices, use_gpu=use_gpu)

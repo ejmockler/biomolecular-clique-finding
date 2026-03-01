@@ -117,9 +117,9 @@ class INDRAKnowledgeSource(KnowledgeSource):
         self,
         target_universe: Set[str],
         min_targets: int = 10,
-        max_targets: Optional[int] = None,
         relationship_types: Optional[List[RelationshipType]] = None,
-        min_evidence: int = 2
+        min_evidence: int = 2,
+        max_targets: Optional[int] = None,
     ) -> List[KnowledgeModule]:
         # Convert set to list for INDRA extractor
         gene_universe = list(target_universe)

@@ -76,6 +76,11 @@ from scipy.stats import spearmanr
 
 logger = logging.getLogger(__name__)
 
+# Delimiter for joining/splitting multi-column condition strings.
+# Using '||' instead of '_' avoids breakage when metadata values
+# themselves contain underscores (e.g., 'late_onset').
+CONDITION_DELIMITER = "||"
+
 from cliquefinder.core.biomatrix import BioMatrix
 from cliquefinder.stats.correlation_tests import (
     test_correlation_difference,
@@ -634,17 +639,17 @@ class CliqueValidator:
 
         Returns conditions that can be passed to find_cliques, compute_correlation_matrix,
         etc. Conditions are formed by combining unique values of stratification columns
-        with underscores.
+        with the '||' delimiter (avoiding '_' which may appear in metadata values).
 
         Returns:
-            List of condition strings (e.g., ['CASE_Male', 'CASE_Female', 'CTRL_Male', 'CTRL_Female'])
+            List of condition strings (e.g., ['CASE||Male', 'CASE||Female', 'CTRL||Male', 'CTRL||Female'])
             If no stratification, returns ['all']
 
         Examples:
             >>> validator = CliqueValidator(matrix, stratify_by=['phenotype', 'Sex'])
             >>> conditions = validator.get_available_conditions()
             >>> print(conditions)
-            ['CASE_Female', 'CASE_Male', 'CTRL_Female', 'CTRL_Male']
+            ['CASE||Female', 'CASE||Male', 'CTRL||Female', 'CTRL||Male']
         """
         if not self.stratify_by:
             return ['all']
@@ -657,7 +662,7 @@ class CliqueValidator:
         for group_key, group_df in groups:
             # group_key is tuple if multiple columns, single value otherwise
             if isinstance(group_key, tuple):
-                condition = '_'.join(str(v) for v in group_key)
+                condition = CONDITION_DELIMITER.join(str(v) for v in group_key)
             else:
                 condition = str(group_key)
             conditions.append(condition)
@@ -672,7 +677,7 @@ class CliqueValidator:
         validation for use during precomputation.
 
         Args:
-            condition: Condition string (e.g., "CASE_Male")
+            condition: Condition string (e.g., "CASE||Male")
 
         Returns:
             Boolean array (n_samples,)
@@ -686,7 +691,7 @@ class CliqueValidator:
         if not self.stratify_by:
             return np.ones(self.matrix.n_samples, dtype=bool)
 
-        parts = condition.split('_')
+        parts = condition.split(CONDITION_DELIMITER)
 
         if len(parts) != len(self.stratify_by):
             raise ValueError(
@@ -962,7 +967,7 @@ class CliqueValidator:
 
         Args:
             genes: List of gene identifiers
-            condition: Condition string (e.g., "CASE_Male")
+            condition: Condition string (e.g., "CASE||Male")
             min_correlation: Minimum absolute correlation to create edge (default: 0.7)
             method: Correlation method:
                 - "max" (default): max(|Pearson|, |Spearman|) for each pair
@@ -1164,7 +1169,7 @@ class CliqueValidator:
 
         Args:
             genes: Set of gene identifiers to analyze
-            condition: Condition string (e.g., "CASE_Male")
+            condition: Condition string (e.g., "CASE||Male")
             min_correlation: Minimum absolute correlation for clique membership (default: 0.7)
             min_clique_size: Minimum clique size to report (default: 3)
             method: Correlation method:
@@ -1416,7 +1421,7 @@ class CliqueValidator:
 
         Args:
             genes: Set of gene identifiers to analyze
-            condition: Condition string (e.g., "CASE_Male")
+            condition: Condition string (e.g., "CASE||Male")
             min_correlation: Minimum absolute correlation for clique membership
             method: Correlation method:
                 - "max" (default): max(|Pearson|, |Spearman|) for each pair
@@ -1561,7 +1566,7 @@ class CliqueValidator:
         Args:
             regulator_name: Upstream regulator name/identifier (TF, kinase, etc.)
             indra_targets: INDRA target genes to analyze for coherence
-            condition: Condition string (e.g., "CASE_Male")
+            condition: Condition string (e.g., "CASE||Male")
             min_correlation: Minimum correlation for coherent module (default: 0.7)
             method: Correlation method - "pearson" or "spearman"
             use_fast_maximum: If True, use greedy maximum clique algorithm (O(n*d^2)).

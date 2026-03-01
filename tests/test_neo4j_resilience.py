@@ -217,7 +217,7 @@ class TestQueryFailuresRaiseRuntimeError:
             with patch.object(cogex_mod, "norm_id", return_value="hgnc:11998"):
                 client = CoGExClient(url="bolt://fake:7687", user="neo4j", password="secret")
 
-                with pytest.raises(RuntimeError, match="Reverse query failed"):
+                with pytest.raises(RuntimeError, match="Query failed"):
                     client.discover_regulators(
                         gene_universe=["TP53", "MDM2"],
                         min_evidence=2,

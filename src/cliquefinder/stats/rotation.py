@@ -1010,15 +1010,13 @@ def generate_rotation_vectors(
     # Generate standard normal vectors
     V = rng.standard_normal((n_rotations, n_dims))
 
-    if use_gpu and MLX_AVAILABLE:
-        V_mx = mx.array(V, dtype=mx.float32)
-        norms = mx.sqrt(mx.sum(V_mx ** 2, axis=1, keepdims=True))
-        R_mx = V_mx / mx.maximum(norms, mx.array(1e-10))
-        R = np.array(R_mx, dtype=np.float64)
-    else:
-        # CPU: normalize rows
-        norms = np.sqrt(np.sum(V ** 2, axis=1, keepdims=True))
-        R = V / np.maximum(norms, 1e-10)
+    # SET-TEST-12: Always normalize in float64 on CPU for full precision.
+    # GPU float32 normalization loses ~7 digits of precision in the
+    # orthogonalization step, which can bias rotation statistics.
+    # The GPU is only used downstream for the matrix multiply step
+    # (in _apply_rotations_gpu), where float32 truncation is bounded.
+    norms = np.sqrt(np.sum(V ** 2, axis=1, keepdims=True))
+    R = V / np.maximum(norms, 1e-10)
 
     return R
 
@@ -1238,7 +1236,9 @@ def _apply_rotations_gpu(
     t_rot_np = np.array(t_rot.T, dtype=np.float64)  # Shape: (n_rotations, n_genes)
 
     # Convert t to z via t-distribution (this is the bottleneck for large df)
-    if use_df > 100:
+    # SET-TEST-6: threshold raised from 100 to 1000. At df=100, the t->z
+    # approximation error for |t|=5 is ~0.5%; at df=1000 it is <0.1%.
+    if use_df > 1000:
         # Large df: t ≈ z
         z_rot_np = t_rot_np.copy()
     else:
@@ -1316,7 +1316,8 @@ def _apply_rotations_cpu(
     t_rot = t_rot.T
 
     # Convert to z-scores
-    if use_df > 100:
+    # SET-TEST-6: threshold raised from 100 to 1000 (see GPU path comment)
+    if use_df > 1000:
         z_rot = t_rot.copy()
     else:
         p_values = scipy_stats.t.cdf(t_rot, df=use_df)
@@ -2018,6 +2019,7 @@ class RotationTestEngine:
         gene_set_id: str | None = None,
         weights: NDArray[np.float64] | None = None,
         config: RotationTestConfig | None = None,
+        rotation_matrices: NDArray[np.float64] | None = None,
     ) -> RotationResult:
         """
         Test a single gene set using rotation.
@@ -2027,6 +2029,10 @@ class RotationTestEngine:
             gene_set_id: Identifier for the set (required if gene_set is a list)
             weights: Optional per-gene weights (if gene_set is a list)
             config: Test configuration
+            rotation_matrices: Pre-generated rotation vectors (n_rotations, n_dims).
+                When provided, these are used instead of generating new ones.
+                This enables shared rotations across multiple gene sets for
+                valid FWER correction (SET-TEST-8).
 
         Returns:
             RotationResult with p-values for all statistic/alternative combinations
@@ -2097,8 +2103,9 @@ class RotationTestEngine:
         t_obs = U_subset[:, 0] / np.maximum(se_obs, 1e-10)
 
         # Convert to z-scores
+        # SET-TEST-6: threshold raised from 100 to 1000 (see rotation path comments)
         df_total = self._effects.df_total or self._precomputed.df_residual
-        if df_total > 100:
+        if df_total > 1000:
             z_obs = t_obs
         else:
             p_obs = scipy_stats.t.cdf(t_obs, df=df_total)
@@ -2119,14 +2126,18 @@ class RotationTestEngine:
             for stat, alts in observed_stats.items()
         }
 
-        # Generate rotations
-        rng = np.random.default_rng(config.seed)
-        R = generate_rotation_vectors(
-            config.n_rotations,
-            self._precomputed.residual_dims,
-            rng=rng,
-            use_gpu=config.use_gpu and MLX_AVAILABLE,
-        )
+        # SET-TEST-8: Use pre-generated rotations if provided (shared across
+        # gene sets for valid FWER correction), otherwise generate fresh ones.
+        if rotation_matrices is not None:
+            R = rotation_matrices
+        else:
+            rng = np.random.default_rng(config.seed)
+            R = generate_rotation_vectors(
+                config.n_rotations,
+                self._precomputed.residual_dims,
+                rng=rng,
+                use_gpu=config.use_gpu and MLX_AVAILABLE,
+            )
 
         # Apply rotations to get null t-statistics
         use_gpu = config.use_gpu and MLX_AVAILABLE
@@ -2209,6 +2220,7 @@ class RotationTestEngine:
         gene_sets: list[WeightedFeatureSet] | dict[str, list[str]],
         config: RotationTestConfig | None = None,
         verbose: bool = True,
+        shared_rotations: bool = True,
     ) -> list[RotationResult]:
         """
         Test multiple gene sets.
@@ -2217,6 +2229,12 @@ class RotationTestEngine:
             gene_sets: Either list of WeightedFeatureSet or dict mapping ID -> genes
             config: Test configuration (shared across all sets)
             verbose: Print progress
+            shared_rotations: If True (default), pre-generate rotation vectors
+                once and reuse them for all gene sets. This ensures that null
+                distributions are comparable across gene sets, enabling valid
+                FWER (family-wise error rate) correction on the resulting
+                p-values (SET-TEST-8). If False, each gene set generates
+                independent rotations (legacy behavior).
 
         Returns:
             List of RotationResult, one per gene set
@@ -2234,6 +2252,19 @@ class RotationTestEngine:
         else:
             sets = gene_sets
 
+        # SET-TEST-8: Pre-generate shared rotation vectors so all gene sets
+        # use the same null rotations. This makes p-values comparable for
+        # FWER correction (e.g., Bonferroni, Holm).
+        R_shared = None
+        if shared_rotations and self._fitted:
+            rng = np.random.default_rng(config.seed)
+            R_shared = generate_rotation_vectors(
+                config.n_rotations,
+                self._precomputed.residual_dims,
+                rng=rng,
+                use_gpu=False,  # CPU normalization (SET-TEST-12)
+            )
+
         results = []
         n_sets = len(sets)
 
@@ -2241,7 +2272,9 @@ class RotationTestEngine:
             if verbose and (i + 1) % 50 == 0:
                 print(f"  Testing set {i + 1}/{n_sets}")
 
-            result = self.test_gene_set(gset, config=config)
+            result = self.test_gene_set(
+                gset, config=config, rotation_matrices=R_shared,
+            )
             results.append(result)
 
         return results

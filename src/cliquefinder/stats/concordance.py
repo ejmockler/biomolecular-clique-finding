@@ -315,7 +315,7 @@ def identify_disagreements(
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class MethodComparisonResult:
     """
     Complete comparison results across all differential testing methods.
@@ -324,8 +324,10 @@ class MethodComparisonResult:
     from multiple statistical methods (OLS, LMM, ROAST, Permutation) and provides
     multiple views into the comparison for different analyses.
 
-    This dataclass is NOT frozen because it contains mutable dict fields.
-    However, it should be treated as read-only after creation.
+    This frozen dataclass enforces immutability after construction, matching
+    the ``UnifiedCliqueResult`` and ``PreparedCliqueExperiment`` patterns
+    used elsewhere in the codebase.  Mutable container fields (dicts, lists)
+    are wrapped via ``MappingProxyType`` / ``tuple`` in ``__post_init__``.
 
     Design Principles:
         1. Raw results preserved for custom analysis
@@ -343,7 +345,7 @@ class MethodComparisonResult:
     Attributes:
         results_by_method: Raw results from each method, keyed by MethodName.
             Access individual method results with results_by_method[MethodName.OLS].
-        pairwise_concordance: List of ConcordanceMetrics for all method pairs.
+        pairwise_concordance: Tuple of ConcordanceMetrics for all method pairs.
             Use concordance_matrix() for a convenient matrix view.
         mean_spearman_rho: Average Spearman correlation of p-value ranks across all pairs.
             Interpretation: >0.8 excellent, 0.6-0.8 good, <0.5 poor agreement.
@@ -353,7 +355,7 @@ class MethodComparisonResult:
             Useful for investigating method-specific sensitivities.
         preprocessing_params: Dict capturing normalization, imputation, etc.
             for full reproducibility.
-        methods_run: List of MethodName values that were successfully executed.
+        methods_run: Tuple of MethodName values that were successfully executed.
         n_cliques_tested: Total number of cliques tested by at least one method.
 
     Example:
@@ -397,6 +399,49 @@ class MethodComparisonResult:
 
     # Failure tracking (ARCH-1)
     failed_methods: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Enforce true immutability for mutable fields."""
+        from types import MappingProxyType
+
+        # Wrap results_by_method: dict[MethodName, list] -> MappingProxyType with tuple values
+        if isinstance(self.results_by_method, dict) and not isinstance(
+            self.results_by_method, MappingProxyType
+        ):
+            frozen_rbm = MappingProxyType(
+                {k: tuple(v) for k, v in self.results_by_method.items()}
+            )
+            object.__setattr__(self, "results_by_method", frozen_rbm)
+
+        # Wrap pairwise_concordance list -> tuple
+        if isinstance(self.pairwise_concordance, list):
+            object.__setattr__(
+                self, "pairwise_concordance", tuple(self.pairwise_concordance)
+            )
+
+        # Wrap preprocessing_params dict -> MappingProxyType
+        if isinstance(self.preprocessing_params, dict) and not isinstance(
+            self.preprocessing_params, MappingProxyType
+        ):
+            object.__setattr__(
+                self,
+                "preprocessing_params",
+                MappingProxyType(dict(self.preprocessing_params)),
+            )
+
+        # Wrap methods_run list -> tuple
+        if isinstance(self.methods_run, list):
+            object.__setattr__(self, "methods_run", tuple(self.methods_run))
+
+        # Wrap failed_methods dict -> MappingProxyType
+        if isinstance(self.failed_methods, dict) and not isinstance(
+            self.failed_methods, MappingProxyType
+        ):
+            object.__setattr__(
+                self,
+                "failed_methods",
+                MappingProxyType(dict(self.failed_methods)),
+            )
 
     def wide_format(self, *, include_invalid: bool = False) -> "pd.DataFrame":
         """

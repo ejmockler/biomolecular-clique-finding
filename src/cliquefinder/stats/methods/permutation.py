@@ -124,12 +124,16 @@ class PermutationMethod:
             logger.warning("Permutation method requires sample_metadata as DataFrame")
             return []
 
+        # MCOMP-7: Defensive copy of sample_metadata to prevent mutation
+        # by the permutation engine.
+        sample_metadata_copy = experiment.sample_metadata.copy()
+
         # Run GPU-accelerated permutation test
         try:
             perm_results, null_df = run_permutation_test_gpu(
                 data=experiment.data,
                 feature_ids=list(experiment.feature_ids),
-                sample_metadata=experiment.sample_metadata,
+                sample_metadata=sample_metadata_copy,
                 clique_definitions=list(experiment.cliques),
                 condition_col=experiment.condition_column,
                 contrast=experiment.contrast,
@@ -142,6 +146,12 @@ class PermutationMethod:
             logger.warning(f"Permutation test failed: {e}")
             return []
 
+        # MCOMP-4: Build clique lookup dict once — O(M) — instead of
+        # scanning experiment.cliques per result — O(N*M).
+        clique_lookup: dict[str, object] = {
+            getattr(c, "clique_id", str(c)): c for c in experiment.cliques
+        }
+
         # Convert PermutationTestResult to UnifiedCliqueResult
         # perm_results is a list of PermutationTestResult dataclass objects
         for perm_result in perm_results:
@@ -151,37 +161,32 @@ class PermutationMethod:
                 observed_t = perm_result.observed_tvalue
                 empirical_p = perm_result.empirical_pvalue
 
-                # Compute empirical z-score from p-value using inverse normal CDF
-                # z = -Phi^-1(p) for upper tail
-                # For two-sided p-value, we use the sign of the observed t
-                if empirical_p <= 0 or empirical_p >= 1:
-                    # Edge case: clamp p-value
-                    empirical_p = max(1e-15, min(1 - 1e-15, empirical_p))
+                # MCOMP-3: Preserve original empirical p-value for storage.
+                # Only clamp for z-score computation (ppf needs (0, 1)).
+                p_for_z = empirical_p
+                if p_for_z <= 0 or p_for_z >= 1:
+                    p_for_z = max(1e-15, min(1 - 1e-15, p_for_z))
 
-                # Convert p-value to z-score (preserving sign from observed t)
+                # Convert clamped p-value to z-score (preserving sign from observed t)
                 if observed_t >= 0:
-                    z_score = -scipy_stats.norm.ppf(empirical_p / 2)  # Two-sided
+                    z_score = -scipy_stats.norm.ppf(p_for_z / 2)  # Two-sided
                 else:
-                    z_score = scipy_stats.norm.ppf(empirical_p / 2)
+                    z_score = scipy_stats.norm.ppf(p_for_z / 2)
 
-                # Get clique size from the original clique definition
-                clique_def = None
-                for c in experiment.cliques:
-                    if getattr(c, "clique_id", str(c)) == clique_id:
-                        clique_def = c
-                        break
+                # MCOMP-4: O(1) clique lookup via pre-built dict
+                clique_def = clique_lookup.get(clique_id)
 
                 if clique_def is not None:
                     n_proteins = len(getattr(clique_def, "protein_ids", []))
                 else:
                     n_proteins = 0
 
-                # n_proteins_found from looking at how many are in feature_to_idx
-                if clique_def is not None:
-                    protein_ids = getattr(clique_def, "protein_ids", [])
-                    n_found = sum(1 for p in protein_ids if p in experiment.feature_to_idx)
-                else:
-                    n_found = 0
+                # MCOMP-5: Use experiment.clique_to_feature_indices for
+                # protein counting, consistent with all other methods.
+                feature_indices = experiment.clique_to_feature_indices.get(
+                    clique_id, ()
+                )
+                n_found = len(feature_indices)
 
                 # Build method metadata from null distribution info
                 null_row = null_df[null_df["clique_id"] == clique_id] if not null_df.empty else None
@@ -194,7 +199,7 @@ class PermutationMethod:
                         method=self.name,
                         effect_size=float(observed_t),  # Use observed t as effect size
                         effect_size_se=None,  # Permutation doesn't provide SE
-                        p_value=float(empirical_p),
+                        p_value=float(empirical_p),  # MCOMP-3: unclamped original
                         statistic_value=float(z_score),
                         statistic_type="empirical_z",
                         degrees_of_freedom=None,  # Non-parametric

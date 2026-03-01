@@ -28,6 +28,7 @@ class ValidationReport:
     verdict: str = "inconclusive"
     bootstrap_stability: float | None = None
     bootstrap_ci: tuple[float, float] | None = None
+    phase_details: dict[str, str] = field(default_factory=dict)
 
     def add_phase(self, name: str, result: dict) -> None:
         """Add a phase result to the report."""
@@ -40,6 +41,8 @@ class ValidationReport:
             "summary": self.summary,
             "phases": self.phases,
         }
+        if self.phase_details:
+            d["phase_details"] = self.phase_details
         if self.bootstrap_stability is not None:
             d["bootstrap_stability"] = self.bootstrap_stability
             d["bootstrap_ci"] = list(self.bootstrap_ci) if self.bootstrap_ci else None
@@ -325,6 +328,9 @@ class ValidationReport:
             self.summary += (
                 " [low bootstrap stability — result sensitive to sample composition]"
             )
+
+        # VAL-4: Store phase details for downstream inspection / serialization
+        self.phase_details = details
 
     def print_summary(self) -> None:
         """Print formatted summary to console."""
