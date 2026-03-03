@@ -56,6 +56,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import time
 import warnings
 from datetime import datetime, timedelta
@@ -66,6 +68,9 @@ import numpy as np
 from tqdm import tqdm
 
 from cliquefinder.core.biomatrix import BioMatrix
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 __all__ = [
     'get_correlation_matrix',
@@ -193,6 +198,51 @@ def _load_metadata(meta_path: Path) -> dict:
     """Load cache metadata."""
     with open(meta_path, 'r') as f:
         return json.load(f)
+
+
+def _write_cache_checksum(cache_path: Path) -> None:
+    """Write SHA256 checksum sidecar for a cache file.
+
+    SEC-III-1 (Audit III): Cache integrity verification. After writing a
+    memory-mapped cache file, compute its SHA256 digest and store it in a
+    sidecar ``{cache_path}.sha256`` file. This allows tamper detection on
+    subsequent loads.
+    """
+    sha_path = Path(f"{cache_path}.sha256")
+    with open(cache_path, 'rb') as f:
+        file_hash = hashlib.sha256(f.read()).hexdigest()
+    with open(sha_path, 'w') as f:
+        f.write(file_hash)
+    logger.debug("Wrote cache checksum %s for %s", file_hash[:16], cache_path)
+
+
+def _verify_cache_checksum(cache_path: Path) -> bool:
+    """Verify SHA256 checksum of a cache file against its sidecar.
+
+    SEC-III-1 (Audit III): Returns True if the checksum matches or if no
+    sidecar exists (graceful upgrade for pre-checksum caches). Returns
+    False if the sidecar exists but the digest does not match.
+    """
+    sha_path = Path(f"{cache_path}.sha256")
+    if not sha_path.exists():
+        # No sidecar — legacy cache, allow loading (graceful upgrade)
+        return True
+
+    with open(cache_path, 'rb') as f:
+        actual_hash = hashlib.sha256(f.read()).hexdigest()
+    with open(sha_path, 'r') as f:
+        expected_hash = f.read().strip()
+
+    if actual_hash != expected_hash:
+        logger.warning(
+            "Cache integrity check failed for %s — rebuilding "
+            "(expected %s, got %s)",
+            cache_path, expected_hash[:16], actual_hash[:16],
+        )
+        return False
+
+    logger.debug("Cache integrity verified for %s", cache_path)
+    return True
 
 
 def compute_correlation_matrix_chunked(
@@ -402,6 +452,9 @@ def _create_correlation_matrix_cached(
     # Save metadata
     _save_metadata(meta_path, matrix, cache_key, method, computation_time)
 
+    # SEC-III-1 (Audit III): Write integrity checksum sidecar
+    _write_cache_checksum(cache_path)
+
     if verbose:
         print(f"\n✓ Correlation matrix cached successfully")
         print(f"  Computation time: {computation_time:.1f} seconds ({computation_time/60:.1f} minutes)")
@@ -516,30 +569,34 @@ def get_correlation_matrix(
                 )
                 force_recompute = True
             else:
-                # Load cached correlation matrix
-                load_start = time.time()
+                # SEC-III-1 (Audit III): Verify cache integrity before loading
+                if not _verify_cache_checksum(cache_path):
+                    force_recompute = True
+                else:
+                    # Load cached correlation matrix
+                    load_start = time.time()
 
-                corr_matrix = np.memmap(
-                    cache_path,
-                    dtype='float32',
-                    mode='r',
-                    shape=(matrix.n_features, matrix.n_features)
-                )
+                    corr_matrix = np.memmap(
+                        cache_path,
+                        dtype='float32',
+                        mode='r',
+                        shape=(matrix.n_features, matrix.n_features)
+                    )
 
-                # Copy to RAM (optional, but faster for repeated access)
-                # For very large matrices, keep as memmap
-                if matrix.n_features < 10000:
-                    corr_matrix = np.array(corr_matrix)
+                    # Copy to RAM (optional, but faster for repeated access)
+                    # For very large matrices, keep as memmap
+                    if matrix.n_features < 10000:
+                        corr_matrix = np.array(corr_matrix)
 
-                load_time = time.time() - load_start
+                    load_time = time.time() - load_start
 
-                if verbose:
-                    print(f"  Load time: {load_time:.2f} seconds")
-                    print(f"  Original computation time: {metadata['computation_time_seconds']:.1f} seconds")
-                    print(f"  Speedup: {metadata['computation_time_seconds'] / load_time:.1f}x")
-                    print(f"  Cached on: {metadata['created_at']}")
+                    if verbose:
+                        print(f"  Load time: {load_time:.2f} seconds")
+                        print(f"  Original computation time: {metadata['computation_time_seconds']:.1f} seconds")
+                        print(f"  Speedup: {metadata['computation_time_seconds'] / load_time:.1f}x")
+                        print(f"  Cached on: {metadata['created_at']}")
 
-                return corr_matrix
+                    return corr_matrix
 
         except Exception as e:
             warnings.warn(f"Failed to load cache: {e}. Recomputing.")
@@ -1021,29 +1078,33 @@ def get_weighted_correlation_matrix(
                 )
                 force_recompute = True
             else:
-                # Load cached correlation matrix
-                load_start = time.time()
+                # SEC-III-1 (Audit III): Verify cache integrity before loading
+                if not _verify_cache_checksum(cache_path):
+                    force_recompute = True
+                else:
+                    # Load cached correlation matrix
+                    load_start = time.time()
 
-                corr_matrix = np.memmap(
-                    cache_path,
-                    dtype='float32',
-                    mode='r',
-                    shape=(matrix.n_features, matrix.n_features)
-                )
+                    corr_matrix = np.memmap(
+                        cache_path,
+                        dtype='float32',
+                        mode='r',
+                        shape=(matrix.n_features, matrix.n_features)
+                    )
 
-                # Copy to RAM for small matrices
-                if matrix.n_features < 10000:
-                    corr_matrix = np.array(corr_matrix)
+                    # Copy to RAM for small matrices
+                    if matrix.n_features < 10000:
+                        corr_matrix = np.array(corr_matrix)
 
-                load_time = time.time() - load_start
+                    load_time = time.time() - load_start
 
-                if verbose:
-                    print(f"  Load time: {load_time:.2f} seconds")
-                    print(f"  Original computation time: {metadata['computation_time_seconds']:.1f} seconds")
-                    print(f"  Speedup: {metadata['computation_time_seconds'] / load_time:.1f}x")
-                    print(f"  Cached on: {metadata['created_at']}")
+                    if verbose:
+                        print(f"  Load time: {load_time:.2f} seconds")
+                        print(f"  Original computation time: {metadata['computation_time_seconds']:.1f} seconds")
+                        print(f"  Speedup: {metadata['computation_time_seconds'] / load_time:.1f}x")
+                        print(f"  Cached on: {metadata['created_at']}")
 
-                return corr_matrix
+                    return corr_matrix
 
         except Exception as e:
             warnings.warn(f"Failed to load cache: {e}. Recomputing.")
@@ -1106,6 +1167,9 @@ def get_weighted_correlation_matrix(
 
     with open(meta_path, 'w') as f:
         json.dump(metadata, f, indent=2)
+
+    # SEC-III-1 (Audit III): Write integrity checksum sidecar
+    _write_cache_checksum(cache_path)
 
     if verbose:
         print(f"\n✓ Weighted correlation matrix cached successfully")

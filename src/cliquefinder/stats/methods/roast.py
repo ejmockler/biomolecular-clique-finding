@@ -249,6 +249,8 @@ class ROASTMethod:
                         clique_id=rot_result.feature_set_id,
                         method=self.name,
                         effect_size=float(mean_z),  # Mean z-score as effect size proxy
+                        effect_size_type="mean_z",
+                        comparable_effect_size=None,  # ROAST has no log2FC equivalent
                         effect_size_se=None,  # ROAST doesn't provide SE
                         p_value=float(p_value),
                         statistic_value=float(observed) if np.isfinite(observed) else np.nan,

@@ -32,6 +32,7 @@ from cliquefinder.stats.rotation import (
     RotationTestEngine,
     run_rotation_test,
     compute_rotation_matrices,
+    compute_rotation_matrices_general,
     extract_gene_effects,
     generate_rotation_vectors,
     apply_rotations_batched,
@@ -612,6 +613,89 @@ class TestTwoGroupWarning:
                     contrast=('A', 'B'),
                     condition_column='phenotype',
                 )
+
+
+# =============================================================================
+# QR Rank-Deficiency Detection (STAT-III-2)
+# =============================================================================
+
+class TestQRRankDeficiency:
+    """Tests for QR rank-deficiency detection in both rotation functions."""
+
+    def test_general_rank_deficient_raises(self):
+        """compute_rotation_matrices_general rejects rank-deficient design."""
+        n = 10
+        # Create a rank-deficient matrix: col 2 = col 0 + col 1
+        X = np.random.default_rng(42).standard_normal((n, 3))
+        X[:, 2] = X[:, 0] + X[:, 1]  # Exact collinearity
+        contrast = np.array([0.0, 1.0, -1.0])
+
+        with pytest.raises(ValueError, match="rank-deficient"):
+            compute_rotation_matrices_general(X, contrast)
+
+    def test_general_full_rank_passes(self):
+        """compute_rotation_matrices_general accepts full-rank design."""
+        rng = np.random.default_rng(42)
+        n = 20
+        X = rng.standard_normal((n, 3))
+        contrast = np.array([0.0, 1.0, -1.0])
+
+        # Should not raise
+        result = compute_rotation_matrices_general(X, contrast)
+        assert isinstance(result, RotationPrecomputed)
+
+    def test_general_ill_conditioned_warns(self):
+        """compute_rotation_matrices_general warns on ill-conditioned design."""
+        rng = np.random.default_rng(42)
+        n = 20
+        X = rng.standard_normal((n, 3))
+        # Make nearly collinear: col 2 ≈ col 0 + col 1 with tiny perturbation
+        X[:, 2] = X[:, 0] + X[:, 1] + rng.standard_normal(n) * 1e-12
+        contrast = np.array([0.0, 1.0, -1.0])
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            compute_rotation_matrices_general(X, contrast)
+            cond_warnings = [x for x in w if "ill-conditioned" in str(x.message)]
+            assert len(cond_warnings) >= 1
+
+    def test_convenience_full_rank_passes(self):
+        """compute_rotation_matrices accepts a healthy two-group design."""
+        # The convenience function builds its own design matrix via
+        # pd.get_dummies, so rank deficiency only arises in pathological
+        # cases.  Verify that a normal design passes the new check.
+        sample_condition = np.array(
+            ['A'] * 10 + ['B'] * 10, dtype=object
+        )
+        result = compute_rotation_matrices(
+            sample_condition=sample_condition,
+            conditions=['A', 'B'],
+            contrast=('A', 'B'),
+        )
+        assert isinstance(result, RotationPrecomputed)
+
+    def test_general_single_collinear_column_detected(self):
+        """Rank deficiency detected even when only one column is redundant."""
+        rng = np.random.default_rng(99)
+        n = 15
+        X = rng.standard_normal((n, 4))
+        # Make col 3 = 2*col 0 - col 1 (exact linear dependency)
+        X[:, 3] = 2.0 * X[:, 0] - X[:, 1]
+        contrast = np.array([1.0, -1.0, 0.0, 0.0])
+
+        with pytest.raises(ValueError, match="rank-deficient"):
+            compute_rotation_matrices_general(X, contrast)
+
+    def test_general_rank_deficient_reports_numerical_rank(self):
+        """Error message includes the actual numerical rank."""
+        rng = np.random.default_rng(7)
+        n = 12
+        X = rng.standard_normal((n, 3))
+        X[:, 2] = X[:, 0]  # col 2 is exact duplicate of col 0
+        contrast = np.array([1.0, -1.0, 0.0])
+
+        with pytest.raises(ValueError, match="numerical rank 2 < 3"):
+            compute_rotation_matrices_general(X, contrast)
 
 
 if __name__ == "__main__":

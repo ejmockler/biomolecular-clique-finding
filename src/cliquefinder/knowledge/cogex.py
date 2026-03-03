@@ -74,6 +74,7 @@ import os
 import json
 import logging
 import random
+import re
 import time
 
 # INDRA imports
@@ -115,10 +116,23 @@ __all__ = [
     'PHOSPHORYLATION_TYPES',
     'STMT_TYPE_PRESETS',
     'resolve_stmt_types',
+    '_sanitize_connection_error',
+    '_get_hgnc_symbol_map',
 ]
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_connection_error(msg: str) -> str:
+    """Remove potential credentials from Neo4j error messages.
+
+    SEC-III-2 (Audit III): Neo4j connection URIs may contain credentials
+    in the form ``neo4j://user:password@host``. Strip the userinfo portion
+    to prevent credential leakage in logs or re-raised exceptions.
+    """
+    return re.sub(r'://[^@]+@', '://***@', str(msg))
+
 
 # Type alias for gene identifiers
 GeneId = Tuple[str, str]
@@ -606,15 +620,18 @@ class CoGExClient:
                     raise  # Non-retryable (syntax, constraint, etc.)
 
                 # Connection error — reset client and maybe retry
+                # SEC-III-2: Sanitize credentials from error messages
+                sanitized_msg = _sanitize_connection_error(str(e))
                 logger.warning(
                     "Connection error on attempt %d/%d: %s",
-                    attempt + 1, 1 + max_retries, e,
+                    attempt + 1, 1 + max_retries, sanitized_msg,
                 )
                 self._client = None  # force reconnect on next attempt
 
                 if attempt >= max_retries:
                     raise RuntimeError(
-                        f"Query failed after {1 + max_retries} attempts: {e}"
+                        f"Query failed after {1 + max_retries} attempts: "
+                        f"{sanitized_msg}"
                     ) from e
 
                 # KG-3: Exponential backoff with jitter before retry
@@ -627,7 +644,9 @@ class CoGExClient:
                 time.sleep(delay)
 
         # Should never reach here, but satisfy type checkers
-        raise RuntimeError(f"Query failed: {last_error}")  # pragma: no cover
+        raise RuntimeError(  # pragma: no cover
+            f"Query failed: {_sanitize_connection_error(str(last_error))}"
+        )
 
     def ping(self) -> bool:
         """
@@ -647,7 +666,11 @@ class CoGExClient:
             result = self._execute_query("RETURN 1 as test")
             return len(result) > 0
         except Exception as e:
-            logger.error(f"Failed to connect to INDRA CoGEx: {e}")
+            # SEC-III-2: Sanitize credentials from error messages
+            logger.error(
+                "Failed to connect to INDRA CoGEx: %s",
+                _sanitize_connection_error(str(e)),
+            )
             return False
 
     def get_downstream_targets(
@@ -773,8 +796,10 @@ class CoGExClient:
         except RuntimeError:
             raise  # Already wrapped by _execute_query; do not double-wrap
         except Exception as e:
-            logger.error(f"Failed to query downstream targets: {e}")
-            raise RuntimeError(f"Query failed: {e}") from e
+            # SEC-III-2: Sanitize credentials from error messages
+            sanitized_msg = _sanitize_connection_error(str(e))
+            logger.error("Failed to query downstream targets: %s", sanitized_msg)
+            raise RuntimeError(f"Query failed: {sanitized_msg}") from e
 
     # Chunk size for batching large CURIE lists in Neo4j queries
     CURIE_CHUNK_SIZE = 5000
@@ -1003,8 +1028,10 @@ class CoGExClient:
         except RuntimeError:
             raise  # Already wrapped by _execute_query; do not double-wrap
         except Exception as e:
-            logger.error(f"Failed to discover regulators: {e}")
-            raise RuntimeError(f"Reverse query failed: {e}") from e
+            # SEC-III-2: Sanitize credentials from error messages
+            sanitized_msg = _sanitize_connection_error(str(e))
+            logger.error("Failed to discover regulators: %s", sanitized_msg)
+            raise RuntimeError(f"Reverse query failed: {sanitized_msg}") from e
 
     def close(self):
         """Close Neo4j connection."""
@@ -1024,6 +1051,30 @@ class CoGExClient:
         """Close connection on context manager exit."""
         self.close()
         return False
+
+
+# SEC-III-3 (Audit III): Module-level reverse lookup map for batch gene resolution.
+# Lazily populated on first call to _get_hgnc_symbol_map().
+_HGNC_SYMBOL_TO_ID: Optional[Dict[str, str]] = None
+
+
+def _get_hgnc_symbol_map() -> Dict[str, str]:
+    """Build reverse lookup from HGNC symbols to IDs.
+
+    SEC-III-3 (Audit III): Avoids N+1 HTTP calls for gene resolution
+    by pre-building a symbol-to-HGNC-ID dictionary from the locally
+    available ``hgnc_client.hgnc_names`` mapping.
+    """
+    global _HGNC_SYMBOL_TO_ID
+    if _HGNC_SYMBOL_TO_ID is None:
+        try:
+            _HGNC_SYMBOL_TO_ID = {
+                name: hgnc_id
+                for hgnc_id, name in hgnc_client.hgnc_names.items()
+            }
+        except (AttributeError, Exception):
+            _HGNC_SYMBOL_TO_ID = {}
+    return _HGNC_SYMBOL_TO_ID
 
 
 class INDRAModuleExtractor:
@@ -1134,6 +1185,47 @@ class INDRAModuleExtractor:
         """
         self._gene_cache.clear()
 
+    def resolve_gene_names_batch(self, names: List[str]) -> Dict[str, Optional[GeneId]]:
+        """Resolve multiple gene names to HGNC IDs using local lookup.
+
+        SEC-III-3 (Audit III): Uses the pre-built ``_get_hgnc_symbol_map()``
+        reverse lookup for O(1) per-gene resolution, falling back to the
+        per-gene ``resolve_gene_name`` method only for names not found in
+        the local map (aliases, UniProt accessions, etc.).
+
+        Args:
+            names: List of gene symbols or UniProt accessions.
+
+        Returns:
+            Dict mapping each name to its GeneId or None.
+        """
+        symbol_map = _get_hgnc_symbol_map()
+        results: Dict[str, Optional[GeneId]] = {}
+
+        for name in names:
+            # Fast path: check instance cache first
+            if name in self._gene_cache:
+                self._gene_cache.move_to_end(name)
+                results[name] = self._gene_cache[name]
+                continue
+
+            # Fast path: local symbol map lookup
+            hgnc_id = symbol_map.get(name) or symbol_map.get(name.upper())
+            if hgnc_id is not None:
+                gene_id: Optional[GeneId] = ("HGNC", hgnc_id)
+                self._gene_cache[name] = gene_id
+                results[name] = gene_id
+                continue
+
+            # Slow path: per-gene HTTP fallback (UniProt, MyGene, etc.)
+            results[name] = self.resolve_gene_name(name)
+
+        # Evict oldest entries when cache exceeds maxsize
+        while len(self._gene_cache) > self._gene_cache_maxsize:
+            self._gene_cache.popitem(last=False)
+
+        return results
+
     def _resolve_gene_name_uncached(self, name: str) -> Optional[GeneId]:
         """
         Resolve gene symbol OR UniProt accession to HGNC identifier (uncached).
@@ -1153,7 +1245,6 @@ class INDRAModuleExtractor:
 
         # Strategy 2: Try as UniProt accession via INDRA uniprot_client (direct mapping)
         # UniProt accessions are 6-10 alphanumeric chars starting with letter
-        import re
         if re.match(r'^[A-Z][A-Z0-9]{5,9}$', name):
             try:
                 from indra.databases import uniprot_client
@@ -1292,20 +1383,22 @@ class INDRAModuleExtractor:
         logger.info(f"Extracting INDRA regulatory modules for {len(regulators)} regulators")
         logger.info(f"Gene universe size: {len(gene_universe)}")
 
-        # Resolve gene universe to IDs
-        universe_ids: Set[GeneId] = set()
-        for gene_name in gene_universe:
-            gene_id = self.resolve_gene_name(gene_name)
-            if gene_id:
-                universe_ids.add(gene_id)
+        # SEC-III-3: Batch-resolve gene universe to IDs (avoids N+1 HTTP calls)
+        universe_resolved = self.resolve_gene_names_batch(list(gene_universe))
+        universe_ids: Set[GeneId] = {
+            gid for gid in universe_resolved.values() if gid is not None
+        }
 
         logger.info(f"Resolved {len(universe_ids)}/{len(gene_universe)} genes in universe")
+
+        # SEC-III-3: Batch-resolve regulator names
+        reg_resolved = self.resolve_gene_names_batch(list(regulators))
 
         # Extract modules for each regulator
         modules = []
         for reg_name in regulators:
-            # Resolve regulator name
-            reg_id = self.resolve_gene_name(reg_name)
+            # Resolve regulator name (already batch-resolved)
+            reg_id = reg_resolved.get(reg_name)
             if not reg_id:
                 logger.warning(f"Could not resolve regulator: {reg_name}")
                 continue
@@ -1340,7 +1433,11 @@ class INDRAModuleExtractor:
                     logger.warning(f"  {reg_name}: no INDRA targets in gene universe")
 
             except Exception as e:
-                logger.error(f"Failed to extract module for {reg_name}: {e}")
+                # SEC-III-2: Sanitize credentials from error messages
+                logger.error(
+                    "Failed to extract module for %s: %s",
+                    reg_name, _sanitize_connection_error(str(e)),
+                )
                 continue
 
         logger.info(f"Successfully extracted {len(modules)} INDRA regulatory modules")

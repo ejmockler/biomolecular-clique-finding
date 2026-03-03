@@ -81,6 +81,7 @@ from .methods import (  # noqa: F401
 from .concordance import (  # noqa: F401
     compute_pairwise_concordance,
     identify_disagreements,
+    compute_concordance_rank,
     MethodComparisonResult,
 )
 

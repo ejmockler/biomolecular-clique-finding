@@ -203,11 +203,18 @@ class PermutationMethod:
                 null_mean = float(null_row["null_tvalue_mean"].iloc[0]) if null_row is not None and len(null_row) > 0 else np.nan
                 null_std = float(null_row["null_tvalue_std"].iloc[0]) if null_row is not None and len(null_row) > 0 else np.nan
 
+                # Extract comparable log2FC if available
+                _comparable_log2fc: float | None = None
+                if hasattr(perm_result, "observed_log2fc"):
+                    _comparable_log2fc = float(perm_result.observed_log2fc)
+
                 results.append(
                     UnifiedCliqueResult(
                         clique_id=clique_id,
                         method=self.name,
                         effect_size=float(observed_t),  # Use observed t as effect size
+                        effect_size_type="observed_t",
+                        comparable_effect_size=_comparable_log2fc,
                         effect_size_se=None,  # Permutation doesn't provide SE
                         p_value=float(empirical_p),  # MCOMP-3: unclamped original
                         statistic_value=float(z_score),

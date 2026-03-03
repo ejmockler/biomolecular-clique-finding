@@ -249,6 +249,18 @@ def squeeze_var(
             return sigma2.copy(), df.astype(np.float64)
         return sigma2.copy(), float(df)
 
+    # STAT-III-5 (Audit III): Warn when many input variances are NaN.
+    _n_nan = np.sum(np.isnan(sigma2))
+    if _n_nan > 0:
+        _nan_frac = _n_nan / len(sigma2)
+        if _nan_frac > 0.05:
+            warnings.warn(
+                f"squeeze_var: {_nan_frac:.1%} of input variances are NaN — "
+                f"moderated variances for these genes will be NaN. "
+                f"Check upstream filtering.",
+                stacklevel=2,
+            )
+
     # Weighted average shrinkage — NumPy broadcasting handles both
     # scalar and array df transparently.
     s2_post = (d0 * s0_sq + df * sigma2) / (d0 + df)
@@ -854,6 +866,8 @@ def batched_median_polish_gpu(
 
     # Iterative median polish
     converged = False
+    # DATA-III-1 (Audit III): Track NaN substitution count in batched median polish.
+    _nan_sub_total = 0
     for iteration in range(max_iter):
         # Row sweep: subtract row medians
         # Handle NaN by using nanmedian
@@ -870,7 +884,12 @@ def batched_median_polish_gpu(
             row_effects_np += row_med_np
         else:
             row_medians = np.nanmedian(residuals, axis=2)  # (batch, n_proteins)
-            row_medians = np.nan_to_num(row_medians, nan=0.0)
+            _nan_mask = np.isnan(row_medians)
+            if _nan_mask.any():
+                _nan_sub_total += int(_nan_mask.sum())
+                row_medians[_nan_mask] = 0.0
+            else:
+                pass  # no NaNs — fast path
             residuals = residuals - row_medians[:, :, np.newaxis]
             row_effects_np += row_medians
 
@@ -885,7 +904,12 @@ def batched_median_polish_gpu(
             col_effects_np += col_med_np
         else:
             col_medians = np.nanmedian(residuals, axis=1)  # (batch, n_samples)
-            col_medians = np.nan_to_num(col_medians, nan=0.0)
+            _nan_mask = np.isnan(col_medians)
+            if _nan_mask.any():
+                _nan_sub_total += int(_nan_mask.sum())
+                col_medians[_nan_mask] = 0.0
+            else:
+                pass  # no NaNs — fast path
             residuals = residuals - col_medians[:, np.newaxis, :]
             col_effects_np += col_medians
 
@@ -913,19 +937,37 @@ def batched_median_polish_gpu(
     # This matches the sequential algorithm in summarization.py
     if use_mlx:
         overall = np.nanmedian(row_effects_np, axis=1)  # (batch,) float64
-        overall = np.nan_to_num(overall, nan=0.0)
+        _nan_mask = np.isnan(overall)
+        if _nan_mask.any():
+            _nan_sub_total += int(_nan_mask.sum())
+            overall[_nan_mask] = 0.0
         # Adjust row_effects by subtracting overall (for consistency with sequential)
         row_effects_np = row_effects_np - overall[:, np.newaxis]
         # Combine overall + col_effects for final abundances (all float64)
         sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
+        if _nan_sub_total > 0:
+            logger.warning(
+                "Batched median polish: %d NaN→0 substitutions across %d permutations. "
+                "This may indicate all-NaN peptide rows in some permutation batches.",
+                _nan_sub_total, batch_size,
+            )
         return sample_abundances
     else:
         overall = np.nanmedian(row_effects_np, axis=1)  # (batch,)
-        overall = np.nan_to_num(overall, nan=0.0)
+        _nan_mask = np.isnan(overall)
+        if _nan_mask.any():
+            _nan_sub_total += int(_nan_mask.sum())
+            overall[_nan_mask] = 0.0
         # Adjust row_effects by subtracting overall (for consistency with sequential)
         row_effects_np = row_effects_np - overall[:, np.newaxis]
         # Combine overall + col_effects for final abundances
         sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
+        if _nan_sub_total > 0:
+            logger.warning(
+                "Batched median polish: %d NaN→0 substitutions across %d permutations. "
+                "This may indicate all-NaN peptide rows in some permutation batches.",
+                _nan_sub_total, batch_size,
+            )
         return sample_abundances
 
 

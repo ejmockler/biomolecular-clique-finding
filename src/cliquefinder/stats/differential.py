@@ -277,6 +277,52 @@ def fdr_correction(
     return adj_pvals
 
 
+def experiment_wide_fdr(
+    per_contrast_pvalues: dict[str, NDArray[np.float64]],
+    method: Literal["BH", "BY", "bonferroni"] = "BH",
+    alpha: float = 0.05,
+) -> dict[str, NDArray[np.float64]]:
+    """Apply FDR correction across all contrasts simultaneously.
+
+    MT-III-1 (Audit III): Optional global FDR correction for experiments
+    testing multiple contrasts. The default per-contrast correction controls
+    FDR within each contrast but not across contrasts.
+
+    Use this when all contrasts are exploratory (no a priori hypothesis
+    ordering). If one contrast is the primary hypothesis and others are
+    sensitivity analyses, use per-contrast FDR for the primary.
+
+    Args:
+        per_contrast_pvalues: Dict mapping contrast name -> array of p-values.
+        method: Multiple testing correction method.
+        alpha: Significance threshold.
+
+    Returns:
+        Dict mapping contrast name -> array of adjusted p-values.
+    """
+    # Collect all p-values with their source contrast
+    all_pvals = []
+    indices: list[tuple[str, int]] = []
+    for contrast_name, pvals in per_contrast_pvalues.items():
+        for j, p in enumerate(pvals):
+            if not np.isnan(p):
+                all_pvals.append(p)
+                indices.append((contrast_name, j))
+
+    if not all_pvals:
+        return {k: np.full_like(v, np.nan) for k, v in per_contrast_pvalues.items()}
+
+    # Apply global correction
+    global_adj = fdr_correction(np.array(all_pvals), method=method, alpha=alpha)
+
+    # Distribute back to per-contrast arrays
+    result = {k: np.full_like(v, np.nan) for k, v in per_contrast_pvalues.items()}
+    for (contrast_name, j), adj_p in zip(indices, global_adj):
+        result[contrast_name][j] = adj_p
+
+    return result
+
+
 def build_contrast_matrix(
     conditions: list[str],
     contrasts: dict[str, tuple[str, str]] | None = None,
@@ -553,10 +599,21 @@ def batched_ols_gpu(
 
             # Inverse on CPU (MLX linalg support varies)
             XtX_np_g = np.array(XtX_mx)
-            try:
-                XtX_inv_g = np.linalg.inv(XtX_np_g)
-            except np.linalg.LinAlgError:
-                XtX_inv_g = None
+            # STAT-III-3 (Audit III): Check condition number before inversion.
+            # Near-singular XtX inflates SEs without raising LinAlgError.
+            cond = np.linalg.cond(XtX_np_g)
+            if cond > 1e12:
+                logger.warning(
+                    "Near-singular XtX (condition=%.2e) for pattern with "
+                    "%d observations, %d parameters. Using pseudoinverse.",
+                    cond, n_obs, XtX_np_g.shape[0],
+                )
+                XtX_inv_g = np.linalg.pinv(XtX_np_g)
+            else:
+                try:
+                    XtX_inv_g = np.linalg.inv(XtX_np_g)
+                except np.linalg.LinAlgError:
+                    XtX_inv_g = None
 
             if XtX_inv_g is not None:
                 XtX_inv_mx = mx.array(XtX_inv_g)
@@ -594,16 +651,18 @@ def batched_ols_gpu(
 
         # Compute (X_g'X_g)^-1 for this pattern using lstsq for stability
         XtX_g = X_g.T @ X_g
-        try:
+        # STAT-III-3 (Audit III): Check condition number before inversion.
+        # Near-singular XtX inflates SEs without raising LinAlgError.
+        cond = np.linalg.cond(XtX_g)
+        if cond > 1e12:
+            logger.warning(
+                "Near-singular XtX (condition=%.2e) for pattern with "
+                "%d observations, %d parameters. Using pseudoinverse.",
+                cond, n_obs, XtX_g.shape[0],
+            )
+            XtX_inv_g = np.linalg.pinv(XtX_g)
+        else:
             XtX_inv_g = np.linalg.inv(XtX_g)
-        except np.linalg.LinAlgError:
-            # Fall back to pseudoinverse for near-singular patterns
-            try:
-                XtX_inv_g = np.linalg.pinv(XtX_g)
-            except np.linalg.LinAlgError:
-                for idx in feature_indices:
-                    n_valid_np[idx] = n_obs
-                continue
 
         # Extract Y for this pattern's features and valid samples
         fi = np.array(feature_indices)
@@ -1325,15 +1384,18 @@ def run_protein_differential(
 
         # Compute (X_g'X_g)^-1 for this pattern
         XtX_g = X_g.T @ X_g
-        try:
+        # STAT-III-3 (Audit III): Check condition number before inversion.
+        # Near-singular XtX inflates SEs without raising LinAlgError.
+        cond = np.linalg.cond(XtX_g)
+        if cond > 1e12:
+            logger.warning(
+                "Near-singular XtX (condition=%.2e) for pattern with "
+                "%d observations, %d parameters. Using pseudoinverse.",
+                cond, n_obs, XtX_g.shape[0],
+            )
+            XtX_inv_g = np.linalg.pinv(XtX_g)
+        else:
             XtX_inv_g = np.linalg.inv(XtX_g)
-        except np.linalg.LinAlgError:
-            # Fall back to pseudoinverse for near-singular patterns
-            try:
-                XtX_inv_g = np.linalg.pinv(XtX_g)
-            except np.linalg.LinAlgError:
-                df_per_feature[feature_indices] = max(n_obs - n_params, 0)
-                continue
 
         # Per-pattern c_var_factor: c' @ (X_g'X_g)^-1 @ c
         c_var_g = float(matrices.c @ XtX_inv_g @ matrices.c)

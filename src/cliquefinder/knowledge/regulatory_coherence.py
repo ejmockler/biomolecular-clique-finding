@@ -532,7 +532,15 @@ class CoherenceAnalyzer:
 
         # Handle NaN (genes with zero variance)
         np.fill_diagonal(corr_matrix, 1.0)
-        corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+        # DATA-III-1 (Audit III): Log NaN correlations from zero-variance genes.
+        nan_mask = np.isnan(corr_matrix)
+        if nan_mask.any():
+            n_nan = int(nan_mask.sum())
+            logger.debug(
+                "compute_correlation_matrix: %d NaN correlations from "
+                "zero-variance genes — zeroed.", n_nan,
+            )
+            corr_matrix[nan_mask] = 0.0
 
         return corr_matrix, valid_genes
 
@@ -915,6 +923,7 @@ class CoherenceAnalyzer:
 
         # Bootstrap
         stability_counts = {cid: 0 for cid in original_communities}
+        nan_sub_counts: list[int] = []
 
         for b in range(n_bootstrap):
             # Resample samples with replacement
@@ -923,7 +932,18 @@ class CoherenceAnalyzer:
             # Compute correlation on bootstrap sample
             expr_data = self.matrix.data[np.ix_(gene_idx, boot_sample_idx)]
             boot_corr = np.corrcoef(expr_data)
-            boot_corr = np.nan_to_num(boot_corr, nan=0.0)
+            # DATA-III-1 (Audit III): Track NaN correlations from zero-variance
+            # genes in bootstrap resamples instead of silent substitution.
+            nan_mask = np.isnan(boot_corr)
+            if nan_mask.any():
+                n_nan = int(nan_mask.sum())
+                logger.debug(
+                    "Bootstrap iter %d: %d NaN correlations from zero-variance genes",
+                    b, n_nan,
+                )
+                nan_sub_counts.append(n_nan)
+                boot_corr[nan_mask] = 0.0
+            np.fill_diagonal(boot_corr, 1.0)
 
             # Detect communities
             G_boot, _ = self.build_signed_graphs(boot_corr, gene_list)
@@ -948,6 +968,14 @@ class CoherenceAnalyzer:
                 # Count as "recovered" if Jaccard > 0.5
                 if best_jaccard > 0.5:
                     stability_counts[orig_cid] += 1
+
+        if nan_sub_counts:
+            logger.warning(
+                "Bootstrap stability: %d/%d iterations had NaN correlations "
+                "(total %d substitutions). This may indicate zero-variance genes "
+                "in bootstrap resamples.",
+                len(nan_sub_counts), n_bootstrap, sum(nan_sub_counts),
+            )
 
         # Convert to proportions
         stability = {cid: count / n_bootstrap for cid, count in stability_counts.items()}
@@ -976,6 +1004,7 @@ class CoherenceAnalyzer:
         gene_idx = [self.matrix.feature_ids.get_loc(g) for g in gene_list]
 
         null_modularities = []
+        perm_nan_counts: list[int] = []
 
         for p in range(n_permutations):
             # Permute sample labels (breaks correlation structure)
@@ -984,7 +1013,17 @@ class CoherenceAnalyzer:
             # Compute correlation on permuted data
             expr_data = self.matrix.data[np.ix_(gene_idx, perm_idx)]
             perm_corr = np.corrcoef(expr_data)
-            perm_corr = np.nan_to_num(perm_corr, nan=0.0)
+            # DATA-III-1 (Audit III): Track NaN correlations in permutation null.
+            nan_mask = np.isnan(perm_corr)
+            if nan_mask.any():
+                n_nan = int(nan_mask.sum())
+                logger.debug(
+                    "Permutation iter %d: %d NaN correlations from zero-variance genes",
+                    p, n_nan,
+                )
+                perm_nan_counts.append(n_nan)
+                perm_corr[nan_mask] = 0.0
+            np.fill_diagonal(perm_corr, 1.0)
 
             # Build graph and detect communities
             G_perm, _ = self.build_signed_graphs(perm_corr, gene_list)
@@ -1002,6 +1041,14 @@ class CoherenceAnalyzer:
                 null_modularities.append(mod)
             else:
                 null_modularities.append(0.0)
+
+        if perm_nan_counts:
+            logger.warning(
+                "Permutation null: %d/%d iterations had NaN correlations "
+                "(total %d substitutions). This may indicate zero-variance genes "
+                "in permuted resamples.",
+                len(perm_nan_counts), n_permutations, sum(perm_nan_counts),
+            )
 
         # Compute p-value
         null_modularities = np.array(null_modularities)

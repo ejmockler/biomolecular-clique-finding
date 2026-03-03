@@ -173,6 +173,8 @@ class _BaseLinearMethod(abc.ABC):
                     clique_id=clique_id,
                     method=self.name,
                     effect_size=contrast.log2_fc,
+                    effect_size_type="log2fc",
+                    comparable_effect_size=float(contrast.log2_fc),
                     effect_size_se=contrast.se,
                     p_value=contrast.p_value,
                     statistic_value=contrast.t_value,

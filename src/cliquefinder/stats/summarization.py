@@ -14,6 +14,7 @@ References:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -21,6 +22,8 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 from scipy import stats
+
+logger = logging.getLogger(__name__)
 
 
 class SummarizationMethod(Enum):
@@ -122,14 +125,27 @@ def tukey_median_polish(
     for iteration in range(max_iter):
         # Row sweep: subtract row medians
         row_medians = median_fn(residuals, axis=1)
-        # Handle all-NaN rows
-        row_medians = np.nan_to_num(row_medians, nan=0.0)
+        # DATA-III-1 (Audit III): Log all-NaN rows before zero-fill.
+        _nan_rows = np.isnan(row_medians)
+        if _nan_rows.any():
+            logger.info(
+                "Median polish: %d/%d rows entirely NaN — zero-filled.",
+                int(_nan_rows.sum()), len(row_medians),
+            )
+            row_medians[_nan_rows] = 0.0
         residuals = residuals - row_medians[:, np.newaxis]
         row_effects = row_effects + row_medians
 
         # Column sweep: subtract column medians
         col_medians = median_fn(residuals, axis=0)
-        col_medians = np.nan_to_num(col_medians, nan=0.0)
+        # DATA-III-1 (Audit III): Log all-NaN columns before zero-fill.
+        _nan_cols = np.isnan(col_medians)
+        if _nan_cols.any():
+            logger.info(
+                "Median polish: %d/%d columns entirely NaN — zero-filled.",
+                int(_nan_cols.sum()), len(col_medians),
+            )
+            col_medians[_nan_cols] = 0.0
         residuals = residuals - col_medians[np.newaxis, :]
         col_effects = col_effects + col_medians
 

@@ -52,12 +52,30 @@ Examples:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
 import pandas as pd
 from cliquefinder.core.quality import QualityFlag
 
-__all__ = ['BioMatrix']
+__all__ = ['BioMatrix', 'TransformProvenance']
+
+
+@dataclass(frozen=True)
+class TransformProvenance:
+    """Tracks what transformations have been applied to the data.
+
+    ARCH-III-1 (Audit III): Immutable provenance record prevents double
+    log-transformation, ensures downstream consumers receive properly
+    transformed input, and enables pipeline reproducibility auditing.
+    """
+    is_log_transformed: bool = False
+    log_base: float | None = None
+    is_imputed: bool = False
+    imputation_method: str | None = None
+    is_normalized: bool = False
+    normalization_method: str | None = None
+    is_batch_corrected: bool = False
 
 
 class BioMatrix:
@@ -94,6 +112,7 @@ class BioMatrix:
         sample_ids: pd.Index,
         sample_metadata: pd.DataFrame,
         quality_flags: np.ndarray,
+        provenance: TransformProvenance | None = None,
     ):
         """
         Initialize BioMatrix with validation.
@@ -165,6 +184,7 @@ class BioMatrix:
         self._sample_ids = sample_ids
         self._sample_metadata = sample_metadata
         self._quality_flags = quality_flags
+        self._provenance = provenance if provenance is not None else TransformProvenance()
 
     @property
     def data(self) -> np.ndarray:
@@ -190,6 +210,11 @@ class BioMatrix:
     def quality_flags(self) -> np.ndarray:
         """Quality tracking matrix (same shape as data)."""
         return self._quality_flags
+
+    @property
+    def provenance(self) -> TransformProvenance:
+        """Transformation provenance record (immutable)."""
+        return self._provenance
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -247,6 +272,7 @@ class BioMatrix:
             sample_ids=self._sample_ids[mask],
             sample_metadata=self._sample_metadata.loc[self._sample_ids[mask]],
             quality_flags=self._quality_flags[:, mask],
+            provenance=self._provenance,
         )
 
     def select_features(self, mask: np.ndarray | pd.Series) -> BioMatrix:
@@ -292,6 +318,7 @@ class BioMatrix:
             sample_ids=self._sample_ids,
             sample_metadata=self._sample_metadata,
             quality_flags=self._quality_flags[mask, :],
+            provenance=self._provenance,
         )
 
     def copy(self, deep: bool = True) -> BioMatrix:
@@ -318,6 +345,7 @@ class BioMatrix:
                 sample_ids=self._sample_ids.copy(),
                 sample_metadata=self._sample_metadata.copy(),
                 quality_flags=self._quality_flags.copy(),
+                provenance=self._provenance,
             )
         else:
             return BioMatrix(
@@ -326,6 +354,7 @@ class BioMatrix:
                 sample_ids=self._sample_ids,
                 sample_metadata=self._sample_metadata,
                 quality_flags=self._quality_flags,
+                provenance=self._provenance,
             )
 
     def __repr__(self) -> str:

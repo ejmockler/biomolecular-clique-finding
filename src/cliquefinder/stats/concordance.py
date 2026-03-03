@@ -311,6 +311,112 @@ def identify_disagreements(
 
 
 # =============================================================================
+# Concordance Rank
+# =============================================================================
+
+
+def compute_concordance_rank(
+    results_by_method: dict[MethodName, list[UnifiedCliqueResult]],
+    alpha: float = 0.05,
+) -> dict[str, int]:
+    """Rank gene sets by cross-method agreement.
+
+    SCI-III-2 (Audit III): Provides a natural ranking that accounts for
+    cross-method agreement without formal cross-method correction.
+    Gene sets significant across more methods rank higher.
+    Ties broken by geometric mean p-value (ascending).
+
+    This ranking partially mitigates ascertainment bias (well-studied genes
+    having more INDRA edges and thus higher single-method power) because a
+    gene set must replicate across *multiple* statistical approaches to rank
+    highly. A large gene set that is significant only in ROAST (due to power)
+    but not in permutation or OLS will be ranked below a smaller gene set
+    that is significant in all three.
+
+    Algorithm:
+        1. For each gene set, count how many methods call it significant
+           at the given ``alpha`` level (using valid results only).
+        2. For each gene set, compute the geometric mean of its p-values
+           across all methods that produced valid results.
+        3. Sort gene sets by (n_methods_significant DESC, geomean_pvalue ASC).
+        4. Assign integer ranks starting at 1 (ties receive the same rank;
+           subsequent ranks are offset accordingly, i.e., dense ranking).
+
+    Args:
+        results_by_method: Dictionary mapping MethodName to list of
+            UnifiedCliqueResult. All methods should have been run on the
+            same (or overlapping) set of gene sets.
+        alpha: Significance threshold for counting a method as
+            "significant" for a gene set. Default is 0.05.
+
+    Returns:
+        Dictionary mapping gene_set_id (clique_id) to rank (1 = best,
+        i.e., most methods significant with lowest geometric mean p-value).
+        Gene sets with no valid results across any method are excluded.
+
+    Raises:
+        ValueError: If ``results_by_method`` is empty.
+
+    Example:
+        >>> from cliquefinder.stats.concordance import compute_concordance_rank
+        >>> ranks = compute_concordance_rank(results_by_method, alpha=0.05)
+        >>> for gene_set, rank in sorted(ranks.items(), key=lambda x: x[1]):
+        ...     print(f"  Rank {rank}: {gene_set}")
+    """
+    if not results_by_method:
+        raise ValueError("results_by_method must be non-empty")
+
+    # Collect all valid results keyed by clique_id
+    # For each clique: list of (method, p_value) from valid results
+    clique_pvalues: dict[str, list[float]] = {}
+
+    for _method, results in results_by_method.items():
+        for r in results:
+            if not r.is_valid:
+                continue
+            if r.clique_id not in clique_pvalues:
+                clique_pvalues[r.clique_id] = []
+            clique_pvalues[r.clique_id].append(r.p_value)
+
+    if not clique_pvalues:
+        return {}
+
+    # For each clique, compute (n_methods_significant, geometric_mean_pvalue)
+    ranking_keys: dict[str, tuple[int, float]] = {}
+
+    for clique_id, pvals in clique_pvalues.items():
+        n_sig = sum(1 for p in pvals if p < alpha)
+
+        # Geometric mean of p-values: exp(mean(log(p)))
+        # Clamp p-values away from zero to avoid log(0)
+        clamped = [max(p, 1e-300) for p in pvals]
+        log_mean = sum(np.log(p) for p in clamped) / len(clamped)
+        geomean_p = float(np.exp(log_mean))
+
+        ranking_keys[clique_id] = (n_sig, geomean_p)
+
+    # Sort by n_methods_significant DESC, then geomean_pvalue ASC
+    sorted_cliques = sorted(
+        ranking_keys.keys(),
+        key=lambda cid: (-ranking_keys[cid][0], ranking_keys[cid][1]),
+    )
+
+    # Assign dense ranks (ties get same rank)
+    ranks: dict[str, int] = {}
+    current_rank = 1
+    prev_key: tuple[int, float] | None = None
+
+    for i, cid in enumerate(sorted_cliques):
+        key = ranking_keys[cid]
+        if prev_key is not None and key != prev_key:
+            current_rank = i + 1
+        ranks[cid] = current_rank
+        prev_key = key
+
+    return ranks
+
+
+# =============================================================================
 # MethodComparisonResult Dataclass
 # =============================================================================
 
@@ -845,5 +951,6 @@ class MethodComparisonResult:
 __all__ = [
     "compute_pairwise_concordance",
     "identify_disagreements",
+    "compute_concordance_rank",
     "MethodComparisonResult",
 ]

@@ -562,6 +562,30 @@ def compute_rotation_matrices_general(
     # Q is n × n orthogonal, R is n × p upper triangular
     Q, R = np.linalg.qr(X_reparam, mode='complete')
 
+    # STAT-III-2 (Audit III): Check numerical rank via R diagonal.
+    # np.linalg.qr always succeeds, even on rank-deficient input.
+    # Near-zero R diagonal entries indicate collinear design columns.
+    R_upper = R[:n_params, :n_params]
+    r_diag = np.abs(np.diag(R_upper))
+    rank_tol = max(n_samples, n_params) * np.finfo(np.float64).eps * r_diag.max()
+    numerical_rank = int(np.sum(r_diag > rank_tol))
+    if numerical_rank < n_params:
+        raise ValueError(
+            f"Design matrix is rank-deficient: numerical rank {numerical_rank} "
+            f"< {n_params} parameters. This typically indicates collinear "
+            f"covariates or redundant dummy coding in the design matrix. "
+            f"R diagonal: {r_diag.tolist()}"
+        )
+    cond_number = r_diag.max() / r_diag.min() if r_diag.min() > 0 else np.inf
+    if cond_number > 1e8:
+        import warnings
+        warnings.warn(
+            f"Design matrix is ill-conditioned (condition number: {cond_number:.2e}). "
+            f"Results may be numerically unstable. Consider removing correlated "
+            f"covariates.",
+            stacklevel=2,
+        )
+
     # Extract Q2 = Q[:, p-1:] which has d+1 columns
     # - Q[:, p-1] is the direction corresponding to the contrast
     # - Q[:, p:] spans the residual space
@@ -814,6 +838,32 @@ def compute_rotation_matrices(
     # Full QR decomposition
     # X = Q @ R where Q is n × n, R is n × p
     Q, R = np.linalg.qr(X_weighted, mode='complete')
+
+    # STAT-III-2 (Audit III): Check numerical rank via R diagonal.
+    # np.linalg.qr always succeeds, even on rank-deficient input.
+    # Near-zero R diagonal entries indicate collinear design columns.
+    R_upper = R[:n_params, :n_params]
+    r_diag = np.abs(np.diag(R_upper))
+    rank_tol = (
+        max(n_samples_valid, n_params) * np.finfo(np.float64).eps * r_diag.max()
+    )
+    numerical_rank = int(np.sum(r_diag > rank_tol))
+    if numerical_rank < n_params:
+        raise ValueError(
+            f"Design matrix is rank-deficient: numerical rank {numerical_rank} "
+            f"< {n_params} parameters. This typically indicates collinear "
+            f"covariates or redundant dummy coding in the design matrix. "
+            f"R diagonal: {r_diag.tolist()}"
+        )
+    cond_number = r_diag.max() / r_diag.min() if r_diag.min() > 0 else np.inf
+    if cond_number > 1e8:
+        import warnings
+        warnings.warn(
+            f"Design matrix is ill-conditioned (condition number: {cond_number:.2e}). "
+            f"Results may be numerically unstable. Consider removing correlated "
+            f"covariates.",
+            stacklevel=2,
+        )
 
     # Q2 contains columns p-1 through n-1 (d+1 columns total)
     # But we need to handle the contrast properly
@@ -1160,6 +1210,10 @@ def _apply_rotations_gpu(
     within ~1e-6.  For extreme t-statistics (|t| > 10), float32 truncation
     can shift individual p-values by up to ~1e-4.
 
+    STAT-III-1 (Audit III): The residual SS computation (rho_sq - u*^2) is now
+    performed in float64 on the CPU to prevent catastrophic cancellation.
+    Only the downstream variance/t-stat computation remains in float32.
+
     Final t-to-z conversion and set-statistic aggregation are performed in
     float64 on the CPU, so the float32 window is limited to the per-gene
     variance and t-statistic computation.
@@ -1178,32 +1232,27 @@ def _apply_rotations_gpu(
 
     # Convert to MLX arrays
     U_mx = mx.array(U, dtype=mx.float32)
-    rho_sq_mx = mx.array(rho_sq, dtype=mx.float32)
     R_mx = mx.array(R, dtype=mx.float32)
 
     # Rotated first elements: U_rot = U @ R'
     # Shape: (n_genes, n_rotations)
     U_rot = mx.matmul(U_mx, R_mx.T)
 
-    # Rotated squared elements
-    U_rot_sq = U_rot ** 2
+    # Rotated squared elements — transfer to CPU for float64 subtraction
+    # STAT-III-1: float32 subtraction of rho_sq - U_rot_sq suffers catastrophic
+    # cancellation when rho_sq ≈ U_rot_sq. The matmul above is stable in float32,
+    # but the subtraction must be in float64 to preserve precision.
+    U_rot_np = np.array(U_rot, dtype=np.float64)
+    U_rot_sq_np = U_rot_np ** 2
+    residual_ss_np = rho_sq[:, None] - U_rot_sq_np  # float64 subtraction
 
-    # Rotated residual SS: ρ² - u*²
-    # Broadcasting: (n_genes, 1) - (n_genes, n_rotations)
-    residual_ss_rot = rho_sq_mx[:, None] - U_rot_sq
+    # STAT-14 + STAT-III-1: Mark rotations where ANY gene has non-positive
+    # residual SS. Done in float64 for accurate near-zero detection.
+    valid_rotation = np.all(residual_ss_np > 0, axis=0)
 
-    # STAT-14: Mark rotations where ANY gene has negative residual SS as
-    # invalid instead of clamping to epsilon (which would inflate t-stats).
-    # valid_rotation: per-rotation boolean — True if all genes have positive
-    # residual SS for that rotation.
-    # Shape of residual_ss_rot: (n_genes, n_rotations) — use axis=0 to
-    # reduce over genes, yielding (n_rotations,).
-    valid_rotation_mx = mx.all(residual_ss_rot > 0, axis=0)
-    valid_rotation = np.array(valid_rotation_mx, dtype=np.bool_)
-
-    # Still clamp for numerical safety (avoids NaN in sqrt); the invalid
-    # rotations will be excluded from p-value computation downstream.
-    residual_ss_rot = mx.maximum(residual_ss_rot, mx.array(1e-10))
+    # Clamp for numerical safety, then transfer to MLX for downstream GPU ops.
+    residual_ss_np = np.maximum(residual_ss_np, 1e-10)
+    residual_ss_rot = mx.array(residual_ss_np.astype(np.float32))
 
     # Rotated sample variances
     var_rot = residual_ss_rot / max(df_residual, 1)
@@ -1728,6 +1777,18 @@ class RotationTestEngine:
         self.gene_to_idx = {g: i for i, g in enumerate(gene_ids)}
         self.metadata = metadata
 
+        # VALID-III-1 (Audit III): Validate input shapes.
+        if data.shape[0] != len(gene_ids):
+            raise ValueError(
+                f"Gene count mismatch: data has {data.shape[0]} rows but "
+                f"gene_ids has {len(gene_ids)} entries"
+            )
+        if data.shape[1] != len(metadata):
+            raise ValueError(
+                f"Sample count mismatch: data has {data.shape[1]} columns but "
+                f"metadata has {len(metadata)} rows"
+            )
+
         # State set by fit()
         self._precomputed: RotationPrecomputed | None = None
         self._effects: GeneEffects | None = None
@@ -1799,6 +1860,22 @@ class RotationTestEngine:
             sample_conditions = sample_conditions[valid_condition_mask]
             self.data = self.data[:, valid_condition_mask]
             self.metadata = self.metadata[valid_condition_mask].reset_index(drop=True)
+
+        # VALID-III-2 (Audit III): Remove zero-variance genes before rotation.
+        # Zero-variance genes produce NaN in t-statistics and contaminate EB priors.
+        gene_vars = np.nanvar(self.data, axis=1)
+        zero_var_mask = gene_vars == 0
+        if zero_var_mask.any():
+            n_removed = int(zero_var_mask.sum())
+            warnings.warn(
+                f"Removing {n_removed}/{len(self.gene_ids)} zero-variance genes "
+                f"before rotation testing.",
+                stacklevel=2,
+            )
+            keep_mask = ~zero_var_mask
+            self.data = self.data[keep_mask]
+            self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
+            self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
 
         # Check for >2 groups: ROAST is designed for 2-group comparisons
         if contrast is not None:

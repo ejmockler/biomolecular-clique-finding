@@ -86,6 +86,8 @@ class UnifiedCliqueResult:
         degrees_of_freedom: Degrees of freedom for parametric tests (None for non-parametric)
         n_proteins: Number of proteins in the clique definition
         n_proteins_found: Number of proteins found in the expression data
+        effect_size_type: What kind of effect size is stored ("log2fc", "mean_z", "observed_t")
+        comparable_effect_size: log2FC when available (OLS/LMM/permutation), None for ROAST
         method_metadata: Method-specific additional information
 
     Example:
@@ -125,6 +127,10 @@ class UnifiedCliqueResult:
     n_proteins: int
     n_proteins_found: int
 
+    # Effect size standardization (fields with defaults must follow non-default fields)
+    effect_size_type: str = ""  # "log2fc", "mean_z", "observed_t"
+    comparable_effect_size: float | None = None  # log2FC when available (OLS/LMM/permutation), None for ROAST
+
     # Method-specific (for deep analysis)
     method_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -148,6 +154,8 @@ class UnifiedCliqueResult:
             "clique_id": self.clique_id,
             "method": self.method.value,
             "effect_size": self.effect_size,
+            "effect_size_type": self.effect_size_type,
+            "comparable_effect_size": self.comparable_effect_size,
             "effect_size_se": self.effect_size_se,
             "p_value": self.p_value,
             "statistic_value": self.statistic_value,

@@ -316,7 +316,7 @@ class TestAllExports:
     def test_concordance_all(self):
         import cliquefinder.stats.concordance as conc
 
-        expected = {"compute_pairwise_concordance", "identify_disagreements", "MethodComparisonResult"}
+        expected = {"compute_pairwise_concordance", "identify_disagreements", "compute_concordance_rank", "MethodComparisonResult"}
         actual = set(conc.__all__)
         assert actual == expected
 
