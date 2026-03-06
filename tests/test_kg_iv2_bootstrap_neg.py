@@ -60,7 +60,7 @@ def _make_analyzer(matrix, n_bootstrap=5):
         soft_threshold_power=2.0,  # low power so edges survive
         min_edge_weight=0.01,
     )
-    return CoherenceAnalyzer(matrix, config=config)
+    return CoherenceAnalyzer(matrix, config=config, seed=42)
 
 
 class TestBootstrapStabilityCorrelationSign:

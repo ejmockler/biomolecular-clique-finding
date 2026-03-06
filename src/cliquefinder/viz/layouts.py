@@ -57,8 +57,6 @@ def compute_layout(
     >>> pos = compute_layout(G, algorithm="fr")
     >>> # pos["node_id"] returns (x, y) coordinates
     """
-    np.random.seed(seed)
-
     if len(G.nodes()) == 0:
         return {}
 
@@ -160,8 +158,6 @@ def layout_with_communities(
     dict[str, tuple[float, float]]
         Node -> position mapping.
     """
-    np.random.seed(seed)
-
     # First, compute standard layout
     base_pos = compute_layout(G, algorithm, seed)
 

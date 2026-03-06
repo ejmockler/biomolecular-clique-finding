@@ -378,7 +378,8 @@ class CoherenceAnalyzer:
         self,
         matrix: 'BioMatrix',
         stratify_by: Optional[List[str]] = None,
-        config: Optional[CoherenceConfig] = None
+        config: Optional[CoherenceConfig] = None,
+        seed: Optional[int] = None
     ):
         """
         Initialize coherence analyzer.
@@ -387,16 +388,15 @@ class CoherenceAnalyzer:
             matrix: BioMatrix with expression data
             stratify_by: Columns to stratify by (e.g., ['phenotype', 'Sex'])
             config: Analysis configuration
+            seed: Random seed for reproducibility (uses np.random.default_rng)
         """
         self.matrix = matrix
         self.stratify_by = stratify_by or []
         self.config = config or CoherenceConfig()
+        self._rng = np.random.default_rng(seed)
 
         # Precompute sample groups
         self._sample_groups = self._compute_sample_groups()
-
-        # Cache for correlation matrices
-        self._corr_cache: Dict[str, np.ndarray] = {}
 
         # Validate dependencies
         self._validate_dependencies()
@@ -603,14 +603,14 @@ class CoherenceAnalyzer:
         G_neg = nx.Graph()
         G_neg.add_nodes_from(genes)
 
-        for i in range(n):
-            for j in range(i + 1, n):
-                weight = weights[i, j]
-                if weight > 0:
-                    if corr_matrix[i, j] > 0:
-                        G_pos.add_edge(genes[i], genes[j], weight=weight)
-                    else:
-                        G_neg.add_edge(genes[i], genes[j], weight=weight)
+        # Vectorize: find non-zero upper-triangle entries
+        rows, cols = np.where(np.triu(weights, k=1) > 0)
+        for r, c in zip(rows, cols):
+            w = float(weights[r, c])
+            if corr_matrix[r, c] > 0:
+                G_pos.add_edge(genes[r], genes[c], weight=w)
+            else:
+                G_neg.add_edge(genes[r], genes[c], weight=w)
 
         return G_pos, G_neg
 
@@ -931,7 +931,7 @@ class CoherenceAnalyzer:
 
         for b in range(n_bootstrap):
             # Resample samples with replacement
-            boot_sample_idx = np.random.choice(sample_idx, size=n_samples, replace=True)
+            boot_sample_idx = self._rng.choice(sample_idx, size=n_samples, replace=True)
 
             # Compute correlation on bootstrap sample
             expr_data = self.matrix.data[np.ix_(gene_idx, boot_sample_idx)]
@@ -993,12 +993,19 @@ class CoherenceAnalyzer:
         genes: Set[str],
         condition: str,
         observed_modularity: float,
-        n_permutations: Optional[int] = None
+        n_permutations: Optional[int] = None,
+        correlation_sign: Optional[CorrelationSign] = None
     ) -> float:
         """
         Compute permutation p-value for observed modularity.
 
-        Addresses brutalist critique: "Permutation null"
+        Args:
+            genes: Set of genes to analyze
+            condition: Condition to analyze
+            observed_modularity: The observed modularity to test against
+            n_permutations: Number of permutations (defaults to config)
+            correlation_sign: Which graph to test. NEGATIVE uses the negative
+                correlation graph; default/POSITIVE uses the positive graph.
 
         Returns:
             p-value: Probability of observing modularity >= observed under null
@@ -1015,7 +1022,7 @@ class CoherenceAnalyzer:
 
         for p in range(n_permutations):
             # Permute sample labels (breaks correlation structure)
-            perm_idx = np.random.permutation(sample_idx)
+            perm_idx = self._rng.permutation(sample_idx)
 
             # Compute correlation on permuted data
             expr_data = self.matrix.data[np.ix_(gene_idx, perm_idx)]
@@ -1033,18 +1040,22 @@ class CoherenceAnalyzer:
             np.fill_diagonal(perm_corr, 1.0)
 
             # Build graph and detect communities
-            G_perm, _ = self.build_signed_graphs(perm_corr, gene_list)
-            partition = self.detect_communities(G_perm)
+            G_perm_pos, G_perm_neg = self.build_signed_graphs(perm_corr, gene_list)
+            if correlation_sign == CorrelationSign.NEGATIVE:
+                G_test = G_perm_neg
+            else:
+                G_test = G_perm_pos
+            partition = self.detect_communities(G_test)
 
             # Compute modularity
-            if G_perm.number_of_edges() > 0:
+            if G_test.number_of_edges() > 0:
                 communities = {}
                 for gene, cid in partition.items():
                     if cid not in communities:
                         communities[cid] = set()
                     communities[cid].add(gene)
 
-                mod = nx_community.modularity(G_perm, communities.values(), weight='weight')
+                mod = nx_community.modularity(G_test, communities.values(), weight='weight')
                 null_modularities.append(mod)
             else:
                 null_modularities.append(0.0)
@@ -1165,6 +1176,22 @@ class CoherenceAnalyzer:
                     filtered_genes, condition, correlation_sign=CorrelationSign.NEGATIVE
                 )
 
+        # Step 6b: Permutation null (if requested)
+        perm_pvalue_pos = None
+        perm_pvalue_neg = None
+        if compute_permutation and self.config.n_permutations > 0:
+            logger.info("Computing permutation null for positive graph...")
+            perm_pvalue_pos = self.permutation_null(
+                filtered_genes, condition, modularity_pos,
+                correlation_sign=CorrelationSign.POSITIVE
+            )
+            if comm_neg:
+                logger.info("Computing permutation null for negative graph...")
+                perm_pvalue_neg = self.permutation_null(
+                    filtered_genes, condition, modularity_neg,
+                    correlation_sign=CorrelationSign.NEGATIVE
+                )
+
         # Step 7: Build CommunityResult objects
         positive_communities = []
         for cid, comm_genes in comm_pos.items():
@@ -1184,6 +1211,7 @@ class CoherenceAnalyzer:
                 density=stats['density'],
                 modularity_contribution=modularity_pos / len(comm_pos) if comm_pos else 0.0,
                 bootstrap_stability=bootstrap_stability_pos.get(cid),
+                permutation_pvalue=perm_pvalue_pos,
                 regulator_name=regulator_name,
                 condition=condition,
                 correlation_sign=CorrelationSign.POSITIVE
@@ -1207,6 +1235,7 @@ class CoherenceAnalyzer:
                 density=stats['density'],
                 modularity_contribution=modularity_neg / len(comm_neg) if comm_neg else 0.0,
                 bootstrap_stability=bootstrap_stability_neg.get(cid),
+                permutation_pvalue=perm_pvalue_neg,
                 regulator_name=regulator_name,
                 condition=condition,
                 correlation_sign=CorrelationSign.NEGATIVE

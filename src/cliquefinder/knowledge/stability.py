@@ -8,6 +8,7 @@ Provides:
 """
 
 import numpy as np
+from numpy.random import SeedSequence
 import pandas as pd
 from typing import List, Dict, Set, Optional, FrozenSet
 from dataclasses import dataclass, field
@@ -62,8 +63,9 @@ def bootstrap_clique_stability(
     """
     from cliquefinder.knowledge.clique_validator import CliqueValidator
 
-    if random_state is not None:
-        np.random.seed(random_state)
+    # Create per-bootstrap child RNGs via SeedSequence (thread-safe)
+    ss = SeedSequence(random_state)
+    child_seeds = ss.spawn(n_bootstrap)
 
     # Get condition mask
     validator = CliqueValidator(matrix, stratify_by=None)
@@ -79,8 +81,9 @@ def bootstrap_clique_stability(
 
     def run_bootstrap(b: int) -> List[FrozenSet[str]]:
         """Single bootstrap iteration."""
+        rng_b = np.random.default_rng(child_seeds[b])
         # Resample with replacement
-        boot_indices = np.random.choice(condition_indices, size=n_samples, replace=True)
+        boot_indices = rng_b.choice(condition_indices, size=n_samples, replace=True)
 
         # Create bootstrap matrix (only need the subset)
         boot_data = matrix.data[:, boot_indices]

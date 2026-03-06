@@ -366,7 +366,7 @@ class MarkerDiscovery:
         Returns:
             MarkerDiscoveryResult from semi-supervised discovery
         """
-        np.random.seed(self.random_state)
+        rng = np.random.default_rng(self.random_state)
 
         # Find reference feature
         feature_to_idx = {fid: i for i, fid in enumerate(matrix.feature_ids)}
@@ -392,8 +392,8 @@ class MarkerDiscovery:
         n_1 = n_labeled - n_0
 
         labeled_idx = np.concatenate([
-            np.random.choice(idx_0, min(n_0, len(idx_0)), replace=False),
-            np.random.choice(idx_1, min(n_1, len(idx_1)), replace=False),
+            rng.choice(idx_0, min(n_0, len(idx_0)), replace=False),
+            rng.choice(idx_1, min(n_1, len(idx_1)), replace=False),
         ])
 
         # Create partial labels
