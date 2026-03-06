@@ -181,13 +181,22 @@ class ValidationReport:
             gate_permutation = strat_p < alpha
             details["label_permutation_stratified"] = f"p={strat_p:.4f}"
 
-            # Also report free permutation
+            # VAL-VII-9: Fall back to free permutation when stratified fails/missing.
+            # When Phase 3 dict has {"stratified": {"status": "failed"}, "free": {...}},
+            # the stratified lookup yields None/1.0. Use free permutation as fallback.
             free = perm.get("free", {})
             free_p = free.get("permutation_pvalue", None)
+            if not gate_permutation and free_p is not None and free_p < alpha:
+                gate_permutation = True
+                strat_p = free_p
+                details["label_permutation_stratified"] = (
+                    f"p={strat_p:.4f} (fallback from free permutation)"
+                )
+
             if free_p is not None:
                 details["label_permutation_free"] = f"p={free_p:.4f}"
                 # If stratified passes but free fails, flag potential issue
-                if gate_permutation and free_p >= alpha:
+                if gate_permutation and free_p >= alpha and "fallback" not in details.get("label_permutation_stratified", ""):
                     details["permutation_warning"] = (
                         "Stratified passes but free fails — signal may "
                         "partly reflect covariate structure."

@@ -137,7 +137,19 @@ def generate_stratified_permutation(
     for stratum in np.unique(strata):
         mask = strata == stratum
         indices = np.where(mask)[0]
-        permuted[indices] = rng.permutation(labels[indices])
+        stratum_labels = labels[indices]
+        # VAL-VII-2: Detect degenerate strata where only one condition value
+        # exists. Permuting within such strata is a no-op, leaking real signal.
+        if len(np.unique(stratum_labels)) < 2:
+            warnings.warn(
+                f"Stratum '{stratum}' has only one condition value "
+                f"({np.unique(stratum_labels)[0]}). Permutation within this "
+                f"stratum is a no-op — these {len(indices)} samples preserve "
+                f"their original labels in every permutation.",
+                UserWarning,
+                stacklevel=2,
+            )
+        permuted[indices] = rng.permutation(stratum_labels)
     return permuted
 
 

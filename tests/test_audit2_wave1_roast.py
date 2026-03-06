@@ -303,10 +303,11 @@ class TestSetTest7Mean50Selection:
 
         result = _compute_mean50_stat(z, w, A, Alternative.MIXED)
 
+        # STAT-VII-1: MIXED now uses abs(z) before averaging.
         # Top 2 by |z|: genes 1 and 2
-        # selected w*z: [0.1*(-3.0), 0.1*2.0] = [-0.3, 0.2]
-        # mean: (-0.3 + 0.2) / 2 = -0.05
-        expected = (-0.3 + 0.2) / 2.0
+        # selected w*|z|: [0.1*3.0, 0.1*2.0] = [0.3, 0.2]
+        # mean: (0.3 + 0.2) / 2 = 0.25
+        expected = (0.3 + 0.2) / 2.0
         assert_allclose(result[0], expected, atol=1e-12)
 
     def test_mean50_up_selects_by_abs_z(self):
@@ -338,17 +339,17 @@ class TestSetTest7Mean50Selection:
         assert_allclose(result[0], expected, atol=1e-12)
 
     def test_mean50_equal_weights_consistent(self):
-        """With equal weights, |z| selection and |w*z| selection should agree."""
+        """With equal weights, MIXED uses abs(z) for averaging."""
         z = np.array([[1.0, -3.0, 2.0, -0.5]])
         w = np.ones(4)
         A = 4.0
 
         result = _compute_mean50_stat(z, w, A, Alternative.MIXED)
 
-        # Top 2 by |z|: genes 1 (|z|=3.0) and 2 (|z|=2.0)
-        # With equal weights, w*z = z, so:
-        # mean(z for top 2) = mean(-3.0, 2.0) = -0.5
-        expected = (-3.0 + 2.0) / 2.0
+        # STAT-VII-1: MIXED uses abs(z). Top 2 by |z|: genes 1 (3.0) and 2 (2.0)
+        # w*|z| for selected: [1.0*3.0, 1.0*2.0] = [3.0, 2.0]
+        # mean = (3.0 + 2.0) / 2.0 = 2.5
+        expected = (3.0 + 2.0) / 2.0
         assert_allclose(result[0], expected, atol=1e-12)
 
     def test_mean50_h_is_half_floor(self):
@@ -383,9 +384,10 @@ class TestSetTest7Mean50Selection:
             alternatives=[Alternative.MIXED],
         )
 
+        # STAT-VII-1: MIXED uses abs(z).
         # Top 2 by |z|: genes 1 (3.0) and 2 (2.0)
-        # w*z for selected: 0.1*(-3.0)=-0.3, 0.1*2.0=0.2
-        expected = (-0.3 + 0.2) / 2.0
+        # w*|z| for selected: 0.1*3.0=0.3, 0.1*2.0=0.2
+        expected = (0.3 + 0.2) / 2.0
         assert_allclose(stats["mean50"]["mixed"], expected, atol=1e-12)
 
     def test_mean50_batched(self):
@@ -399,12 +401,13 @@ class TestSetTest7Mean50Selection:
 
         result = _compute_mean50_stat(z, w, A, Alternative.MIXED)
 
+        # STAT-VII-1: MIXED uses abs(z).
         # Rotation 0: top 2 by |z| = genes 1 (3.0), 2 (2.0)
-        #   mean(-3.0, 2.0) = -0.5
+        #   mean(|z|) = mean(3.0, 2.0) = 2.5
         # Rotation 1: top 2 by |z| = genes 3 (4.0), 0 (1.0)
-        #   mean(-4.0, 1.0) = -1.5
-        assert_allclose(result[0], -0.5, atol=1e-12)
-        assert_allclose(result[1], -1.5, atol=1e-12)
+        #   mean(|z|) = mean(4.0, 1.0) = 2.5
+        assert_allclose(result[0], 2.5, atol=1e-12)
+        assert_allclose(result[1], 2.5, atol=1e-12)
 
 
 # =============================================================================

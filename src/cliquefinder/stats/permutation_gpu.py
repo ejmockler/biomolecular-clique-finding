@@ -686,7 +686,9 @@ def _batched_ols_gpu(
         if not np.isinf(matrices.eb_d0):
             s2_post = (matrices.eb_d0 * matrices.eb_s0_sq + matrices.df_residual * sigma2_np) / (matrices.eb_d0 + matrices.df_residual)
         else:
-            s2_post = sigma2_np
+            # GPU-VII-1: d0=inf means prior dominates completely (max shrinkage).
+            # All posterior variances collapse to the prior s0².
+            s2_post = np.full_like(sigma2_np, matrices.eb_s0_sq)
     else:
         s2_post = sigma2_np
 
@@ -748,7 +750,9 @@ def _batched_ols_cpu(
         if not np.isinf(matrices.eb_d0):
             s2_post = (matrices.eb_d0 * matrices.eb_s0_sq + matrices.df_residual * sigma2) / (matrices.eb_d0 + matrices.df_residual)
         else:
-            s2_post = sigma2
+            # GPU-VII-1: d0=inf means prior dominates completely (max shrinkage).
+            # All posterior variances collapse to the prior s0².
+            s2_post = np.full_like(sigma2, matrices.eb_s0_sq)
     else:
         s2_post = sigma2
 
@@ -1602,7 +1606,7 @@ def run_permutation_test_gpu(
 
         if verbose:
             if np.isinf(d0):
-                print(f"    EB priors: d0=Inf (no shrinkage), s0²={s0_sq:.6f}")
+                print(f"    EB priors: d0=Inf (maximum shrinkage — prior dominates), s0²={s0_sq:.6f}")
             else:
                 print(f"    EB priors: d0={d0:.2f}, s0²={s0_sq:.6f}")
                 shrinkage_weight = d0 / (d0 + matrices.df_residual)
@@ -1610,7 +1614,8 @@ def run_permutation_test_gpu(
 
         # Update matrices with EB priors for all subsequent computations
         # GPU-9: Use dataclasses.replace() instead of mutating after construction
-        eb_df_total = d0 + matrices.df_residual if not np.isinf(d0) else float(matrices.df_residual)
+        # GPU-VII-2: d0=inf → eb_df_total must be inf (prior df is infinite).
+        eb_df_total = d0 + matrices.df_residual if not np.isinf(d0) else np.inf
         matrices = replace(matrices, eb_d0=d0, eb_s0_sq=s0_sq, eb_df_total=eb_df_total)
     else:
         # No EB moderation - use standard OLS

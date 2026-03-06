@@ -812,12 +812,27 @@ class CoherenceAnalyzer:
             'density': density
         }
 
+    def _compute_corr(self, expr_data: np.ndarray, method: str = 'pearson') -> np.ndarray:
+        """Compute correlation matrix using the specified method.
+
+        RC-VII-5: Shared helper so bootstrap/permutation use the same
+        correlation measure as ``compute_correlation_matrix``.
+        """
+        if method == 'spearman':
+            corr, _ = stats.spearmanr(expr_data.T)
+            if corr.ndim == 0:
+                rho = float(corr)
+                corr = np.array([[1.0, rho], [rho, 1.0]])
+            return corr
+        return np.corrcoef(expr_data)
+
     def bootstrap_stability(
         self,
         genes: Set[str],
         condition: str,
         n_bootstrap: Optional[int] = None,
         correlation_sign: Optional[CorrelationSign] = None,
+        method: str = 'pearson',
     ) -> Dict[int, float]:
         """
         Assess community stability via bootstrap resampling.
@@ -858,9 +873,9 @@ class CoherenceAnalyzer:
             # Resample samples with replacement
             boot_sample_idx = self._rng.choice(sample_idx, size=n_samples, replace=True)
 
-            # Compute correlation on bootstrap sample
+            # RC-VII-5: Use _compute_corr to match compute_correlation_matrix method.
             expr_data = self.matrix.data[np.ix_(gene_idx, boot_sample_idx)]
-            boot_corr = np.corrcoef(expr_data)
+            boot_corr = self._compute_corr(expr_data, method=method)
             # DATA-III-1 (Audit III): Track NaN correlations from zero-variance
             # genes in bootstrap resamples instead of silent substitution.
             nan_mask = np.isnan(boot_corr)
@@ -888,18 +903,26 @@ class CoherenceAnalyzer:
                     boot_communities[comm_id] = set()
                 boot_communities[comm_id].add(gene)
 
-            # Match communities by Jaccard similarity
+            # RC-VII-1: Match communities with exclusion tracking to prevent
+            # multiple original communities from matching the same bootstrap community.
+            matched_boot_ids: set = set()
             for orig_cid, orig_genes in original_communities.items():
                 best_jaccard = 0.0
-                for boot_genes in boot_communities.values():
+                best_boot_id = None
+                for boot_id, boot_genes in boot_communities.items():
+                    if boot_id in matched_boot_ids:
+                        continue
                     intersection = len(orig_genes & boot_genes)
                     union = len(orig_genes | boot_genes)
                     jaccard = intersection / union if union > 0 else 0.0
-                    best_jaccard = max(best_jaccard, jaccard)
+                    if jaccard > best_jaccard:
+                        best_jaccard = jaccard
+                        best_boot_id = boot_id
 
                 # Count as "recovered" if Jaccard > 0.5
-                if best_jaccard > 0.5:
+                if best_jaccard > 0.5 and best_boot_id is not None:
                     stability_counts[orig_cid] += 1
+                    matched_boot_ids.add(best_boot_id)
 
         if nan_sub_counts:
             logger.warning(
@@ -919,7 +942,8 @@ class CoherenceAnalyzer:
         condition: str,
         observed_modularity: float,
         n_permutations: Optional[int] = None,
-        correlation_sign: Optional[CorrelationSign] = None
+        correlation_sign: Optional[CorrelationSign] = None,
+        method: str = 'pearson',
     ) -> float:
         """
         Compute permutation p-value for observed modularity.
@@ -946,12 +970,16 @@ class CoherenceAnalyzer:
         perm_nan_counts: list[int] = []
 
         for p in range(n_permutations):
-            # Permute sample labels (breaks correlation structure)
-            perm_idx = self._rng.permutation(sample_idx)
+            # RC-VII-7: Per-gene independent shuffling to destroy inter-gene
+            # correlation while preserving each gene's marginal distribution.
+            # Column permutation is correlation-invariant (np.corrcoef(X[:, perm])
+            # == np.corrcoef(X)), so the old approach was a no-op.
+            expr_data = self.matrix.data[np.ix_(gene_idx, sample_idx)].copy()
+            for row in range(expr_data.shape[0]):
+                self._rng.shuffle(expr_data[row])
 
-            # Compute correlation on permuted data
-            expr_data = self.matrix.data[np.ix_(gene_idx, perm_idx)]
-            perm_corr = np.corrcoef(expr_data)
+            # RC-VII-5: Use _compute_corr to match compute_correlation_matrix method.
+            perm_corr = self._compute_corr(expr_data, method=method)
             # DATA-III-1 (Audit III): Track NaN correlations in permutation null.
             nan_mask = np.isnan(perm_corr)
             if nan_mask.any():

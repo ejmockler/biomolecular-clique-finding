@@ -99,6 +99,7 @@ class PreparedCliqueExperiment:
     def __post_init__(self):
         """Enforce true immutability for mutable fields."""
         from types import MappingProxyType
+        import pandas as pd
         # Make NDArray read-only
         data_copy = self.data.copy()
         data_copy.flags.writeable = False
@@ -109,6 +110,10 @@ class PreparedCliqueExperiment:
             val = getattr(self, attr)
             if isinstance(val, dict) and not isinstance(val, MappingProxyType):
                 object.__setattr__(self, attr, MappingProxyType(dict(val)))
+        # ARCH-VII-1: Deep-copy DataFrame to prevent external mutation.
+        # pd.DataFrame has no writeable flag, so copy is the best defense.
+        if isinstance(self.sample_metadata, pd.DataFrame):
+            object.__setattr__(self, 'sample_metadata', self.sample_metadata.copy())
 
     @property
     def n_features(self) -> int:

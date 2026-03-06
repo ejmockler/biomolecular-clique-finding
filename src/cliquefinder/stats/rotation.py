@@ -453,20 +453,22 @@ def _construct_c_matrix(contrast: NDArray[np.float64]) -> NDArray[np.float64]:
     # Place normalized contrast as last column
     C[:, -1] = c_unit
 
-    # Build orthogonal complement using Gram-Schmidt
-    # We need p-1 vectors orthogonal to c
+    # Build orthogonal complement using Modified Gram-Schmidt (STAT-VII-4).
+    # MGS re-reads the updated v after each projection subtraction,
+    # which is numerically more stable than Classical GS for p > 10.
     col_idx = 0
     for i in range(p):
         # Start with i-th standard basis vector
         v = np.zeros(p)
         v[i] = 1.0
 
-        # Subtract projection onto c
+        # Subtract projection onto c (last column)
         v = v - np.dot(v, c_unit) * c_unit
 
-        # Subtract projections onto previously found orthogonal vectors
+        # MGS: subtract projections one at a time, re-reading updated v
         for j in range(col_idx):
-            v = v - np.dot(v, C[:, j]) * C[:, j]
+            proj = np.dot(v, C[:, j])
+            v = v - proj * C[:, j]
 
         # Check if we have a non-trivial vector
         v_norm = np.linalg.norm(v)
@@ -1544,9 +1546,11 @@ def _compute_mean50_stat(
         selected_wz = np.take_along_axis(w * z, top_idx, axis=1)
         return -np.mean(selected_wz, axis=1)
     else:  # MIXED
-        # Weighted z for selected genes (magnitude)
-        selected_wz = np.take_along_axis(w * z, top_idx, axis=1)
-        return np.mean(selected_wz, axis=1)
+        # STAT-VII-1: For MIXED alternative, use absolute z-scores before averaging.
+        # A bidirectional gene set (5 genes at z=+3, 5 at z=-3) should yield a
+        # large statistic, not ~0. This matches limma's mean50 MIXED behavior.
+        selected_abs_wz = np.take_along_axis(w * np.abs(z), top_idx, axis=1)
+        return np.mean(selected_abs_wz, axis=1)
 
 
 def _compute_msq_stat(
@@ -1617,6 +1621,8 @@ def compute_rotation_pvalues(
       values so the upper-tail p-value gives a two-sided test.
       **Exception**: MEAN+MIXED uses signed z-scores, so the p-value
       is computed as |null| >= |obs| (two-sided comparison).
+      MEAN50+MIXED uses abs(z) before averaging (STAT-VII-1), so it
+      uses standard upper-tail comparison.
 
     Args:
         observed_stats: stat -> alt -> observed value
@@ -1647,10 +1653,12 @@ def compute_rotation_pvalues(
                 p_values[stat][alt] = np.nan
                 continue
 
-            # MEAN+MIXED and MEAN50+MIXED: the statistic is a signed mean,
+            # MEAN+MIXED: the statistic is a signed mean,
             # so use two-sided comparison |null| >= |obs| (SET-TEST-1).
+            # STAT-VII-1: MEAN50+MIXED now uses abs(z) so the statistic is
+            # unsigned — standard upper-tail comparison applies.
             _signed_mixed = (
-                stat in (SetStatistic.MEAN.value, SetStatistic.MEAN50.value)
+                stat == SetStatistic.MEAN.value
                 and alt == Alternative.MIXED.value
             )
             if _signed_mixed:

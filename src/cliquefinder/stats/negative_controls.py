@@ -283,10 +283,22 @@ def run_negative_control_sets(
     if verbose:
         print(f"  Target set p-value: {target_pvalue:.4f}")
 
+    # VAL-VII-4: Exclude target genes from control sampling pool to prevent
+    # overlap that would inflate control p-values toward significance.
+    target_set = set(target_in_data)
+    control_pool = [g for g in all_gene_ids if g not in target_set]
+    effective_size = min(target_size, len(control_pool))
+    if effective_size < target_size:
+        logger.warning(
+            "Control pool (%d genes) smaller than target size (%d) after "
+            "excluding target genes — sampling %d per control set",
+            len(control_pool), target_size, effective_size,
+        )
+
     # Pre-generate all control gene sets (stored for competitive z reuse)
     control_gene_sets: list[list[str]] = []
     for _ in range(n_control_sets):
-        genes = rng.choice(all_gene_ids, size=target_size, replace=False)
+        genes = rng.choice(control_pool, size=effective_size, replace=False)
         control_gene_sets.append(genes.tolist())
 
     # Run ROAST on each control set
