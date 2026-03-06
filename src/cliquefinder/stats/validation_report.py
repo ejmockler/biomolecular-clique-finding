@@ -256,9 +256,35 @@ class ValidationReport:
         # phases that actually executed and produced a result.
         supplementary_failed = supplementary_total - supplementary_pass
 
+        # VAL-VIII-6: Detect when mandatory phases errored (status="failed")
+        # rather than producing a statistical result.  An error is NOT
+        # statistical refutation — route to "inconclusive".
+        cov_errored = (
+            cov is not None
+            and isinstance(cov, dict)
+            and cov.get("status") == "failed"
+        )
+        perm_errored = (
+            perm is not None
+            and isinstance(perm, dict)
+            and perm.get("status") == "failed"
+        )
+
         if not gate_adjusted and not cov:
             self.verdict = "inconclusive"
             self.summary = "Core phases not completed."
+        elif cov_errored or perm_errored:
+            # At least one mandatory phase had a runtime error
+            errored_phases = []
+            if cov_errored:
+                errored_phases.append("Phase 1 (covariate-adjusted)")
+            if perm_errored:
+                errored_phases.append("Phase 3 (label permutation)")
+            self.verdict = "inconclusive"
+            self.summary = (
+                f"Cannot determine verdict — {', '.join(errored_phases)} "
+                f"encountered runtime errors. Re-run with debugging enabled."
+            )
         elif gate_adjusted and gate_permutation:
             if supplementary_total == 0:
                 # No supplementary phases produced results. This means

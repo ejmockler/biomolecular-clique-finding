@@ -22,7 +22,7 @@ class TestGenerateStratifiedPermutation:
         strata = np.array(["M", "M", "M", "M", "M", "F", "F", "F", "F", "F"])
 
         for _ in range(20):
-            perm = generate_stratified_permutation(labels, strata, rng)
+            perm, _ = generate_stratified_permutation(labels, strata, rng)
 
             # Check within-stratum label counts are preserved
             for stratum in ["M", "F"]:
@@ -40,7 +40,7 @@ class TestGenerateStratifiedPermutation:
         # Run enough times that at least one should differ
         any_different = False
         for _ in range(50):
-            perm = generate_stratified_permutation(labels, strata, rng)
+            perm, _ = generate_stratified_permutation(labels, strata, rng)
             if not np.array_equal(perm, labels):
                 any_different = True
                 break
@@ -53,9 +53,9 @@ class TestGenerateStratifiedPermutation:
         labels = np.array(["A", "A", "B", "B", "A", "B"])
         strata = np.array(["X", "X", "X", "X", "X", "X"])
 
-        perm = generate_stratified_permutation(labels, strata, rng)
+        perm, _ = generate_stratified_permutation(labels, strata, rng)
         # Should still have same label counts
-        assert sorted(perm) == sorted(labels)
+        assert sorted(perm.tolist()) == sorted(labels.tolist())
 
 
 class TestGenerateFreePermutation:

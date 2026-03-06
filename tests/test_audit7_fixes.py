@@ -794,9 +794,10 @@ class TestCorrelationMethodThreading:
         rng = np.random.default_rng(99)
         X = rng.standard_normal((5, 20))
 
-        corr = analyzer._compute_corr(X, method='pearson')
+        corr, n_nan = analyzer._compute_corr(X, method='pearson')
         expected = np.corrcoef(X)
         assert_allclose(corr, expected, atol=1e-14)
+        assert n_nan == 0
 
     def test_compute_corr_spearman(self):
         """_compute_corr with spearman should match scipy.stats.spearmanr."""
@@ -804,9 +805,10 @@ class TestCorrelationMethodThreading:
         rng = np.random.default_rng(99)
         X = rng.standard_normal((5, 20))
 
-        corr = analyzer._compute_corr(X, method='spearman')
+        corr, n_nan = analyzer._compute_corr(X, method='spearman')
         expected, _ = sp_stats.spearmanr(X.T)
         assert_allclose(corr, expected, atol=1e-14)
+        assert n_nan == 0
 
 
 # =============================================================================
@@ -857,7 +859,7 @@ class TestDegenerateStrataWarning:
 
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
-            result = generate_stratified_permutation(labels, strata, rng)
+            result, _ = generate_stratified_permutation(labels, strata, rng)
 
         # Stratum 0 has only "A" — should all remain "A"
         assert all(result[:3] == "A")

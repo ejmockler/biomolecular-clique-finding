@@ -117,7 +117,11 @@ class CommunityResult:
     # Significance
     modularity_contribution: float
     bootstrap_stability: Optional[float] = None  # Fraction of bootstraps containing this community
-    permutation_pvalue: Optional[float] = None   # Probability under null
+    # RC-VIII-4: This is a GRAPH-LEVEL permutation p-value (whole-graph
+    # modularity vs null), NOT a per-community p-value.  All communities of
+    # the same sign share the same value.  Use ``is_significant`` for
+    # per-community significance, which also requires density/size thresholds.
+    permutation_pvalue: Optional[float] = None
 
     # Metadata
     regulator_name: Optional[str] = None
@@ -130,10 +134,24 @@ class CommunityResult:
 
     @property
     def is_significant(self) -> bool:
-        """Check if community passes significance thresholds."""
+        """Check if community passes significance thresholds.
+
+        RC-VIII-4: ``permutation_pvalue`` is a graph-level quantity (whole-graph
+        modularity vs null), shared by ALL communities of the same sign.  A
+        small noisy 3-gene community should not be deemed significant solely
+        because the overall graph modularity is significant.  Therefore we
+        require BOTH graph-level significance AND per-community quality
+        (density >= 0.5, size >= 3).
+        """
+        graph_sig = (
+            self.permutation_pvalue is not None
+            and self.permutation_pvalue < 0.05
+        )
+        community_quality = self.size >= 3 and self.density >= 0.5
         if self.permutation_pvalue is not None:
-            return self.permutation_pvalue < 0.05
-        return self.size >= 3 and self.density >= 0.5
+            return graph_sig and community_quality
+        # Fallback when no permutation test was run
+        return community_quality
 
 
 @dataclass
@@ -781,8 +799,9 @@ class CoherenceAnalyzer:
                 'density': 1.0
             }
 
-        # Get indices
-        indices = [gene_list.index(g) for g in community_genes if g in gene_list]
+        # RC-VIII-2: O(1) dict lookup instead of O(n) list.index()
+        gene_to_idx = {g: i for i, g in enumerate(gene_list)}
+        indices = [gene_to_idx[g] for g in community_genes if g in gene_to_idx]
 
         if len(indices) < 2:
             return {
@@ -812,19 +831,38 @@ class CoherenceAnalyzer:
             'density': density
         }
 
-    def _compute_corr(self, expr_data: np.ndarray, method: str = 'pearson') -> np.ndarray:
+    def _compute_corr(
+        self,
+        expr_data: np.ndarray,
+        method: str = 'pearson',
+    ) -> tuple[np.ndarray, int]:
         """Compute correlation matrix using the specified method.
 
         RC-VII-5: Shared helper so bootstrap/permutation use the same
         correlation measure as ``compute_correlation_matrix``.
+
+        RC-VIII-1: Also handles NaN (from zero-variance genes) and fills
+        diagonal to 1.0 internally, so callers don't have to.
+
+        Returns:
+            (corr_matrix, n_nan_off_diag): Cleaned correlation matrix and
+            the count of NaN entries that were zeroed (excluding diagonal).
         """
         if method == 'spearman':
             corr, _ = stats.spearmanr(expr_data.T)
             if corr.ndim == 0:
                 rho = float(corr)
                 corr = np.array([[1.0, rho], [rho, 1.0]])
-            return corr
-        return np.corrcoef(expr_data)
+        else:
+            corr = np.corrcoef(expr_data)
+
+        # Fill diagonal first, then count off-diagonal NaN
+        np.fill_diagonal(corr, 1.0)
+        nan_mask = np.isnan(corr)
+        n_nan_off_diag = int(nan_mask.sum())  # diagonal is already 1.0
+        if n_nan_off_diag > 0:
+            corr[nan_mask] = 0.0
+        return corr, n_nan_off_diag
 
     def bootstrap_stability(
         self,
@@ -873,21 +911,15 @@ class CoherenceAnalyzer:
             # Resample samples with replacement
             boot_sample_idx = self._rng.choice(sample_idx, size=n_samples, replace=True)
 
-            # RC-VII-5: Use _compute_corr to match compute_correlation_matrix method.
+            # RC-VII-5 + RC-VIII-1: _compute_corr now handles NaN and diagonal.
             expr_data = self.matrix.data[np.ix_(gene_idx, boot_sample_idx)]
-            boot_corr = self._compute_corr(expr_data, method=method)
-            # DATA-III-1 (Audit III): Track NaN correlations from zero-variance
-            # genes in bootstrap resamples instead of silent substitution.
-            nan_mask = np.isnan(boot_corr)
-            if nan_mask.any():
-                n_nan = int(nan_mask.sum())
+            boot_corr, n_nan = self._compute_corr(expr_data, method=method)
+            if n_nan > 0:
                 logger.debug(
                     "Bootstrap iter %d: %d NaN correlations from zero-variance genes",
                     b, n_nan,
                 )
                 nan_sub_counts.append(n_nan)
-                boot_corr[nan_mask] = 0.0
-            np.fill_diagonal(boot_corr, 1.0)
 
             # Detect communities
             G_boot_pos, G_boot_neg = self.build_signed_graphs(boot_corr, gene_list)
@@ -978,19 +1010,14 @@ class CoherenceAnalyzer:
             for row in range(expr_data.shape[0]):
                 self._rng.shuffle(expr_data[row])
 
-            # RC-VII-5: Use _compute_corr to match compute_correlation_matrix method.
-            perm_corr = self._compute_corr(expr_data, method=method)
-            # DATA-III-1 (Audit III): Track NaN correlations in permutation null.
-            nan_mask = np.isnan(perm_corr)
-            if nan_mask.any():
-                n_nan = int(nan_mask.sum())
+            # RC-VII-5 + RC-VIII-1: _compute_corr now handles NaN and diagonal.
+            perm_corr, n_nan = self._compute_corr(expr_data, method=method)
+            if n_nan > 0:
                 logger.debug(
                     "Permutation iter %d: %d NaN correlations from zero-variance genes",
                     p, n_nan,
                 )
                 perm_nan_counts.append(n_nan)
-                perm_corr[nan_mask] = 0.0
-            np.fill_diagonal(perm_corr, 1.0)
 
             # Build graph and detect communities
             G_perm_pos, G_perm_neg = self.build_signed_graphs(perm_corr, gene_list)
@@ -1430,32 +1457,36 @@ class CoherenceAnalyzer:
         communities_only_b = []
         communities_shared = []
 
-        all_comms_a = result_a.positive_communities + result_a.negative_communities
-        all_comms_b = result_b.positive_communities + result_b.negative_communities
+        # RC-VIII-5: Match positive-to-positive and negative-to-negative
+        # separately. Cross-sign matching conflates co-activation with
+        # anti-correlation, which are biologically distinct phenomena.
+        for comms_a, comms_b in [
+            (result_a.positive_communities, result_b.positive_communities),
+            (result_a.negative_communities, result_b.negative_communities),
+        ]:
+            matched_b = set()
+            for comm_a in comms_a:
+                best_match = None
+                best_jaccard = 0.0
+                for i, comm_b in enumerate(comms_b):
+                    if i in matched_b:
+                        continue
+                    inter = len(comm_a.genes & comm_b.genes)
+                    uni = len(comm_a.genes | comm_b.genes)
+                    j = inter / uni if uni > 0 else 0.0
+                    if j > best_jaccard and j >= jaccard_threshold:
+                        best_jaccard = j
+                        best_match = (i, comm_b)
 
-        matched_b = set()
-        for comm_a in all_comms_a:
-            best_match = None
-            best_jaccard = 0.0
-            for i, comm_b in enumerate(all_comms_b):
-                if i in matched_b:
-                    continue
-                inter = len(comm_a.genes & comm_b.genes)
-                uni = len(comm_a.genes | comm_b.genes)
-                j = inter / uni if uni > 0 else 0.0
-                if j > best_jaccard and j >= jaccard_threshold:
-                    best_jaccard = j
-                    best_match = (i, comm_b)
+                if best_match:
+                    matched_b.add(best_match[0])
+                    communities_shared.append((comm_a, best_match[1]))
+                else:
+                    communities_only_a.append(comm_a)
 
-            if best_match:
-                matched_b.add(best_match[0])
-                communities_shared.append((comm_a, best_match[1]))
-            else:
-                communities_only_a.append(comm_a)
-
-        for i, comm_b in enumerate(all_comms_b):
-            if i not in matched_b:
-                communities_only_b.append(comm_b)
+            for i, comm_b in enumerate(comms_b):
+                if i not in matched_b:
+                    communities_only_b.append(comm_b)
 
         return communities_only_a, communities_only_b, communities_shared
 

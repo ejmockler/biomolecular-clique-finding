@@ -112,7 +112,10 @@ class NegativeControlResult:
             },
         }
 
-        if self.target_competitive_z is not None:
+        # NEG-VIII-1: Guard against empty/None control_competitive_z_scores
+        if (self.target_competitive_z is not None
+                and self.control_competitive_z_scores is not None
+                and len(self.control_competitive_z_scores) > 0):
             d["competitive_z"] = {
                 "target_z": self.target_competitive_z,
                 "fpr": self.competitive_z_fpr,

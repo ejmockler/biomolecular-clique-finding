@@ -76,6 +76,9 @@ class LabelPermutationResult:
     stratify_column: str | None = None
     null_mean: float = 0.0
     null_std: float = 1.0
+    # VAL-VIII-3: Fraction of samples in degenerate strata (labels never
+    # permuted).  0.0 = all samples permuted; >0.5 = test is compromised.
+    frozen_fraction: float = 0.0
 
     def to_dict(self) -> dict:
         """Serialize to JSON-compatible dict.
@@ -91,6 +94,7 @@ class LabelPermutationResult:
             "stratify_column": self.stratify_column,
             "null_mean": self.null_mean,
             "null_std": self.null_std,
+            "frozen_fraction": self.frozen_fraction,
         }
 
         # VAL-12: Guard against empty/None null_z_scores
@@ -118,7 +122,7 @@ def generate_stratified_permutation(
     labels: NDArray,
     strata: NDArray,
     rng: np.random.Generator,
-) -> NDArray:
+) -> tuple[NDArray, int]:
     """
     Permute labels within each stratum independently.
 
@@ -131,9 +135,11 @@ def generate_stratified_permutation(
         rng: NumPy random generator.
 
     Returns:
-        Permuted labels array with within-stratum permutation.
+        Tuple of (permuted_labels, n_frozen) where n_frozen is the count of
+        samples in degenerate strata whose labels were never permuted.
     """
     permuted = labels.copy()
+    n_frozen = 0
     for stratum in np.unique(strata):
         mask = strata == stratum
         indices = np.where(mask)[0]
@@ -141,6 +147,7 @@ def generate_stratified_permutation(
         # VAL-VII-2: Detect degenerate strata where only one condition value
         # exists. Permuting within such strata is a no-op, leaking real signal.
         if len(np.unique(stratum_labels)) < 2:
+            n_frozen += len(indices)
             warnings.warn(
                 f"Stratum '{stratum}' has only one condition value "
                 f"({np.unique(stratum_labels)[0]}). Permutation within this "
@@ -150,7 +157,7 @@ def generate_stratified_permutation(
                 stacklevel=2,
             )
         permuted[indices] = rng.permutation(stratum_labels)
-    return permuted
+    return permuted, n_frozen
 
 
 def generate_free_permutation(
@@ -268,6 +275,7 @@ def run_label_permutation_null(
     # --- Step 2: Null distribution ---
     null_z_scores = np.full(n_permutations, np.nan)
     n_failures = 0
+    frozen_fraction = 0.0
 
     for i in range(n_permutations):
         if verbose and (i + 1) % 100 == 0:
@@ -275,9 +283,12 @@ def run_label_permutation_null(
 
         # Permute labels
         if stratified:
-            perm_labels = generate_stratified_permutation(
+            perm_labels, n_frozen = generate_stratified_permutation(
                 sample_condition, stratify_by, rng
             )
+            # VAL-VIII-3: Compute frozen_fraction once (same across iterations)
+            if i == 0 and len(sample_condition) > 0:
+                frozen_fraction = n_frozen / len(sample_condition)
         else:
             perm_labels = generate_free_permutation(sample_condition, rng)
 
@@ -332,4 +343,5 @@ def run_label_permutation_null(
         stratify_column=None,  # Set by caller if needed
         null_mean=null_mean,
         null_std=null_std,
+        frozen_fraction=frozen_fraction,
     )

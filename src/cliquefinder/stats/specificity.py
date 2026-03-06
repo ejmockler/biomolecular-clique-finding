@@ -201,7 +201,8 @@ def _run_interaction_permutation(
         sub_labels = labels[mask]
         sub_cov = None
         if covariates_df is not None:
-            sub_cov = covariates_df.iloc[mask]
+            # SPEC-VIII-1: Use boolean indexing (not iloc) for boolean mask.
+            sub_cov = covariates_df.loc[mask]
 
         results = run_protein_differential(
             data=sub_data,

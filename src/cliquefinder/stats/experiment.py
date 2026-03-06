@@ -145,6 +145,9 @@ class PreparedCliqueExperiment:
             return np.array([]).reshape(0, self.n_samples), []
 
         data_subset = self.data[list(indices), :]
+        # ARCH-VIII-1: Fancy indexing returns a writable copy — lock it
+        # to maintain the immutability contract end-to-end.
+        data_subset.flags.writeable = False
         ids_subset = [self.feature_ids[i] for i in indices]
         return data_subset, ids_subset
 
@@ -441,7 +444,8 @@ def prepare_experiment(
         data=work_data,
         feature_ids=tuple(work_ids),
         feature_to_idx=feature_to_idx,
-        sample_metadata=sample_metadata.copy(),
+        # ARCH-VIII-7: Don't copy here — __post_init__ already copies.
+        sample_metadata=sample_metadata,
         condition_column=condition_column,
         subject_column=subject_column,
         conditions=tuple(available_conditions),

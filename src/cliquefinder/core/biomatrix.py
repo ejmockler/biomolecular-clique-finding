@@ -178,11 +178,15 @@ class BioMatrix:
                 f"Got {len(sample_metadata.index)} metadata rows for {len(sample_ids)} samples."
             )
 
-        # Store as private attributes (immutability by convention)
+        # Store as private attributes with enforced immutability
+        # ARCH-VIII-3: Set arrays to read-only to prevent accidental mutation.
+        data.flags.writeable = False
         self._data = data
         self._feature_ids = feature_ids
         self._sample_ids = sample_ids
         self._sample_metadata = sample_metadata
+        if quality_flags is not None:
+            quality_flags.flags.writeable = False
         self._quality_flags = quality_flags
         self._provenance = provenance if provenance is not None else TransformProvenance()
 
@@ -359,10 +363,19 @@ class BioMatrix:
 
     def __repr__(self) -> str:
         """String representation for debugging."""
+        # ARCH-VIII-4: Guard against empty BioMatrix (0 features or samples).
+        feat_range = (
+            f"{self.feature_ids[0]}...{self.feature_ids[-1]}"
+            if len(self.feature_ids) > 0 else "(empty)"
+        )
+        samp_range = (
+            f"{self.sample_ids[0]}...{self.sample_ids[-1]}"
+            if len(self.sample_ids) > 0 else "(empty)"
+        )
         return (
             f"BioMatrix({self.n_features} features × {self.n_samples} samples)\n"
-            f"  Features: {self.feature_ids[0]}...{self.feature_ids[-1]}\n"
-            f"  Samples: {self.sample_ids[0]}...{self.sample_ids[-1]}\n"
+            f"  Features: {feat_range}\n"
+            f"  Samples: {samp_range}\n"
             f"  Metadata columns: {list(self.sample_metadata.columns)}"
         )
 
