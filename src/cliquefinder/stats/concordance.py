@@ -145,9 +145,20 @@ def compute_pairwise_concordance(
     valid_eff_mask = np.isfinite(eff_a) & np.isfinite(eff_b)
     n_valid_eff = int(np.sum(valid_eff_mask))
 
+    # CONC-IV-1 (Audit IV): Check effect size unit compatibility before RMSE.
+    # Pearson r (correlation) is valid across different units — it measures
+    # rank-preserving linear association. RMSE (absolute distance) is only
+    # meaningful when both methods report the same effect size unit.
+    types_a = {r.effect_size_type for r in results_a if r.effect_size_type}
+    types_b = {r.effect_size_type for r in results_b if r.effect_size_type}
+    effect_sizes_comparable = not (types_a and types_b and types_a != types_b)
+
     if n_valid_eff >= 3:
         eff_r, _ = scipy_stats.pearsonr(eff_a[valid_eff_mask], eff_b[valid_eff_mask])
-        eff_rmse = np.sqrt(np.mean((eff_a[valid_eff_mask] - eff_b[valid_eff_mask]) ** 2))
+        if effect_sizes_comparable:
+            eff_rmse = np.sqrt(np.mean((eff_a[valid_eff_mask] - eff_b[valid_eff_mask]) ** 2))
+        else:
+            eff_rmse = np.nan  # Incomparable units — RMSE is meaningless
     else:
         eff_r = np.nan
         eff_rmse = np.nan
@@ -401,7 +412,7 @@ def compute_concordance_rank(
         key=lambda cid: (-ranking_keys[cid][0], ranking_keys[cid][1]),
     )
 
-    # Assign dense ranks (ties get same rank)
+    # Assign dense ranks (ties get same rank, next distinct gets +1)
     ranks: dict[str, int] = {}
     current_rank = 1
     prev_key: tuple[int, float] | None = None
@@ -409,7 +420,9 @@ def compute_concordance_rank(
     for i, cid in enumerate(sorted_cliques):
         key = ranking_keys[cid]
         if prev_key is not None and key != prev_key:
-            current_rank = i + 1
+            # STAT-IV-4 (Audit IV): Use true dense ranking (increment by 1),
+            # not competition ranking (which would set rank = i + 1).
+            current_rank += 1
         ranks[cid] = current_rank
         prev_key = key
 

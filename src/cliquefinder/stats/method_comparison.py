@@ -313,8 +313,10 @@ def run_method_comparison(
 
     # 6. Aggregate metrics
     if pairwise:
-        mean_rho = float(np.mean([c.spearman_rho for c in pairwise]))
-        mean_kappa = float(np.mean([c.cohen_kappa for c in pairwise]))
+        # CONC-IV-2: Use nanmean to avoid NaN poisoning from pairs
+        # where concordance metrics could not be fully computed.
+        mean_rho = float(np.nanmean([c.spearman_rho for c in pairwise]))
+        mean_kappa = float(np.nanmean([c.cohen_kappa for c in pairwise]))
     else:
         mean_rho = np.nan
         mean_kappa = np.nan

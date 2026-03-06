@@ -175,6 +175,7 @@ class INDRAKnowledgeSource(KnowledgeSource):
         mapping = {
             'activation': RelationshipType.INCREASES_EXPRESSION,
             'repression': RelationshipType.DECREASES_EXPRESSION,
+            'phosphorylation': RelationshipType.PHOSPHORYLATES,
         }
         return mapping.get(indra_rel, RelationshipType.REGULATES)
 

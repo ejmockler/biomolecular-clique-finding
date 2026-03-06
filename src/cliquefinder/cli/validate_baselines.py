@@ -478,9 +478,17 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             enrichment_out = args.output / "phase1_covariate_enrichment.json"
             atomic_write_json(enrichment_out, enrichment.to_dict())
         except Exception as e:
-            logger.warning("Phase 1 (covariate_adjusted) failed: %s", e)
+            logger.error("MANDATORY Phase 1 (covariate_adjusted) failed: %s", e)
             report.add_phase("covariate_adjusted", {"status": "failed", "error": str(e)})
             # protein_df remains None from initialization above; no reassignment needed
+            # VALID-IV-1 (Audit IV): Mandatory gate failure — abort pipeline.
+            # Phase 1 is a required gate; continuing without it produces misleading verdicts.
+            if isinstance(e, (ValueError, np.linalg.LinAlgError)):
+                _save_checkpoint(report, args.output)
+                report.save(args.output / "validation_report.json")
+                print(f"\nABORTED: Mandatory Phase 1 failed with {type(e).__name__}: {e}")
+                print("Fix the data issue and re-run. Remaining phases skipped.")
+                return 0
         _save_checkpoint(report, args.output, protein_df=protein_df)
     report.save(args.output / "validation_report.json")
 
@@ -630,8 +638,16 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             perm_out = args.output / "phase3_label_permutation.json"
             atomic_write_json(perm_out, {"stratified": strat_dict, "free": free_dict})
         except Exception as e:
-            logger.warning("Phase 3 (label_permutation) failed: %s", e)
+            logger.error("MANDATORY Phase 3 (label_permutation) failed: %s", e)
             report.add_phase("label_permutation", {"status": "failed", "error": str(e)})
+            # VALID-IV-1 (Audit IV): Mandatory gate failure — abort pipeline.
+            # Phase 3 is a required gate; continuing without it produces misleading verdicts.
+            if isinstance(e, (ValueError, np.linalg.LinAlgError)):
+                _save_checkpoint(report, args.output)
+                report.save(args.output / "validation_report.json")
+                print(f"\nABORTED: Mandatory Phase 3 failed with {type(e).__name__}: {e}")
+                print("Fix the data issue and re-run. Remaining phases skipped.")
+                return 0
         _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 

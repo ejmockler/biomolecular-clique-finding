@@ -319,7 +319,7 @@ class INDRAEdge:
         regulator_name: Human-readable regulator name (gene symbol)
         target_id: Target gene identifier (namespace, id)
         target_name: Human-readable target name (gene symbol)
-        regulation_type: Direction of regulation ("activation" or "repression")
+        regulation_type: Direction of regulation ("activation", "repression", or "phosphorylation")
         evidence_count: Number of supporting evidence pieces
         stmt_hash: Unique INDRA statement hash (for provenance tracking)
         source_counts: JSON dict of evidence sources -> counts
@@ -338,7 +338,7 @@ class INDRAEdge:
     regulator_name: str
     target_id: GeneId
     target_name: str
-    regulation_type: Literal["activation", "repression"]
+    regulation_type: Literal["activation", "repression", "phosphorylation"]
     evidence_count: int
     stmt_hash: int
     source_counts: str  # JSON string
@@ -406,6 +406,11 @@ class INDRAModule:
     def repressed_targets(self) -> Set[GeneId]:
         """Target gene IDs that are repressed by this regulator."""
         return {edge.target_id for edge in self.targets if edge.regulation_type == "repression"}
+
+    @property
+    def phosphorylated_targets(self) -> Set[GeneId]:
+        """Target gene IDs that are phosphorylated by this regulator."""
+        return {edge.target_id for edge in self.targets if edge.regulation_type == "phosphorylation"}
 
 
 class CoGExClient:
@@ -755,6 +760,8 @@ class CoGExClient:
                     reg_type = "activation"
                 elif stmt_type in REPRESSION_TYPES:
                     reg_type = "repression"
+                elif stmt_type in PHOSPHORYLATION_TYPES:
+                    reg_type = "phosphorylation"
                 else:
                     logger.warning(f"Unknown statement type: {stmt_type}")
                     continue
@@ -967,6 +974,8 @@ class CoGExClient:
                     reg_type = "activation"
                 elif stmt_type in REPRESSION_TYPES:
                     reg_type = "repression"
+                elif stmt_type in PHOSPHORYLATION_TYPES:
+                    reg_type = "phosphorylation"
                 else:
                     continue  # Skip unknown statement types
 

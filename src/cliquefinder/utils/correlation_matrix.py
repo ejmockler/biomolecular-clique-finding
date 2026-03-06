@@ -27,7 +27,7 @@ CACHE STRUCTURE:
     Location: ~/.cache/biocore/correlation_matrices/
     Format: corr_{cache_key}.mmap (binary memory-mapped file)
     Metadata: corr_{cache_key}.meta (JSON with provenance)
-    Cache key: SHA256(gene_ids + sample_ids + data_hash)[:16]
+    Cache key: SHA256(gene_ids + sample_ids + data_hash)[:32]
 
 USAGE:
     >>> from cliquefinder.utils.correlation_matrix import get_correlation_matrix
@@ -103,11 +103,14 @@ def _compute_cache_key(matrix: BioMatrix) -> str:
         matrix: BioMatrix to generate key for
 
     Returns:
-        16-character hexadecimal cache key
+        32-character hexadecimal cache key
 
     Notes:
         - Uses SHA256 for collision resistance
-        - 16 hex chars = 64 bits = ~10^19 possible keys (no collisions expected)
+        - 32 hex chars = 128 bits = ~3.4×10^38 possible keys (no collisions expected)
+        - CACHE-IV-1 (Audit IV): Hashes full data for correctness instead of 1% sample.
+          This is a breaking change — existing caches will miss. Intentional because
+          the old 1%-sample keys had collision risk with subtle preprocessing differences.
     """
     hasher = hashlib.sha256()
 
@@ -124,23 +127,27 @@ def _compute_cache_key(matrix: BioMatrix) -> str:
     # Hash data shape
     hasher.update(str(matrix.shape).encode('utf-8'))
 
-    # Hash data checksum (use sample of data for efficiency)
-    # For large matrices, hashing all values is expensive
-    # Sample 1% of values uniformly across matrix
-    n_features, n_samples = matrix.shape
-    sample_size = max(1000, int(0.01 * n_features * n_samples))
+    # CACHE-IV-1 (Audit IV): Hash full data for correctness.
+    # 1% sampling risks cache collisions when matrices differ only in
+    # imputed/batch-corrected values that fall outside the sample.
+    # For 10k×100 float64 (~8MB), hashing takes <10ms.
+    # NOTE: This is a breaking change from the 1% sampling approach.
+    # Existing caches will miss (different key format). This is intentional —
+    # the old keys had collision risk.
+    data_bytes = matrix.data.tobytes()
+    if len(data_bytes) <= 100_000_000:  # 100 MB: hash everything
+        hasher.update(data_bytes)
+    else:
+        # For very large matrices, sample 10% with local RNG (no global pollution)
+        rng = np.random.default_rng(42)
+        n_elements = matrix.data.size
+        sample_size = max(10000, n_elements // 10)
+        indices = rng.choice(n_elements, min(sample_size, n_elements), replace=False)
+        indices.sort()  # Sequential access for cache efficiency
+        hasher.update(matrix.data.ravel()[indices].tobytes())
 
-    # Deterministic sampling (use same indices every time)
-    np.random.seed(42)
-    indices = np.random.choice(n_features * n_samples, min(sample_size, n_features * n_samples), replace=False)
-    flat_data = matrix.data.ravel()
-    sample_data = flat_data[indices]
-
-    # Hash the sample
-    hasher.update(sample_data.tobytes())
-
-    # Return first 16 hex characters (64 bits)
-    return hasher.hexdigest()[:16]
+    # 128-bit hash (was 64-bit / 16 hex chars)
+    return hasher.hexdigest()[:32]
 
 
 def _get_cache_path(cache_key: str, cache_dir: Path) -> Tuple[Path, Path]:
@@ -1027,19 +1034,23 @@ def get_weighted_correlation_matrix(
     # This ensures cache invalidation when weights change
     data_cache_key = _compute_cache_key(matrix)
 
-    # Hash the weight matrix (sample for efficiency, like data hash)
+    # CACHE-IV-2 (Audit IV): Hash full weight data for correctness, no global RNG pollution.
+    # Same rationale as CACHE-IV-1: 1% sampling had collision risk.
     weight_hasher = hashlib.sha256()
-    n_features, n_samples = weights.shape
-    sample_size = max(1000, int(0.01 * n_features * n_samples))
+    weight_bytes = weights.tobytes()
+    if len(weight_bytes) <= 100_000_000:  # 100 MB: hash everything
+        weight_hasher.update(weight_bytes)
+    else:
+        # For very large weight matrices, sample 10% with local RNG
+        rng = np.random.default_rng(42)
+        n_elements = weights.size
+        sample_size = max(10000, n_elements // 10)
+        indices = rng.choice(n_elements, min(sample_size, n_elements), replace=False)
+        indices.sort()  # Sequential access for cache efficiency
+        weight_hasher.update(weights.ravel()[indices].tobytes())
 
-    np.random.seed(42)  # Deterministic sampling
-    indices = np.random.choice(n_features * n_samples, min(sample_size, n_features * n_samples), replace=False)
-    flat_weights = weights.ravel()
-    sample_weights = flat_weights[indices]
-
-    weight_hasher.update(sample_weights.tobytes())
     weight_hasher.update(weight_combination.encode('utf-8'))
-    weight_hash = weight_hasher.hexdigest()[:8]
+    weight_hash = weight_hasher.hexdigest()[:16]
 
     # Combined cache key: data + weights + method
     cache_key = f"{data_cache_key}_w{weight_hash}"

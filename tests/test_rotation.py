@@ -698,5 +698,357 @@ class TestQRRankDeficiency:
             compute_rotation_matrices_general(X, contrast)
 
 
+class TestNaNGeneFilter:
+    """Tests for STAT-IV-2: NaN gene filtering in RotationTestEngine.fit()."""
+
+    def _make_engine(self, data, n_genes, n_samples):
+        """Helper to build a RotationTestEngine from raw data."""
+        gene_ids = [f"GENE_{i}" for i in range(n_genes)]
+        sample_condition = np.array(["CASE"] * (n_samples // 2) + ["CTRL"] * (n_samples // 2))
+        metadata = pd.DataFrame({
+            "sample_id": [f"S{i}" for i in range(n_samples)],
+            "phenotype": sample_condition,
+        })
+        return RotationTestEngine(data, gene_ids, metadata)
+
+    def test_partial_nan_genes_removed_with_warning(self):
+        """Genes with partial NaN (e.g., 1 of 6 samples) are removed."""
+        rng = np.random.default_rng(42)
+        n_genes, n_samples = 50, 10
+        data = rng.standard_normal((n_genes, n_samples))
+        # Inject partial NaN into genes 5 and 10
+        data[5, 3] = np.nan
+        data[10, 7] = np.nan
+
+        engine = self._make_engine(data, n_genes, n_samples)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+            nan_warnings = [x for x in w if "missing values" in str(x.message)]
+            assert len(nan_warnings) >= 1, "Expected a warning about NaN gene removal"
+
+        # Two genes removed
+        assert len(engine.gene_ids) == n_genes - 2
+        assert "GENE_5" not in engine.gene_ids
+        assert "GENE_10" not in engine.gene_ids
+        # Data should have no NaN
+        assert not np.any(np.isnan(engine.data))
+
+    def test_no_nan_genes_pass_through(self):
+        """When no genes have NaN, all genes remain and no warning is emitted."""
+        rng = np.random.default_rng(42)
+        n_genes, n_samples = 50, 10
+        data = rng.standard_normal((n_genes, n_samples))
+
+        engine = self._make_engine(data, n_genes, n_samples)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+            nan_warnings = [x for x in w if "missing values" in str(x.message)]
+            assert len(nan_warnings) == 0, "No NaN warning expected when data is clean"
+
+        assert len(engine.gene_ids) == n_genes
+
+    def test_over_50_pct_nan_triggers_extra_warning(self):
+        """When >50% of genes have NaN, an extra imputation warning is emitted."""
+        rng = np.random.default_rng(42)
+        n_genes, n_samples = 20, 10
+        data = rng.standard_normal((n_genes, n_samples))
+        # Inject NaN into 11 of 20 genes (55%)
+        for i in range(11):
+            data[i, rng.integers(0, n_samples)] = np.nan
+
+        engine = self._make_engine(data, n_genes, n_samples)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+            impute_warnings = [x for x in w if "imputing" in str(x.message).lower()]
+            assert len(impute_warnings) >= 1, "Expected imputation suggestion warning"
+
+    def test_all_nan_genes_caught(self):
+        """Genes that are entirely NaN are removed (also caught by zero-var filter)."""
+        rng = np.random.default_rng(42)
+        n_genes, n_samples = 30, 10
+        data = rng.standard_normal((n_genes, n_samples))
+        # Make gene 0 all NaN
+        data[0, :] = np.nan
+
+        engine = self._make_engine(data, n_genes, n_samples)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+
+        assert "GENE_0" not in engine.gene_ids
+        assert not np.any(np.isnan(engine.data))
+
+
+class TestEBD0Infinity:
+    """Tests for STAT-IV-1: d0=inf means prior dominates (all genes use s0_sq)."""
+
+    def _make_simple_data(self, n_genes=50, n_samples=20, seed=42):
+        """Create a simple two-group design with known signal."""
+        rng = np.random.default_rng(seed)
+        data = rng.standard_normal((n_genes, n_samples))
+        # Add signal to first 10 genes in first 10 samples (CASE group)
+        data[:10, :10] += 2.0
+        gene_ids = [f"GENE_{i}" for i in range(n_genes)]
+        metadata = pd.DataFrame({
+            "sample_id": [f"S{i}" for i in range(n_samples)],
+            "phenotype": ["CASE"] * 10 + ["CTRL"] * 10,
+        })
+        return data, gene_ids, metadata
+
+    def test_d0_inf_moderated_variances_equal_s0sq(self):
+        """When d0=inf, all moderated variances should equal s0_sq."""
+        data, gene_ids, metadata = self._make_simple_data()
+
+        # Compute QR decomposition
+        precomputed = compute_rotation_matrices(
+            metadata["phenotype"].values, ["CASE", "CTRL"], ("CASE", "CTRL")
+        )
+
+        # Extract gene effects with d0=inf
+        s0_sq = 0.5  # arbitrary prior variance
+        effects = extract_gene_effects(
+            data, gene_ids, precomputed, eb_d0=np.inf, eb_s0_sq=s0_sq
+        )
+
+        # All moderated variances should be exactly s0_sq
+        assert effects.moderated_variances is not None
+        assert_allclose(effects.moderated_variances, s0_sq)
+        # df_total should be inf
+        assert np.isinf(effects.df_total)
+
+    def test_d0_inf_pvalue_computation_works(self):
+        """When d0=inf, t-to-z conversion with df=inf should produce valid p-values."""
+        from scipy import stats as scipy_stats
+
+        # t.cdf(x, df=inf) should match norm.cdf(x)
+        t_vals = np.array([-3.0, -1.0, 0.0, 1.0, 3.0])
+        p_t_inf = scipy_stats.t.cdf(t_vals, df=np.inf)
+        p_norm = scipy_stats.norm.cdf(t_vals)
+        assert_allclose(p_t_inf, p_norm, atol=1e-14)
+
+    def test_d0_inf_rotation_cpu_path(self):
+        """Full CPU rotation pipeline works with d0=inf."""
+        data, gene_ids, metadata = self._make_simple_data()
+
+        precomputed = compute_rotation_matrices(
+            metadata["phenotype"].values, ["CASE", "CTRL"], ("CASE", "CTRL")
+        )
+
+        s0_sq = 1.0
+        effects = extract_gene_effects(
+            data, gene_ids, precomputed, eb_d0=np.inf, eb_s0_sq=s0_sq
+        )
+
+        rng = np.random.default_rng(123)
+        R = generate_rotation_vectors(100, precomputed.Q2.shape[1], rng, use_gpu=False)
+
+        # apply_rotations_batched should not raise
+        t_rot, z_rot, valid = apply_rotations_batched(
+            effects.U, effects.rho_sq, R,
+            effects.sample_variances, effects.moderated_variances,
+            precomputed.df_residual, effects.df_total,
+            use_gpu=False,
+            eb_d0=np.inf, eb_s0_sq=s0_sq,
+        )
+
+        # Shapes should be correct
+        assert t_rot.shape == (100, len(gene_ids))
+        assert z_rot.shape == (100, len(gene_ids))
+        assert valid.shape == (100,)
+
+        # With d0=inf and use_df=inf, t ≈ z (fast path: inf > 1000)
+        # All valid rotations should have t == z
+        valid_t = t_rot[valid]
+        valid_z = z_rot[valid]
+        assert_allclose(valid_t, valid_z)
+
+        # No NaN or all-zero results
+        assert not np.any(np.isnan(z_rot[valid]))
+        assert np.any(z_rot[valid] != 0)
+
+    def test_d0_inf_end_to_end_engine(self):
+        """RotationTestEngine works end-to-end when fit_f_dist returns d0=inf."""
+        data, gene_ids, metadata = self._make_simple_data()
+
+        engine = RotationTestEngine(
+            data=data,
+            gene_ids=gene_ids,
+            metadata=metadata,
+        )
+
+        # Patch fit_f_dist to return d0=inf
+        import unittest.mock as mock
+        with mock.patch(
+            "cliquefinder.stats.permutation_gpu.fit_f_dist",
+            return_value=(np.inf, 0.8),
+        ):
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+
+        # Check that EB params were stored correctly
+        assert engine._precomputed.eb_d0 == np.inf
+        assert engine._precomputed.eb_s0_sq == 0.8
+        assert np.isinf(engine._precomputed.eb_df_total)
+
+        # Test a gene set — should produce valid result
+        config = RotationTestConfig(n_rotations=200, use_gpu=False)
+        gene_set = gene_ids[:10]
+        result = engine.test_gene_set(
+            gene_set=gene_set, gene_set_id="test_set", config=config
+        )
+        assert isinstance(result, RotationResult)
+        # p-values should be in [0, 1]
+        for stat_name, alternatives in result.p_values.items():
+            for alt_name, pval in alternatives.items():
+                assert 0.0 <= pval <= 1.0, (
+                    f"Invalid p-value {pval} for {stat_name}/{alt_name}"
+                )
+
+    def test_finite_d0_still_works(self):
+        """Regression guard: finite d0 should still produce correct EB shrinkage."""
+        data, gene_ids, metadata = self._make_simple_data()
+
+        precomputed = compute_rotation_matrices(
+            metadata["phenotype"].values, ["CASE", "CTRL"], ("CASE", "CTRL")
+        )
+
+        d0 = 5.0
+        s0_sq = 1.0
+        effects = extract_gene_effects(
+            data, gene_ids, precomputed, eb_d0=d0, eb_s0_sq=s0_sq
+        )
+
+        # Moderated variances should be a weighted average
+        df = precomputed.df_residual
+        expected = (d0 * s0_sq + df * effects.sample_variances) / (d0 + df)
+        assert_allclose(effects.moderated_variances, expected)
+        assert effects.df_total == d0 + df
+
+
+# =============================================================================
+# Audit IV tests
+# =============================================================================
+
+
+class TestAuditIVFixes:
+    """Tests for Audit IV low-severity fixes."""
+
+    def _make_simple_data(self, n_genes=50, n_samples=20, seed=42):
+        """Create a simple two-group design with known signal."""
+        rng = np.random.default_rng(seed)
+        data = rng.standard_normal((n_genes, n_samples))
+        data[:10, :10] += 2.0
+        gene_ids = [f"GENE_{i}" for i in range(n_genes)]
+        metadata = pd.DataFrame({
+            "sample_id": [f"S{i}" for i in range(n_samples)],
+            "phenotype": ["CASE"] * 10 + ["CTRL"] * 10,
+        })
+        return data, gene_ids, metadata
+
+    def test_double_fit_raises_runtime_error(self):
+        """STATE-IV-1: Calling fit() twice raises RuntimeError."""
+        data, gene_ids, metadata = self._make_simple_data()
+        engine = RotationTestEngine(data=data, gene_ids=gene_ids, metadata=metadata)
+
+        engine.fit(
+            conditions=["CASE", "CTRL"],
+            contrast=("CASE", "CTRL"),
+            condition_column="phenotype",
+        )
+
+        with pytest.raises(RuntimeError, match="already been called"):
+            engine.fit(
+                conditions=["CASE", "CTRL"],
+                contrast=("CASE", "CTRL"),
+                condition_column="phenotype",
+            )
+
+    def test_double_fit_general_raises_runtime_error(self):
+        """STATE-IV-1: Calling fit_general() twice raises RuntimeError."""
+        data, gene_ids, metadata = self._make_simple_data()
+        engine = RotationTestEngine(data=data, gene_ids=gene_ids, metadata=metadata)
+
+        # First fit via fit_general
+        design = np.column_stack([
+            (metadata["phenotype"] == "CASE").values.astype(float),
+            (metadata["phenotype"] == "CTRL").values.astype(float),
+        ])
+        contrast = np.array([1.0, -1.0])
+        engine.fit_general(design, contrast, "test")
+
+        with pytest.raises(RuntimeError, match="already been called"):
+            engine.fit_general(design, contrast, "test2")
+
+    def test_double_fit_cross_method_raises(self):
+        """STATE-IV-1: fit() then fit_general() raises RuntimeError."""
+        data, gene_ids, metadata = self._make_simple_data()
+        engine = RotationTestEngine(data=data, gene_ids=gene_ids, metadata=metadata)
+
+        engine.fit(
+            conditions=["CASE", "CTRL"],
+            contrast=("CASE", "CTRL"),
+            condition_column="phenotype",
+        )
+
+        design = np.column_stack([
+            (metadata["phenotype"] == "CASE").values.astype(float),
+            (metadata["phenotype"] == "CTRL").values.astype(float),
+        ])
+        contrast = np.array([1.0, -1.0])
+
+        with pytest.raises(RuntimeError, match="already been called"):
+            engine.fit_general(design, contrast, "test")
+
+    def test_null_distributions_no_nan_from_invalid_rotations(self):
+        """STAT-IV-3: null_distributions should not contain NaN from invalid rotations."""
+        data, gene_ids, metadata = self._make_simple_data()
+        engine = RotationTestEngine(data=data, gene_ids=gene_ids, metadata=metadata)
+
+        engine.fit(
+            conditions=["CASE", "CTRL"],
+            contrast=("CASE", "CTRL"),
+            condition_column="phenotype",
+        )
+
+        config = RotationTestConfig(n_rotations=200, use_gpu=False)
+        result = engine.test_gene_set(
+            gene_set=gene_ids[:10], gene_set_id="test_set", config=config
+        )
+
+        # Check that null_distributions contain no NaN values
+        for stat_name, alternatives in result.null_distributions.items():
+            for alt_name, values in alternatives.items():
+                arr = np.asarray(values)
+                assert not np.any(np.isnan(arr)), (
+                    f"NaN found in null_distributions[{stat_name}][{alt_name}]"
+                )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

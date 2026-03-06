@@ -932,6 +932,14 @@ def batched_median_polish_gpu(
             converged = True
             break
 
+    # STATE-IV-2 (Audit IV): Warn when median polish fails to converge.
+    if not converged:
+        logger.warning(
+            "Batched median polish did not converge in %d iterations "
+            "(max adjustment %.2e > eps %.2e). Results may be approximate.",
+            max_iter, max_adjustment, eps,
+        )
+
     # Extract overall effect from row effects (all in float64 now)
     # We take the median of row effects for each batch element
     # This matches the sequential algorithm in summarization.py

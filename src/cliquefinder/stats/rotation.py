@@ -1010,10 +1010,15 @@ def extract_gene_effects(
     moderated_variances = None
     df_total = None
 
-    if eb_d0 is not None and eb_s0_sq is not None and not np.isinf(eb_d0):
-        # Posterior variance: weighted average of prior and sample
-        moderated_variances = (eb_d0 * eb_s0_sq + df * sample_variances) / (eb_d0 + df)
-        df_total = eb_d0 + df
+    if eb_d0 is not None and eb_s0_sq is not None:
+        if np.isinf(eb_d0):
+            # d0=inf: prior dominates completely — use prior variance for all genes
+            moderated_variances = np.full_like(sample_variances, eb_s0_sq)
+            df_total = np.inf
+        else:
+            # Posterior variance: weighted average of prior and sample
+            moderated_variances = (eb_d0 * eb_s0_sq + df * sample_variances) / (eb_d0 + df)
+            df_total = eb_d0 + df
 
     return GeneEffects(
         U=U,
@@ -1120,7 +1125,10 @@ def apply_rotations_batched(
     n_rotations = R.shape[0]
 
     # Determine df for p-value/z-score conversion
-    if df_total is not None and not np.isinf(df_total):
+    # When df_total=inf (d0=inf), t(df=inf) ≡ N(0,1), so use_df=inf is safe:
+    # scipy.stats.t.cdf(x, df=inf) == scipy.stats.norm.cdf(x), and
+    # inf > 1000 triggers the fast z≈t path in the rotation kernels.
+    if df_total is not None:
         use_df = df_total
     else:
         use_df = df_residual
@@ -1258,13 +1266,18 @@ def _apply_rotations_gpu(
     var_rot = residual_ss_rot / max(df_residual, 1)
 
     # Apply EB shrinkage using proper formula if priors are available
-    if eb_d0 is not None and eb_s0_sq is not None and not np.isinf(eb_d0):
-        # Proper per-rotation EB shrinkage:
-        # s²_post = (d0 × s0² + df × s²_rot) / (d0 + df)
-        d0_mx = mx.array(eb_d0, dtype=mx.float32)
-        s0_sq_mx = mx.array(eb_s0_sq, dtype=mx.float32)
-        df_mx = mx.array(float(df_residual), dtype=mx.float32)
-        var_rot = (d0_mx * s0_sq_mx + df_mx * var_rot) / (d0_mx + df_mx)
+    if eb_d0 is not None and eb_s0_sq is not None:
+        if np.isinf(eb_d0):
+            # d0=inf: prior dominates — all genes get prior variance
+            var_rot = mx.full(var_rot.shape, float(eb_s0_sq), dtype=mx.float32)
+            # df_total is inf — downstream use_df=inf triggers z≈t fast path
+        else:
+            # Proper per-rotation EB shrinkage:
+            # s²_post = (d0 × s0² + df × s²_rot) / (d0 + df)
+            d0_mx = mx.array(eb_d0, dtype=mx.float32)
+            s0_sq_mx = mx.array(eb_s0_sq, dtype=mx.float32)
+            df_mx = mx.array(float(df_residual), dtype=mx.float32)
+            var_rot = (d0_mx * s0_sq_mx + df_mx * var_rot) / (d0_mx + df_mx)
     # When EB priors (d0, s0_sq) are unavailable, use unmoderated rotated
     # variances directly.  A previous version applied a ratio approximation
     # (var_rot * moderated_var / sample_var), but that is mathematically
@@ -1346,10 +1359,14 @@ def _apply_rotations_cpu(
     var_rot = residual_ss_rot / max(df_residual, 1)
 
     # Apply EB shrinkage using proper formula if priors are available
-    if eb_d0 is not None and eb_s0_sq is not None and not np.isinf(eb_d0):
-        # Proper per-rotation EB shrinkage:
-        # s²_post = (d0 × s0² + df × s²_rot) / (d0 + df)
-        var_rot = (eb_d0 * eb_s0_sq + df_residual * var_rot) / (eb_d0 + df_residual)
+    if eb_d0 is not None and eb_s0_sq is not None:
+        if np.isinf(eb_d0):
+            # d0=inf: prior dominates completely — use prior variance for all genes
+            var_rot = np.full_like(var_rot, eb_s0_sq)
+        else:
+            # Proper per-rotation EB shrinkage:
+            # s²_post = (d0 × s0² + df × s²_rot) / (d0 + df)
+            var_rot = (eb_d0 * eb_s0_sq + df_residual * var_rot) / (eb_d0 + df_residual)
     # When EB priors (d0, s0_sq) are unavailable, use unmoderated rotated
     # variances directly.  A previous version applied a ratio approximation
     # (var_rot * moderated_var / sample_var), but that is mathematically
@@ -1822,6 +1839,13 @@ class RotationTestEngine:
         Returns:
             self (for method chaining)
         """
+        # STATE-IV-1 (Audit IV): Guard against double-fit
+        if hasattr(self, '_fitted') and self._fitted:
+            raise RuntimeError(
+                "RotationTestEngine.fit() has already been called. "
+                "Create a new engine instance for different parameters."
+            )
+
         # If covariates are specified, build a full design matrix and
         # delegate to fit_general() which handles arbitrary designs.
         if covariates:
@@ -1873,6 +1897,29 @@ class RotationTestEngine:
                 stacklevel=2,
             )
             keep_mask = ~zero_var_mask
+            self.data = self.data[keep_mask]
+            self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
+            self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
+
+        # STAT-IV-2 (Audit IV): Remove genes with any NaN values.
+        # NaN propagates through QR projection (Y @ Q2), corrupting rho_sq
+        # and EB prior estimation for ALL genes, not just the NaN gene.
+        nan_row_mask = np.any(np.isnan(self.data), axis=1)
+        if nan_row_mask.any():
+            n_nan = int(nan_row_mask.sum())
+            pct = 100.0 * n_nan / len(self.gene_ids)
+            warnings.warn(
+                f"Removing {n_nan}/{len(self.gene_ids)} genes ({pct:.1f}%) with missing "
+                f"values before rotation testing (NaN propagates through QR projection).",
+                stacklevel=2,
+            )
+            if pct > 50:
+                warnings.warn(
+                    f"Over 50% of genes removed due to missing values. "
+                    f"Consider imputing missing values before rotation testing.",
+                    stacklevel=2,
+                )
+            keep_mask = ~nan_row_mask
             self.data = self.data[keep_mask]
             self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
             self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
@@ -1938,7 +1985,7 @@ class RotationTestEngine:
             contrast_name=self._precomputed.contrast_name,
             eb_d0=eb_d0,
             eb_s0_sq=eb_s0_sq,
-            eb_df_total=eb_d0 + self._precomputed.df_residual if not np.isinf(eb_d0) else None,
+            eb_df_total=eb_d0 + self._precomputed.df_residual,  # inf + finite = inf, which is correct
             design_rank=self._precomputed.design_rank,
             n_samples=self._precomputed.n_samples,
             w_sqrt_vec=self._precomputed.w_sqrt_vec,
@@ -1984,6 +2031,13 @@ class RotationTestEngine:
 
             engine.fit_general(design, contrast, "sex_x_disease")
         """
+        # STATE-IV-1 (Audit IV): Guard against double-fit
+        if hasattr(self, '_fitted') and self._fitted:
+            raise RuntimeError(
+                "RotationTestEngine.fit() has already been called. "
+                "Create a new engine instance for different parameters."
+            )
+
         from .permutation_gpu import fit_f_dist
 
         # Compute rotation matrices via C-matrix reparameterization
@@ -2027,7 +2081,7 @@ class RotationTestEngine:
             contrast_name=self._precomputed.contrast_name,
             eb_d0=eb_d0,
             eb_s0_sq=eb_s0_sq,
-            eb_df_total=eb_d0 + self._precomputed.df_residual if not np.isinf(eb_d0) else None,
+            eb_df_total=eb_d0 + self._precomputed.df_residual,  # inf + finite = inf, which is correct
             design_rank=self._precomputed.design_rank,
             n_samples=self._precomputed.n_samples,
             w_sqrt_vec=self._precomputed.w_sqrt_vec,
@@ -2260,17 +2314,24 @@ class RotationTestEngine:
                 stacklevel=2,
             )
 
+        # STAT-IV-3 (Audit IV): Filter invalid rotations from null distributions
+        # before storing. P-values already filtered via valid_rotation_mask in
+        # compute_rotation_pvalues, but stored null_distributions were contaminated.
+        # z_rot has shape (n_rotations, n_genes), valid_mask has shape (n_rotations,).
+        z_rot_valid = z_rot[valid_mask] if valid_mask is not None else z_rot
+
         # Compute null set statistics
         null_stats = compute_set_statistics(
-            z_rot,
+            z_rot_valid,
             weights=final_weights,
             statistics=config.statistics,
             alternatives=config.alternatives,
         )
 
-        # Compute p-values (only valid rotations contribute)
+        # Compute p-values. Since null_stats is already built from
+        # z_rot_valid (STAT-IV-3), no further masking is needed.
         p_values = compute_rotation_pvalues(
-            observed_flat, null_stats, valid_rotation_mask=valid_mask,
+            observed_flat, null_stats,
         )
 
         # Estimate active gene proportions
@@ -2495,7 +2556,12 @@ def run_rotation_test(
 
     if verbose:
         eb_d0 = engine._precomputed.eb_d0
-        print(f"  EB prior df: {eb_d0:.1f}" if eb_d0 and not np.isinf(eb_d0) else "  EB: disabled")
+        if eb_d0 is not None and np.isinf(eb_d0):
+            print("  EB prior df: inf (prior dominates)")
+        elif eb_d0:
+            print(f"  EB prior df: {eb_d0:.1f}")
+        else:
+            print("  EB: disabled")
         print()
 
     # Configure and run tests

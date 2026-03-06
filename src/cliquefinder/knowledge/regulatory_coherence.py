@@ -891,7 +891,8 @@ class CoherenceAnalyzer:
         self,
         genes: Set[str],
         condition: str,
-        n_bootstrap: Optional[int] = None
+        n_bootstrap: Optional[int] = None,
+        correlation_sign: Optional[CorrelationSign] = None,
     ) -> Dict[int, float]:
         """
         Assess community stability via bootstrap resampling.
@@ -911,8 +912,11 @@ class CoherenceAnalyzer:
 
         # Original communities
         corr_original, _ = self.compute_correlation_matrix(gene_list, condition)
-        G_pos, _ = self.build_signed_graphs(corr_original, gene_list)
-        original_partition = self.detect_communities(G_pos)
+        G_pos, G_neg = self.build_signed_graphs(corr_original, gene_list)
+        if correlation_sign == CorrelationSign.NEGATIVE:
+            original_partition = self.detect_communities(G_neg)
+        else:
+            original_partition = self.detect_communities(G_pos)
 
         # Invert to get community -> genes
         original_communities = {}
@@ -946,8 +950,11 @@ class CoherenceAnalyzer:
             np.fill_diagonal(boot_corr, 1.0)
 
             # Detect communities
-            G_boot, _ = self.build_signed_graphs(boot_corr, gene_list)
-            boot_partition = self.detect_communities(G_boot)
+            G_boot_pos, G_boot_neg = self.build_signed_graphs(boot_corr, gene_list)
+            if correlation_sign == CorrelationSign.NEGATIVE:
+                boot_partition = self.detect_communities(G_boot_neg)
+            else:
+                boot_partition = self.detect_communities(G_boot_pos)
 
             # Check which original communities are recovered
             boot_communities = {}
@@ -1149,7 +1156,14 @@ class CoherenceAnalyzer:
         bootstrap_stability_neg = {}
         if compute_bootstrap and self.config.n_bootstrap > 0:
             logger.info("Computing bootstrap stability...")
-            bootstrap_stability_pos = self.bootstrap_stability(filtered_genes, condition)
+            bootstrap_stability_pos = self.bootstrap_stability(
+                filtered_genes, condition, correlation_sign=CorrelationSign.POSITIVE
+            )
+            # KG-IV-2 (Audit IV): Also compute stability for negative communities
+            if comm_neg:
+                bootstrap_stability_neg = self.bootstrap_stability(
+                    filtered_genes, condition, correlation_sign=CorrelationSign.NEGATIVE
+                )
 
         # Step 7: Build CommunityResult objects
         positive_communities = []
