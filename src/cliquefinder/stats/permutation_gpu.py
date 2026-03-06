@@ -244,10 +244,11 @@ def squeeze_var(
     df_is_array = isinstance(df, np.ndarray)
 
     if np.isinf(d0):
-        # No shrinkage - return original variances
+        # d0=inf: prior dominates completely — use prior variance for all genes
+        s2_post = np.full_like(sigma2, s0_sq)
         if df_is_array:
-            return sigma2.copy(), df.astype(np.float64)
-        return sigma2.copy(), float(df)
+            return s2_post, np.full_like(df, np.inf, dtype=np.float64)
+        return s2_post, np.inf
 
     # STAT-III-5 (Audit III): Warn when many input variances are NaN.
     _n_nan = np.sum(np.isnan(sigma2))

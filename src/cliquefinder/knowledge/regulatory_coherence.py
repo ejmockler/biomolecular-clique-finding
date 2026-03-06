@@ -30,7 +30,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Union
 from enum import Enum
 import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -77,7 +76,6 @@ class CorrelationSign(Enum):
     """Sign of correlation - biologically distinct."""
     POSITIVE = "positive"  # Co-activation
     NEGATIVE = "negative"  # Antagonistic regulation
-    BOTH = "both"         # Combined (use with caution)
 
 
 @dataclass
@@ -354,6 +352,29 @@ def fisher_z_test(r1: float, r2: float, n1: int, n2: int) -> Tuple[float, float]
     return float(z_score), float(p_value)
 
 
+def _community_modularity(G: 'nx.Graph', community_genes: Set[str]) -> float:
+    """Compute modularity contribution of a single community.
+
+    Uses a 2-partition (community vs rest) to measure how much this
+    community contributes to the overall modularity score.
+
+    Args:
+        G: The full graph
+        community_genes: Set of genes in this community
+
+    Returns:
+        Modularity of the 2-partition {community, rest}
+    """
+    comm_set = set(community_genes)
+    rest_set = set(G.nodes()) - comm_set
+    if not rest_set:
+        return 0.0
+    try:
+        return nx_community.modularity(G, [comm_set, rest_set], weight='weight')
+    except (ZeroDivisionError, nx.NetworkXError):
+        return 0.0
+
+
 class CoherenceAnalyzer:
     """
     Statistically rigorous regulatory coherence analyzer.
@@ -400,6 +421,10 @@ class CoherenceAnalyzer:
 
         # Validate dependencies
         self._validate_dependencies()
+
+    def _get_community_seed(self) -> int:
+        """Get a deterministic seed for community detection from self._rng."""
+        return int(self._rng.integers(0, 2**31))
 
     def _validate_dependencies(self):
         """Check for required community detection libraries."""
@@ -526,7 +551,9 @@ class CoherenceAnalyzer:
         elif method == 'spearman':
             corr_matrix, _ = stats.spearmanr(expr_data.T)
             if corr_matrix.ndim == 0:
-                corr_matrix = np.array([[1.0]])
+                # spearmanr returns scalar for 2 variables — reconstruct 2×2 matrix
+                rho = float(corr_matrix)
+                corr_matrix = np.array([[1.0, rho], [rho, 1.0]])
         else:
             raise ValueError(f"Unknown method: {method}")
 
@@ -651,14 +678,16 @@ class CoherenceAnalyzer:
             return community_louvain.best_partition(
                 G,
                 weight='weight',
-                resolution=self.config.resolution
+                resolution=self.config.resolution,
+                random_state=self._get_community_seed()
             )
         else:
             # Fall back to NetworkX implementation
             communities = nx_community.louvain_communities(
                 G,
                 weight='weight',
-                resolution=self.config.resolution
+                resolution=self.config.resolution,
+                seed=self._get_community_seed()
             )
             partition = {}
             for i, comm in enumerate(communities):
@@ -689,115 +718,11 @@ class CoherenceAnalyzer:
             ig_graph,
             leidenalg.RBConfigurationVertexPartition,
             weights='weight',
-            resolution_parameter=self.config.resolution
+            resolution_parameter=self.config.resolution,
+            seed=self._get_community_seed()
         )
 
         return {node_list[i]: partition.membership[i] for i in range(len(node_list))}
-
-    def _leiden_multiplex(
-        self,
-        G_pos: nx.Graph,
-        G_neg: nx.Graph,
-        layer_weights: Optional[Tuple[float, float]] = None
-    ) -> Dict[str, int]:
-        """
-        Multiplex Leiden for joint positive/negative correlation analysis.
-
-        This allows finding communities that are coherent in positive correlations
-        while penalizing negative correlations within the same community.
-
-        Args:
-            G_pos: Positive correlation graph
-            G_neg: Negative correlation graph
-            layer_weights: Weights for (positive, negative) layers.
-                          Default: (1.0, -0.5) to penalize negative edges
-
-        Returns:
-            Dict mapping gene -> community_id
-
-        Key advantage: Communities are formed considering BOTH positive
-        co-expression AND avoidance of negative correlations.
-        """
-        if not HAS_LEIDEN:
-            raise ImportError("leidenalg and igraph required for multiplex Leiden")
-
-        if layer_weights is None:
-            layer_weights = (1.0, -0.5)  # Reward positive, penalize negative
-
-        # Get unified node list (union of both graphs)
-        all_nodes = set(G_pos.nodes()) | set(G_neg.nodes())
-        if not all_nodes:
-            return {}
-
-        node_list = sorted(all_nodes)
-        node_map = {n: i for i, n in enumerate(node_list)}
-        n_nodes = len(node_list)
-
-        # Convert positive graph
-        edges_pos = [(node_map[u], node_map[v]) for u, v in G_pos.edges()]
-        weights_pos = [G_pos[u][v].get('weight', 1.0) for u, v in G_pos.edges()]
-
-        g_pos = ig.Graph(n=n_nodes, edges=edges_pos)
-        g_pos.es['weight'] = weights_pos if weights_pos else [1.0] * len(edges_pos)
-
-        # Convert negative graph
-        edges_neg = [(node_map[u], node_map[v]) for u, v in G_neg.edges()]
-        weights_neg = [G_neg[u][v].get('weight', 1.0) for u, v in G_neg.edges()]
-
-        g_neg = ig.Graph(n=n_nodes, edges=edges_neg)
-        g_neg.es['weight'] = weights_neg if weights_neg else [1.0] * len(edges_neg)
-
-        # Handle edge cases
-        if len(edges_pos) == 0 and len(edges_neg) == 0:
-            # No edges in either graph - each node is its own community
-            return {node: i for i, node in enumerate(node_list)}
-
-        if len(edges_pos) == 0:
-            # Only negative edges - fall back to single-layer on negative
-            logger.warning("No positive edges, falling back to negative-only Leiden")
-            partition = leidenalg.find_partition(
-                g_neg,
-                leidenalg.RBConfigurationVertexPartition,
-                weights='weight',
-                resolution_parameter=self.config.resolution
-            )
-            return {node_list[i]: partition.membership[i] for i in range(n_nodes)}
-
-        # Create multiplex partitions
-        partition_pos = leidenalg.RBConfigurationVertexPartition(
-            g_pos,
-            weights='weight',
-            resolution_parameter=self.config.resolution
-        )
-
-        if len(edges_neg) > 0:
-            partition_neg = leidenalg.RBConfigurationVertexPartition(
-                g_neg,
-                weights='weight',
-                resolution_parameter=self.config.resolution
-            )
-
-            # Optimize multiplex
-            optimiser = leidenalg.Optimiser()
-            diff = optimiser.optimise_partition_multiplex(
-                [partition_pos, partition_neg],
-                layer_weights=list(layer_weights)
-            )
-
-            logger.debug(f"Multiplex Leiden improvement: {diff}")
-
-            # Return partition from positive layer (they should be synchronized)
-            return {node_list[i]: partition_pos.membership[i] for i in range(n_nodes)}
-        else:
-            # Only positive edges - fall back to single-layer
-            logger.debug("No negative edges, using single-layer Leiden on positive graph")
-            partition = leidenalg.find_partition(
-                g_pos,
-                leidenalg.RBConfigurationVertexPartition,
-                weights='weight',
-                resolution_parameter=self.config.resolution
-            )
-            return {node_list[i]: partition.membership[i] for i in range(n_nodes)}
 
     def _hierarchical_communities(self, G: nx.Graph) -> Dict[str, int]:
         """Hierarchical clustering on correlation distance."""
@@ -1068,9 +993,11 @@ class CoherenceAnalyzer:
                 len(perm_nan_counts), n_permutations, sum(perm_nan_counts),
             )
 
-        # Compute p-value
+        # Compute p-value using Phipson-Smyth correction: (b+1)/(B+1)
+        # Ensures p-value is never exactly 0.0 and has correct coverage
         null_modularities = np.array(null_modularities)
-        p_value = np.mean(null_modularities >= observed_modularity)
+        b = int(np.sum(null_modularities >= observed_modularity))
+        p_value = (b + 1) / (len(null_modularities) + 1)
 
         return p_value
 
@@ -1209,7 +1136,7 @@ class CoherenceAnalyzer:
                 min_correlation=stats['min_correlation'],
                 max_correlation=stats['max_correlation'],
                 density=stats['density'],
-                modularity_contribution=modularity_pos / len(comm_pos) if comm_pos else 0.0,
+                modularity_contribution=_community_modularity(G_pos, comm_genes),
                 bootstrap_stability=bootstrap_stability_pos.get(cid),
                 permutation_pvalue=perm_pvalue_pos,
                 regulator_name=regulator_name,
@@ -1233,7 +1160,7 @@ class CoherenceAnalyzer:
                 min_correlation=stats['min_correlation'],
                 max_correlation=stats['max_correlation'],
                 density=stats['density'],
-                modularity_contribution=modularity_neg / len(comm_neg) if comm_neg else 0.0,
+                modularity_contribution=_community_modularity(G_neg, comm_genes),
                 bootstrap_stability=bootstrap_stability_neg.get(cid),
                 permutation_pvalue=perm_pvalue_neg,
                 regulator_name=regulator_name,
@@ -1291,7 +1218,7 @@ class CoherenceAnalyzer:
                     compute_permutation=compute_permutation
                 )
                 results[condition] = result
-            except Exception as e:
+            except (ValueError, RuntimeError) as e:
                 logger.error(f"Error analyzing {condition}: {e}")
                 continue
 

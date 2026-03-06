@@ -382,8 +382,8 @@ class TestSqueezeVarScalar:
         assert df_total == d0 + df
         assert isinstance(df_total, float)
 
-    def test_infinite_d0_no_shrinkage(self):
-        """When d0=inf, original variances are returned unchanged."""
+    def test_infinite_d0_maximum_shrinkage(self):
+        """When d0=inf, prior dominates: all posteriors equal s0_sq."""
         sigma2 = np.array([0.5, 1.0, 2.0])
         df = 10
         d0 = np.inf
@@ -391,10 +391,9 @@ class TestSqueezeVarScalar:
 
         s2_post, df_total = squeeze_var(sigma2, df, d0, s0_sq)
 
-        assert_allclose(s2_post, sigma2)
-        assert df_total == float(df)
-        # Should be a copy, not the same object
-        assert s2_post is not sigma2
+        # d0=inf means maximum shrinkage: s2_post = s0_sq for all genes
+        assert_allclose(s2_post, np.full_like(sigma2, s0_sq))
+        assert np.isinf(df_total)
 
     def test_high_d0_shrinks_toward_prior(self):
         """Large d0 pulls posterior toward s0_sq."""
@@ -458,7 +457,7 @@ class TestSqueezeVarArray:
         assert_allclose(df_total_arr, df_total_loop, rtol=1e-14)
 
     def test_array_df_with_infinite_d0(self):
-        """Array df with d0=inf returns original variances and array df."""
+        """Array df with d0=inf: prior dominates, all posteriors equal s0_sq."""
         sigma2 = np.array([1.0, 2.0, 3.0])
         df = np.array([5.0, 10.0, 15.0])
         d0 = np.inf
@@ -466,9 +465,10 @@ class TestSqueezeVarArray:
 
         s2_post, df_total = squeeze_var(sigma2, df, d0, s0_sq)
 
-        assert_allclose(s2_post, sigma2)
+        # d0=inf means maximum shrinkage
+        assert_allclose(s2_post, np.full_like(sigma2, s0_sq))
         assert isinstance(df_total, np.ndarray)
-        assert_allclose(df_total, df)
+        assert np.all(np.isinf(df_total))
 
     def test_mixed_df_values(self):
         """Features with very different df get appropriately different shrinkage."""

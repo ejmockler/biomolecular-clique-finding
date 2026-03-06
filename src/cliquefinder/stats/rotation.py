@@ -1811,6 +1811,50 @@ class RotationTestEngine:
         self._effects: GeneEffects | None = None
         self._fitted = False
 
+    def _filter_degenerate_genes(self) -> None:
+        """Remove zero-variance and NaN-containing genes from the data.
+
+        Updates self.data, self.gene_ids, and self.gene_to_idx in place.
+        Warns when genes are removed and when >50% of genes contain NaN.
+        """
+        n_before = self.data.shape[0]
+
+        # Zero-variance genes produce NaN t-statistics and contaminate EB priors
+        gene_vars = np.nanvar(self.data, axis=1)
+        zero_var_mask = gene_vars == 0
+        if zero_var_mask.any():
+            n_removed = int(zero_var_mask.sum())
+            warnings.warn(
+                f"Removing {n_removed}/{n_before} zero-variance genes "
+                f"before rotation testing.",
+                stacklevel=3,
+            )
+
+        # NaN propagates through QR projection (Y @ Q2), corrupting rho_sq
+        # and EB prior estimation for ALL genes, not just the NaN gene.
+        nan_row_mask = np.any(np.isnan(self.data), axis=1)
+        if nan_row_mask.any():
+            n_nan = int(nan_row_mask.sum())
+            pct = 100.0 * n_nan / n_before
+            warnings.warn(
+                f"Removing {n_nan}/{n_before} genes ({pct:.1f}%) with missing "
+                f"values before rotation testing (NaN propagates through QR projection).",
+                stacklevel=3,
+            )
+            if pct > 50:
+                warnings.warn(
+                    f"Over 50% of genes removed due to missing values. "
+                    f"Consider imputing missing values before rotation testing.",
+                    stacklevel=3,
+                )
+
+        # Combined mask
+        keep_mask = ~(zero_var_mask | nan_row_mask)
+        if not np.all(keep_mask):
+            self.data = self.data[keep_mask]
+            self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
+            self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
+
     def fit(
         self,
         conditions: list[str],
@@ -1885,44 +1929,8 @@ class RotationTestEngine:
             self.data = self.data[:, valid_condition_mask]
             self.metadata = self.metadata[valid_condition_mask].reset_index(drop=True)
 
-        # VALID-III-2 (Audit III): Remove zero-variance genes before rotation.
-        # Zero-variance genes produce NaN in t-statistics and contaminate EB priors.
-        gene_vars = np.nanvar(self.data, axis=1)
-        zero_var_mask = gene_vars == 0
-        if zero_var_mask.any():
-            n_removed = int(zero_var_mask.sum())
-            warnings.warn(
-                f"Removing {n_removed}/{len(self.gene_ids)} zero-variance genes "
-                f"before rotation testing.",
-                stacklevel=2,
-            )
-            keep_mask = ~zero_var_mask
-            self.data = self.data[keep_mask]
-            self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
-            self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
-
-        # STAT-IV-2 (Audit IV): Remove genes with any NaN values.
-        # NaN propagates through QR projection (Y @ Q2), corrupting rho_sq
-        # and EB prior estimation for ALL genes, not just the NaN gene.
-        nan_row_mask = np.any(np.isnan(self.data), axis=1)
-        if nan_row_mask.any():
-            n_nan = int(nan_row_mask.sum())
-            pct = 100.0 * n_nan / len(self.gene_ids)
-            warnings.warn(
-                f"Removing {n_nan}/{len(self.gene_ids)} genes ({pct:.1f}%) with missing "
-                f"values before rotation testing (NaN propagates through QR projection).",
-                stacklevel=2,
-            )
-            if pct > 50:
-                warnings.warn(
-                    f"Over 50% of genes removed due to missing values. "
-                    f"Consider imputing missing values before rotation testing.",
-                    stacklevel=2,
-                )
-            keep_mask = ~nan_row_mask
-            self.data = self.data[keep_mask]
-            self.gene_ids = [g for g, keep in zip(self.gene_ids, keep_mask) if keep]
-            self.gene_to_idx = {g: i for i, g in enumerate(self.gene_ids)}
+        # VALID-III-2, STAT-IV-2: Remove zero-variance and NaN genes
+        self._filter_degenerate_genes()
 
         # Check for >2 groups: ROAST is designed for 2-group comparisons
         if contrast is not None:
@@ -2039,6 +2047,9 @@ class RotationTestEngine:
             )
 
         from .permutation_gpu import fit_f_dist
+
+        # Filter degenerate genes before computation
+        self._filter_degenerate_genes()
 
         # Compute rotation matrices via C-matrix reparameterization
         self._precomputed = compute_rotation_matrices_general(
