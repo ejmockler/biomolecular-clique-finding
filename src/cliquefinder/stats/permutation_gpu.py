@@ -1449,6 +1449,27 @@ def run_permutation_test_gpu(
     import time
     from .clique_analysis import map_feature_ids_to_symbols
 
+    # H-3 (Audit XI): subject_col and use_mixed_model are accepted for API
+    # compatibility with run_permutation_clique_test() but are NOT implemented
+    # in the GPU path.  Warn users so they know these are not being applied.
+    if subject_col is not None:
+        warnings.warn(
+            f"subject_col='{subject_col}' is accepted but NOT used by the GPU "
+            "permutation path. Samples are treated as independent observations. "
+            "For repeated-measures designs, use the CPU path "
+            "(run_permutation_clique_test) which supports subject aggregation.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if use_mixed_model:
+        warnings.warn(
+            "use_mixed_model=True is accepted but NOT used by the GPU "
+            "permutation path. A simple OLS model is always used. "
+            "For mixed-model support, use the CPU path.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # GPU-7 fix: Gracefully fall back to CPU when MLX is unavailable.
     # All internal functions (batched_ols_contrast_test, batched_median_polish_gpu)
     # already have CPU paths, so the function works correctly without MLX.
@@ -1547,7 +1568,7 @@ def run_permutation_test_gpu(
             print(f"    Filtering to {n_contrast_samples}/{n_samples} samples in contrast")
         # Filter data and metadata to contrast samples
         data = data[:, contrast_mask]
-        sample_metadata = sample_metadata.iloc[contrast_mask].copy()
+        sample_metadata = sample_metadata.loc[contrast_mask].copy()
         sample_condition = sample_metadata[condition_col].values
         n_samples = n_contrast_samples
 

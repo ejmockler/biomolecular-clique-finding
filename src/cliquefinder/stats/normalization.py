@@ -236,13 +236,14 @@ def quantile_normalization(
 
         if method == "censored":
             # Map ranks to full target distribution
-            # This assumes missing values are MNAR (low abundance)
-            # Rank 1 -> target[0], Rank n_valid -> target[n_valid-1]
-            # Uses only the lower quantiles of target since missing = low abundance
+            # MNAR assumption: missing values are low abundance (below detection)
+            # Therefore observed values occupy the UPPER quantiles of the true
+            # distribution.  We map observed ranks to the top n_valid entries of
+            # the sorted target so that the lowest observed value maps to the
+            # (n_total - n_valid)-th quantile and the highest to the n_total-th.
 
-            # Convert 1-based ranks to 0-based indices in target
-            # Use only first n_valid elements of target
-            target_subset = target[:n_valid] if n_valid <= len(target) else target
+            # Use the UPPER n_valid elements of the target distribution
+            target_subset = target[-n_valid:] if n_valid <= len(target) else target
 
             # Map fractional ranks to target quantiles via interpolation
             # ranks range from 1 to n_valid, we map to indices 0 to len(target_subset)-1
@@ -761,12 +762,12 @@ def assess_normalization_quality(
 
     # Coefficient of variation of medians (should decrease)
     cv_medians_before = (
-        np.std(medians_before, ddof=1) / np.mean(medians_before)
+        np.std(medians_before, ddof=1) / np.abs(np.mean(medians_before))
         if len(medians_before) > 1 and np.mean(medians_before) != 0
         else np.nan
     )
     cv_medians_after = (
-        np.std(medians_after, ddof=1) / np.mean(medians_after)
+        np.std(medians_after, ddof=1) / np.abs(np.mean(medians_after))
         if len(medians_after) > 1 and np.mean(medians_after) != 0
         else np.nan
     )

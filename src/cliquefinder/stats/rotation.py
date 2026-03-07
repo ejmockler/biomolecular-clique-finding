@@ -1732,8 +1732,10 @@ class RotationTestConfig:
         alternatives: Which alternative hypotheses to test
                      Default: all (UP, DOWN, MIXED)
 
-        use_eb: Whether to use Empirical Bayes variance shrinkage
-               Strongly recommended for small samples.
+        use_eb: Deprecated — EB moderation is always applied during fit().
+               This flag is accepted for backward compatibility but has no
+               effect.  EB shrinkage is integral to the ROAST methodology
+               and cannot be disabled.
 
         use_gpu: Whether to use GPU acceleration (MLX)
 
@@ -1746,7 +1748,7 @@ class RotationTestConfig:
     n_rotations: int = 9999
     statistics: list[SetStatistic] = field(default_factory=lambda: list(SetStatistic))
     alternatives: list[Alternative] = field(default_factory=lambda: list(Alternative))
-    use_eb: bool = True
+    use_eb: bool = True  # M-2 (Audit XI): deprecated — EB is always applied
     use_gpu: bool = True
     chunk_size: int = 10000
     seed: int | None = None
@@ -2583,6 +2585,16 @@ def run_rotation_test(
         else:
             print("  EB: disabled")
         print()
+
+    # M-2 (Audit XI): use_eb is deprecated — EB is always applied during fit().
+    if not use_eb:
+        warnings.warn(
+            "use_eb=False has no effect. Empirical Bayes moderation is always "
+            "applied during fit() as it is integral to the ROAST methodology. "
+            "The use_eb parameter is deprecated.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # Configure and run tests
     config = RotationTestConfig(

@@ -405,8 +405,16 @@ def run_negative_control_sets(
         if verbose:
             print(f"  Running expression-matched controls ({n_control_sets} sets)...")
 
-        gene_means = np.nanmean(data, axis=1)
-        gene_variances = np.nanvar(data, axis=1, ddof=1)
+        # H-1 (Audit XI): Use engine.data (filtered) for gene_means/variances so
+        # the indices from engine.gene_to_idx align with the correct rows.
+        # The caller-supplied `data` may be the original unfiltered matrix whose
+        # row indices do not match the engine's filtered gene_to_idx.
+        engine_data = getattr(engine, "data", data)
+        gene_means = np.nanmean(engine_data, axis=1)
+        gene_variances = np.nanvar(engine_data, axis=1, ddof=1)
+        # NC-XI-2: Guard NaN variances (single-observation genes have ddof=1 → NaN).
+        # Replace NaN with 0 so the cost matrix remains finite.
+        gene_variances = np.where(np.isfinite(gene_variances), gene_variances, 0.0)
 
         target_idx_set = set()
         for g in target_in_data:

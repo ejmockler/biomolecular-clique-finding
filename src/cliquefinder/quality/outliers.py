@@ -608,9 +608,9 @@ def adjusted_boxplot_fences(
 
     # Handle zero IQR (all values in central 50% are identical)
     if iqr == 0:
-        # Fall back to using median ± small epsilon
-        median_val = np.median(x)
-        return median_val - 1e-10, median_val + 1e-10
+        # IQR=0 means the central 50% are identical — no meaningful spread
+        # to define outlier fences.  Return (-inf, inf) so nothing is flagged.
+        return -np.inf, np.inf
 
     # Select coefficients based on skewness direction
     # Per Hubert & Vandervieren (2008), Table 1
