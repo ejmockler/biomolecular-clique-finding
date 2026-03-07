@@ -99,7 +99,12 @@ def median_normalization(
     n_features, n_samples = data.shape
 
     # Compute per-sample medians (ignoring NaN)
-    sample_medians = np.nanmedian(data, axis=0)
+    # NORM-XI-4: np.nanmedian warns on all-NaN slices — suppress since we
+    # handle NaN medians gracefully (they propagate as NaN norm_factors).
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarning)
+        sample_medians = np.nanmedian(data, axis=0)
 
     # Determine reference median
     if reference == "global":
@@ -355,7 +360,6 @@ def vsn_normalization(
     max_iter: int = 50,
     tol: float = 1e-4,
     use_gpu: bool = False,
-    reference_sample: int | None = None,
 ) -> NormalizationResult:
     """
     Variance Stabilizing Normalization (VSN) from Huber et al. (2002).

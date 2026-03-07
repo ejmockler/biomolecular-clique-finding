@@ -207,8 +207,8 @@ class BioMatrix:
 
     @property
     def sample_metadata(self) -> pd.DataFrame:
-        """Biological annotations for samples."""
-        return self._sample_metadata
+        """Biological annotations for samples (defensive copy)."""
+        return self._sample_metadata.copy()
 
     @property
     def quality_flags(self) -> np.ndarray:

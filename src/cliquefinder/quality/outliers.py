@@ -1339,10 +1339,14 @@ class MultiPassOutlierDetector(Transform):
         # Pass 2: Residual-based detection
         self.pass2_count_ = 0
         if self.residual_enabled:
-            # Compute additive model residuals
-            row_medians = np.median(matrix.data, axis=1, keepdims=True)
-            col_medians = np.median(matrix.data, axis=0, keepdims=True)
-            grand_median = np.median(matrix.data)
+            # QM-XI-2: Mask pass-1 outliers so the additive model is not
+            # contaminated by values already flagged.  Use nanmedian so
+            # masked positions don't inflate the reference.
+            masked_data = matrix.data.astype(np.float64).copy()
+            masked_data[combined_mask] = np.nan
+            row_medians = np.nanmedian(masked_data, axis=1, keepdims=True)
+            col_medians = np.nanmedian(masked_data, axis=0, keepdims=True)
+            grand_median = np.nanmedian(masked_data)
             expected = row_medians + col_medians - grand_median
             residuals = matrix.data - expected
 
@@ -1641,7 +1645,9 @@ class KDEAdaptiveOutlierDetector(Transform):
                 gene_values = stratum_data[gene_idx, :]
 
                 # Skip genes with insufficient valid values
-                valid_mask = np.isfinite(gene_values) & (gene_values > 0)
+                # QM-XI-1: Don't exclude zeros — they are valid in log-transformed
+                # data (log2(1) = 0).  Only exclude NaN/Inf.
+                valid_mask = np.isfinite(gene_values)
                 if valid_mask.sum() < 3:
                     gene_mad_z.append(np.full(sample_mask.sum(), np.nan))
                     continue

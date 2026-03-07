@@ -162,6 +162,13 @@ class PermutationMethod:
             getattr(c, "clique_id", str(c)): c for c in experiment.cliques
         }
 
+        # M-8: Pre-build O(1) null distribution lookup instead of
+        # O(N) DataFrame filter per clique.
+        _null_lookup: dict = {}
+        if not null_df.empty:
+            for _, row in null_df.iterrows():
+                _null_lookup[row["clique_id"]] = row
+
         # Convert PermutationTestResult to UnifiedCliqueResult
         # perm_results is a list of PermutationTestResult dataclass objects
         for perm_result in perm_results:
@@ -199,9 +206,10 @@ class PermutationMethod:
                 n_found = len(feature_indices)
 
                 # Build method metadata from null distribution info
-                null_row = null_df[null_df["clique_id"] == clique_id] if not null_df.empty else None
-                null_mean = float(null_row["null_tvalue_mean"].iloc[0]) if null_row is not None and len(null_row) > 0 else np.nan
-                null_std = float(null_row["null_tvalue_std"].iloc[0]) if null_row is not None and len(null_row) > 0 else np.nan
+                # M-8: O(1) dict lookup instead of O(N) DataFrame filter
+                _nr = _null_lookup.get(clique_id)
+                null_mean = float(_nr["null_tvalue_mean"]) if _nr is not None else np.nan
+                null_std = float(_nr["null_tvalue_std"]) if _nr is not None else np.nan
 
                 # Extract comparable log2FC if available
                 _comparable_log2fc: float | None = None

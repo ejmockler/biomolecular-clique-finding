@@ -695,8 +695,8 @@ class SemiSupervisedSexClassifier:
 
             cv_accuracy = accuracy_score(y_true, cv_preds)
             cv_auc = roc_auc_score(y_true, cv_probs)
-        except Exception as e:
-            # If CV fails (too few samples), use discovery-based accuracy
+        except (ValueError, np.linalg.LinAlgError) as e:
+            # CV can fail with too few samples or singular covariance
             warnings_list.append(f"CV failed ({e}), using discovery consistency")
             cv_accuracy = best['consistency']
             cv_auc = best['consistency']

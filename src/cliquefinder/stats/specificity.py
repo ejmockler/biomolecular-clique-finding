@@ -280,7 +280,9 @@ def _run_interaction_permutation(
     valid_p = null_z_primary[~np.isnan(null_dz)]
     valid_s = null_z_secondary[~np.isnan(null_dz)]
     if len(valid_p) > 2:
-        null_corr = float(np.corrcoef(valid_p, valid_s)[0, 1])
+        # XI-6: np.corrcoef returns NaN if either input is constant.
+        corr_val = np.corrcoef(valid_p, valid_s)[0, 1]
+        null_corr = float(corr_val) if np.isfinite(corr_val) else 0.0
     else:
         null_corr = 0.0
 

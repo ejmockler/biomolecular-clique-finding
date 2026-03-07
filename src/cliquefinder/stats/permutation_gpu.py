@@ -1370,7 +1370,7 @@ def compute_empirical_pvalues(
         # Compute null distribution statistics
         null_log2fc_vals = null_log2fc.get(clique_id, np.array([]))
         null_log2fc_mean = float(np.mean(null_log2fc_vals)) if len(null_log2fc_vals) > 0 else 0.0
-        null_log2fc_std = float(np.std(null_log2fc_vals)) if len(null_log2fc_vals) > 0 else 0.0
+        null_log2fc_std = float(np.std(null_log2fc_vals, ddof=1)) if len(null_log2fc_vals) > 1 else 0.0
         null_tvalue_mean = float(np.mean(null_tvals))
 
         results.append(PermutationTestResult(
@@ -1785,11 +1785,11 @@ def run_permutation_test_gpu(
             null_summary_rows.append({
                 'clique_id': clique_id,
                 'null_log2FC_mean': np.mean(log2fc_vals),
-                'null_log2FC_std': np.std(log2fc_vals),
+                'null_log2FC_std': np.std(log2fc_vals, ddof=1),
                 'null_log2FC_5pct': np.percentile(log2fc_vals, 5),
                 'null_log2FC_95pct': np.percentile(log2fc_vals, 95),
                 'null_tvalue_mean': np.mean(tval_vals),
-                'null_tvalue_std': np.std(tval_vals),
+                'null_tvalue_std': np.std(tval_vals, ddof=1),
                 'null_tvalue_5pct': np.percentile(tval_vals, 5),
                 'null_tvalue_95pct': np.percentile(tval_vals, 95),
                 'n_permutations': len(tval_vals),

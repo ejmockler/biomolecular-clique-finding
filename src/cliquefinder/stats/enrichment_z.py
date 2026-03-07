@@ -176,10 +176,14 @@ def estimate_inter_gene_correlation(
     # M-7: Guard NaN from constant-expression genes (np.corrcoef returns NaN rows)
     np.fill_diagonal(corr_matrix, 0.0)
     n_off_diag = k * (k - 1)
-    n_valid = np.sum(np.isfinite(corr_matrix)) - k  # exclude diagonal
+    # XI-5: After zeroing diagonal, count finite off-diagonal entries.
+    # np.isfinite counts diagonal zeros as finite, so subtract k.
+    n_valid = int(np.sum(np.isfinite(corr_matrix))) - k
     if n_valid < 1:
         return 0.0
-    rho_bar = float(np.nansum(corr_matrix)) / n_off_diag
+    # Divide by n_valid (not n_off_diag) so NaN pairs are excluded from
+    # the mean rather than treated as zero correlation.
+    rho_bar = float(np.nansum(corr_matrix)) / n_valid
 
     # Floor at 0 -- negative average correlation is conservative
     return max(rho_bar, 0.0)
