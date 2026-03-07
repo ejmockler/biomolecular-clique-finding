@@ -586,7 +586,7 @@ class Imputer(Transform):
 
         # Update quality flags (mark imputed values, preserve other flags)
         new_flags = matrix.quality_flags.copy()
-        new_flags[to_impute] = (new_flags[to_impute] | QualityFlag.IMPUTED).astype(np.uint32)
+        new_flags[to_impute] = (new_flags[to_impute] | QualityFlag.IMPUTED).astype(new_flags.dtype)
 
         return BioMatrix(
             data=new_data,
@@ -692,8 +692,10 @@ class Imputer(Transform):
             median = np.median(clean_values)
             mad = np.median(np.abs(clean_values - median))
 
-            # Avoid division by zero (if MAD is 0, all clean values are identical)
+            # If MAD is 0, all clean values are identical — clip outliers to median
             if mad == 0:
+                for sample_idx in np.where(gene_mask)[0]:
+                    data[gene_idx, sample_idx] = median
                 continue
 
             # Scale MAD to be consistent with standard deviation for normal data
@@ -901,10 +903,11 @@ class Imputer(Transform):
         if not np.any(valid_features):
             return  # No valid bounds computed
 
-        # Apply vectorized soft clip to features with outliers
+        # Apply soft clip only to outlier positions
         for gene_idx in np.where(valid_features & np.any(mask, axis=1))[0]:
-            data[gene_idx, :] = soft_clip(
-                data[gene_idx, :],
+            outlier_cols = np.where(mask[gene_idx, :])[0]
+            data[gene_idx, outlier_cols] = soft_clip(
+                data[gene_idx, outlier_cols],
                 lower=lower_bounds[gene_idx],
                 upper=upper_bounds[gene_idx],
                 sharpness=self.sharpness
@@ -991,10 +994,10 @@ class Imputer(Transform):
                 if self.max_upper_bound is not None:
                     upper_bound = min(upper_bound, self.max_upper_bound)
 
-                # Apply soft clipping to this gene's values in this group
-                group_indices = np.where(group_mask)[0]
-                data[gene_idx, group_indices] = soft_clip(
-                    data[gene_idx, group_indices],
+                # Apply soft clipping only to outlier positions in this group
+                outlier_indices = np.where(gene_outliers_in_group)[0]
+                data[gene_idx, outlier_indices] = soft_clip(
+                    data[gene_idx, outlier_indices],
                     lower=lower_bound,
                     upper=upper_bound,
                     sharpness=self.sharpness

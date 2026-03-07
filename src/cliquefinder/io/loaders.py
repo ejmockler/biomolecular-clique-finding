@@ -128,7 +128,7 @@ def load_csv_matrix(path: Path, infer_phenotypes: bool = True) -> BioMatrix:
 
     # Read CSV with first column as index
     try:
-        df = pd.read_csv(path, index_col=0)
+        df = pd.read_csv(path, index_col=0, encoding='utf-8-sig')
     except pd.errors.EmptyDataError as e:
         raise ValueError(f"CSV file is empty: {path}") from e
     except Exception as e:

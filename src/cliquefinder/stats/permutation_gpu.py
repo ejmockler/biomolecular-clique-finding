@@ -845,6 +845,18 @@ def batched_median_polish_gpu(
     if data.ndim != 3:
         raise ValueError(f"Expected 3D array (batch, n_proteins, n_samples), got {data.ndim}D")
 
+    # GPU-IX-2: Validate no NaN in input — GPU path uses mx.median (NaN-propagating)
+    # while CPU uses np.nanmedian (NaN-ignoring), producing divergent results.
+    if use_gpu and MLX_AVAILABLE:
+        n_nan = np.sum(np.isnan(data))
+        if n_nan > 0:
+            logger.warning(
+                "batched_median_polish_gpu: %d NaN values in input data. "
+                "Falling back to CPU path (nanmedian) for correct NaN handling.",
+                n_nan,
+            )
+            use_gpu = False
+
     if use_mlx:
         data_arr = mx.array(data, dtype=mx.float32)
     else:
@@ -1632,7 +1644,7 @@ def run_permutation_test_gpu(
     # Always use t-distribution regardless of d0 or eb_moderation.
     # The t-distribution converges to Normal as df->inf, so t.sf(x, df)
     # is universally correct. Using norm.sf with small df was anti-conservative.
-    df_for_pval = matrices.eb_df_total if (eb_moderation and not np.isinf(d0)) else float(matrices.df_residual)
+    df_for_pval = matrices.eb_df_total if eb_moderation else float(matrices.df_residual)
     for i, clique_id in enumerate(observed_clique_ids):
         pval = 2 * scipy_stats.t.sf(np.abs(t_obs[i]), df_for_pval)
         observed_t[clique_id] = (log2fc_obs[i], pval, t_obs[i])

@@ -375,7 +375,7 @@ def load_clique_definitions(
             regulator=str(clique_id) if id_col == 'regulator' else None,
             condition=group['condition'].iloc[0] if 'condition' in group.columns else None,
             coherence=float(group['coherence'].iloc[0]) if 'coherence' in group.columns else None,
-            n_indra_targets=int(group['n_indra_targets'].iloc[0]) if 'n_indra_targets' in group.columns else None,
+            n_indra_targets=int(group['n_indra_targets'].iloc[0]) if ('n_indra_targets' in group.columns and pd.notna(group['n_indra_targets'].iloc[0])) else None,
             direction=direction,
             signed_mean_correlation=signed_mean_correlation,
             signed_min_correlation=signed_min_correlation,
@@ -1072,6 +1072,11 @@ def compare_protein_vs_clique_results(
     protein_df = clique_results.protein_results.to_dataframe()
     clique_df = clique_results.to_dataframe()
 
+    # CA-1: Build reverse lookup from protein feature_ids for ID-space mismatch.
+    # Clique protein_ids may be gene symbols while protein_df feature_ids are
+    # UniProt/Ensembl.  Build a set of all known feature_ids for fast lookup.
+    all_feature_ids = set(protein_df['feature_id'].unique())
+
     comparisons = []
 
     for _, clique_row in clique_df.iterrows():
@@ -1079,9 +1084,22 @@ def compare_protein_vs_clique_results(
         proteins = clique_row['proteins'].split(',')
         contrast = clique_row['contrast']
 
-        # Get protein results for this clique's proteins
+        # Get protein results for this clique's proteins.
+        # If IDs don't match (e.g., gene symbols vs UniProt), warn and skip.
         protein_mask = protein_df['feature_id'].isin(proteins) & (protein_df['contrast'] == contrast)
         clique_proteins = protein_df[protein_mask]
+
+        if len(clique_proteins) == 0 and len(proteins) > 0:
+            # ID-space mismatch — proteins from clique not found in protein results
+            logger.debug(
+                "compare_protein_vs_clique_results: clique %s proteins %s not found "
+                "in protein results (possible ID-space mismatch: clique uses %s, "
+                "protein results use %s)",
+                clique_id,
+                proteins[:3],
+                proteins[0] if proteins else "?",
+                next(iter(all_feature_ids)) if all_feature_ids else "?",
+            )
 
         n_sig_proteins = (clique_proteins['adj_pvalue'] < threshold).sum()
         clique_sig = clique_row['adj_pvalue'] < threshold if pd.notna(clique_row['adj_pvalue']) else False
@@ -1344,7 +1362,7 @@ def run_permutation_clique_test(
                 c = result.contrasts[0]
                 return (c.log2_fc, c.p_value, c.t_value)
         except Exception:
-            pass
+            logger.debug("Permutation inner analysis failed for gene set %s", set_id, exc_info=True)
 
         return None
 
@@ -1469,7 +1487,8 @@ def run_permutation_clique_test(
         print(f"\nResults:")
         print(f"  Cliques tested: {len(permutation_results)}")
         print(f"  Significant (empirical p < {significance_threshold}): {n_significant}")
-        print(f"  Significance rate: {100 * n_significant / len(permutation_results):.1f}%")
+        if len(permutation_results) > 0:
+            print(f"  Significance rate: {100 * n_significant / len(permutation_results):.1f}%")
 
     return permutation_results, null_df
 
@@ -1794,7 +1813,7 @@ def run_clique_roast_analysis(
     # Build gene set dict from clique definitions
     clique_gene_symbols = {}
     for clique in clique_definitions:
-        clique_gene_symbols[clique.regulator] = list(clique.protein_ids)
+        clique_gene_symbols[clique.clique_id] = list(clique.protein_ids)
 
     # Handle ID mapping if feature_ids are UniProt
     if map_ids:
@@ -1980,7 +1999,7 @@ def run_clique_roast_interaction_analysis(
     # Build gene set dict from clique definitions
     clique_gene_symbols = {}
     for clique in clique_definitions:
-        clique_gene_symbols[clique.regulator] = list(clique.protein_ids)
+        clique_gene_symbols[clique.clique_id] = list(clique.protein_ids)
 
     # Handle ID mapping if feature_ids are UniProt
     if map_ids:

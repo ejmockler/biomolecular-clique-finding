@@ -193,6 +193,19 @@ class ValidationReport:
                     f"p={strat_p:.4f} (fallback from free permutation)"
                 )
 
+            # INT-3: Check frozen_fraction — if >50% of samples were frozen
+            # in degenerate strata, the stratified permutation is unreliable.
+            frozen_frac = strat.get("frozen_fraction", perm.get("frozen_fraction", 0.0))
+            if frozen_frac and frozen_frac > 0.5 and gate_permutation:
+                # Stratified test passed but most samples were frozen — downgrade
+                # unless the free permutation also passes.
+                if free_p is None or free_p >= alpha:
+                    gate_permutation = False
+                    details["label_permutation_stratified"] += (
+                        f" [DOWNGRADED: frozen_fraction={frozen_frac:.2f} > 0.5, "
+                        f"stratified test unreliable]"
+                    )
+
             if free_p is not None:
                 details["label_permutation_free"] = f"p={free_p:.4f}"
                 # If stratified passes but free fails, flag potential issue

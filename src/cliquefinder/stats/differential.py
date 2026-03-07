@@ -458,8 +458,10 @@ def satterthwaite_df(
         # df = V_c^2 / sum_i (V_i^2 / df_i)
         #
         # Variance component degrees of freedom:
-        df_residual = max(n_obs - n_params, 1)
-        df_random = max(n_groups - 1, 1)
+        # Within-group residual: n_obs - n_groups (each group absorbs 1 df)
+        # Between-group random: n_groups - n_params (fixed effects consume df)
+        df_residual = max(n_obs - n_groups, 1)
+        df_random = max(n_groups - n_params, 1)
 
         # Variance component contributions to V_c.
         # For a balanced design with group size n_g:
@@ -598,9 +600,11 @@ def batched_ols_gpu(
             XtY_mx = X_mx.T @ Y_mx
 
             # Inverse on CPU (MLX linalg support varies)
-            XtX_np_g = np.array(XtX_mx)
+            XtX_np_g = np.array(XtX_mx, dtype=np.float64)
             # STAT-III-3 (Audit III): Check condition number before inversion.
             # Near-singular XtX inflates SEs without raising LinAlgError.
+            # DIFF-IX-3: Cast to float64 before cond() — MLX uses float32 which
+            # can misrepresent condition numbers for near-singular matrices.
             cond = np.linalg.cond(XtX_np_g)
             if cond > 1e12:
                 logger.warning(

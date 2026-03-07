@@ -264,23 +264,13 @@ def quantile_normalization(
             else:
                 target_subset = target
 
-            # Convert 1-based ranks to 0-based indices
+            # Convert 1-based ranks to 0-based indices and interpolate
             indices = ranks - 1
-
-            # Handle fractional ranks (from tie averaging) via interpolation
-            normalized_values = np.empty_like(ranks)
-            for i, idx in enumerate(indices):
-                if idx == int(idx):
-                    # Exact rank - direct lookup
-                    normalized_values[i] = target_subset[int(idx)]
-                else:
-                    # Fractional rank - interpolate
-                    low_idx = int(np.floor(idx))
-                    high_idx = int(np.ceil(idx))
-                    low_idx = max(0, min(low_idx, len(target_subset) - 1))
-                    high_idx = max(0, min(high_idx, len(target_subset) - 1))
-                    frac = idx - np.floor(idx)
-                    normalized_values[i] = (1 - frac) * target_subset[low_idx] + frac * target_subset[high_idx]
+            normalized_values = np.interp(
+                indices,
+                np.arange(len(target_subset)),
+                target_subset,
+            )
 
         normalized[valid_mask, j] = normalized_values
 
