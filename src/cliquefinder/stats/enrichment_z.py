@@ -108,6 +108,8 @@ def compute_competitive_z(
     else:
         target_mean = float(np.mean(abs_t[is_target]))
         bg_mean = float(np.mean(background))
+        if len(background) < 2:
+            return 0.0
         bg_std = float(np.std(background, ddof=1))
         if bg_std < 1e-10:
             return 0.0
@@ -171,7 +173,13 @@ def estimate_inter_gene_correlation(
 
     # Mean off-diagonal correlation
     # Sum of all entries minus diagonal (k ones), divided by k*(k-1) off-diag entries
-    rho_bar = (corr_matrix.sum() - k) / (k * (k - 1))
+    # M-7: Guard NaN from constant-expression genes (np.corrcoef returns NaN rows)
+    np.fill_diagonal(corr_matrix, 0.0)
+    n_off_diag = k * (k - 1)
+    n_valid = np.sum(np.isfinite(corr_matrix)) - k  # exclude diagonal
+    if n_valid < 1:
+        return 0.0
+    rho_bar = float(np.nansum(corr_matrix)) / n_off_diag
 
     # Floor at 0 -- negative average correlation is conservative
-    return max(float(rho_bar), 0.0)
+    return max(rho_bar, 0.0)

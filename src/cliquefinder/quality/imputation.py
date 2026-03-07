@@ -687,7 +687,15 @@ class Imputer(Transform):
             # Compute median and MAD from non-outlier values
             clean_values = gene_row[~gene_mask]
             if len(clean_values) < 2:
-                continue  # Not enough clean values
+                # QM-X-1: Fall back to global bounds instead of skipping,
+                # to avoid provenance lie (flagged IMPUTED but value unchanged).
+                for sample_idx in np.where(gene_mask)[0]:
+                    data[gene_idx, sample_idx] = np.clip(
+                        data[gene_idx, sample_idx],
+                        self.global_lower_,
+                        self.global_upper_,
+                    )
+                continue
 
             median = np.median(clean_values)
             mad = np.median(np.abs(clean_values - median))
@@ -978,10 +986,18 @@ class Imputer(Transform):
                     median = np.median(clean_values_in_group)
                     mad = np.median(np.abs(clean_values_in_group - median))
                     if mad == 0:
-                        continue  # Skip if all clean values identical
-                    scaled_mad = mad / 0.6745
-                    lower_bound = median - self.threshold * scaled_mad
-                    upper_bound = median + self.threshold * scaled_mad
+                        # QM-X-2: Fall back to global bounds instead of skipping
+                        # (consistent with _mad_clip_stratified MAD=0 behavior).
+                        if not np.isnan(global_lower[gene_idx]) and not np.isnan(global_upper[gene_idx]):
+                            lower_bound = global_lower[gene_idx]
+                            upper_bound = global_upper[gene_idx]
+                        else:
+                            lower_bound = self.global_lower_
+                            upper_bound = self.global_upper_
+                    else:
+                        scaled_mad = mad / 0.6745
+                        lower_bound = median - self.threshold * scaled_mad
+                        upper_bound = median + self.threshold * scaled_mad
                 elif not np.isnan(global_lower[gene_idx]) and not np.isnan(global_upper[gene_idx]):
                     # Fall back to global bounds for small groups
                     lower_bound = global_lower[gene_idx]

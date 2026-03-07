@@ -150,6 +150,10 @@ def build_covariate_design_matrix(
                 # Numeric: standardize using valid-sample statistics
                 vals = series.values.astype(np.float64)
                 valid_vals = vals[valid_mask]
+                if not np.all(np.isfinite(valid_vals)):
+                    raise ValueError(
+                        f"Covariate '{col}' contains non-finite values (Inf/NaN)"
+                    )
                 mu = np.mean(valid_vals)
                 sigma = np.std(valid_vals, ddof=1)
                 if sigma < 1e-10:

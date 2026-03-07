@@ -464,12 +464,23 @@ def compute_specificity(
     if has_interaction and primary_sig:
         # Interaction test overrides binary comparison
         if interaction_pvalue < p_threshold:
-            label = "specific"
-            summary = (
-                f"Effect is specific to {primary_contrast}: "
-                f"z={primary.z_score:.2f}, Δz={interaction_z:.2f} "
-                f"(interaction p={interaction_pvalue:.4f} < {p_threshold})."
-            )
+            # M-1: Check sign of interaction_z — negative means secondary
+            # is actually stronger, so the effect is NOT specific to primary.
+            if interaction_z > 0:
+                label = "specific"
+                summary = (
+                    f"Effect is specific to {primary_contrast}: "
+                    f"z={primary.z_score:.2f}, Δz={interaction_z:.2f} "
+                    f"(interaction p={interaction_pvalue:.4f} < {p_threshold})."
+                )
+            else:
+                label = "shared"
+                summary = (
+                    f"Effect appears shared or stronger in secondary: "
+                    f"z={primary.z_score:.2f}, Δz={interaction_z:.2f} "
+                    f"(interaction p={interaction_pvalue:.4f}, but Δz < 0). "
+                    f"Secondary contrast may be stronger."
+                )
         else:
             label = "shared"
             summary = (

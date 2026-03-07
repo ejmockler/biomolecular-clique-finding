@@ -856,6 +856,7 @@ def batched_median_polish_gpu(
                 n_nan,
             )
             use_gpu = False
+            use_mlx = False  # C-1: Must also update use_mlx (downstream branch var)
 
     if use_mlx:
         data_arr = mx.array(data, dtype=mx.float32)

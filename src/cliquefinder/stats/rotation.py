@@ -1512,8 +1512,9 @@ def _compute_floormean_stat(
         return np.sum(w * f, axis=1) / A
     elif alt == Alternative.DOWN:
         # Negative z contribute; floor their absolute magnitude at sqrt(q)
+        # RC-X-1: Use signed weights (consistent with UP path and _compute_mean_stat)
         f = np.where(z < 0, np.maximum(np.abs(z), floor), 0)
-        return np.sum(np.abs(w) * f, axis=1) / A
+        return np.sum(w * f, axis=1) / A
     else:  # MIXED
         f = np.maximum(np.abs(z), floor)
         return np.sum(np.abs(w) * f, axis=1) / A

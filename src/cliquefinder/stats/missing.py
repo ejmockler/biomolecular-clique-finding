@@ -447,7 +447,7 @@ def impute_qrilc(
 
         # Draw from left tail (below q_min)
         q_min = max(q_min, 0.001)  # Ensure we have some range
-        u = rng.uniform(0, q_min, size=n_missing_sample)
+        u = rng.uniform(np.finfo(np.float64).tiny, q_min, size=n_missing_sample)
         imputed_values = stats.norm.ppf(u, loc=mu, scale=sigma * tune_sigma)
 
         imputed[sample_missing, j] = imputed_values
