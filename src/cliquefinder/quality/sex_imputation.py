@@ -58,6 +58,27 @@ from cliquefinder.core.biomatrix import BioMatrix
 from cliquefinder.utils.statistics import otsu_threshold, cohens_d
 
 
+def _impute_nan_for_sklearn(X: np.ndarray) -> np.ndarray:
+    """Replace NaN with column median for sklearn compatibility.
+
+    Proteomics data commonly has NaN (below detection limit).
+    Column median preserves feature distributions without data leakage.
+    """
+    if not np.any(np.isnan(X)):
+        return X
+    X = X.copy()
+    for col_idx in range(X.shape[1]):
+        col = X[:, col_idx]
+        nan_mask = np.isnan(col)
+        if np.any(nan_mask):
+            median_val = np.nanmedian(col)
+            if np.isfinite(median_val):
+                col[nan_mask] = median_val
+            else:
+                col[nan_mask] = 0.0
+    return X
+
+
 __all__ = [
     'Sex',
     'SupervisedSexClassifier',
@@ -281,6 +302,7 @@ class SupervisedSexClassifier:
 
         # Get labeled data
         X_labeled = matrix.data.T[labeled_mask]  # samples x features
+        X_labeled = _impute_nan_for_sklearn(X_labeled)
         y_labeled = labels[labeled_mask]
 
         n_male = (y_labeled == 1).sum()
@@ -392,6 +414,7 @@ class SupervisedSexClassifier:
 
         # Extract selected features
         X_all = matrix.data.T[:, self._selected_feature_indices]
+        X_all = _impute_nan_for_sklearn(X_all)
         X_scaled = self._scaler.transform(X_all)
 
         # Ensemble prediction
@@ -501,7 +524,7 @@ class SemiSupervisedSexClassifier:
         labeled_mask: np.ndarray,
     ) -> Optional[dict]:
         """Score a single feature for discriminative power."""
-        if np.std(feature_data) < 1e-10:
+        if np.nanstd(feature_data) < 1e-10:
             return None
 
         # Labeled sample analysis
@@ -637,6 +660,7 @@ class SemiSupervisedSexClassifier:
         # Now train ensemble using pseudo-labels for all samples
         # but validate on the KNOWN labels only
         X_all = matrix.data.T  # samples x features
+        X_all = _impute_nan_for_sklearn(X_all)
 
         # Select top features (excluding the discovered marker to avoid circularity)
         top_feature_indices = [
@@ -776,6 +800,7 @@ class SemiSupervisedSexClassifier:
             raise RuntimeError("Classifier not fitted. Call fit_predict() first.")
 
         X_all = matrix.data.T[:, self._top_feature_indices]
+        X_all = _impute_nan_for_sklearn(X_all)
         X_scaled = self._scaler.transform(X_all)
 
         probs_list = []

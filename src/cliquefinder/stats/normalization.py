@@ -528,8 +528,8 @@ def _vsn_proper(
             # Ensure b is positive and reasonable
             b_new[j] = np.maximum(b_new[j], 1e-10)
 
-        # 4. Check convergence
-        a_change = np.max(np.abs(a_new - a))
+        # 4. Check convergence (both relative to avoid raw-scale sensitivity)
+        a_change = np.max(np.abs(a_new - a) / (np.abs(a) + 1e-10))
         b_change = np.max(np.abs(b_new - b) / np.maximum(b, 1e-10))
         max_change = max(a_change, b_change)
 

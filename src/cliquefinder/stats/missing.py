@@ -439,8 +439,16 @@ def impute_qrilc(
         n_missing_sample = int(np.sum(sample_missing))
 
         # Determine quantile range for imputation
-        # Missing values should be below the minimum observed
-        min_observed = np.min(observed) if len(observed) > 0 else mu - 2 * sigma
+        # Missing values should be below the minimum observed.
+        # Use 1st percentile instead of raw minimum to be robust against
+        # single extreme low outliers (carry-over artifacts) that would
+        # poison q_min and force all imputed values to extreme lows.
+        if len(observed) >= 10:
+            min_observed = np.percentile(observed, 1)
+        elif len(observed) > 0:
+            min_observed = np.min(observed)
+        else:
+            min_observed = mu - 2 * sigma
 
         # Quantile of minimum observed value
         q_min = stats.norm.cdf(min_observed, loc=mu, scale=sigma * tune_sigma)

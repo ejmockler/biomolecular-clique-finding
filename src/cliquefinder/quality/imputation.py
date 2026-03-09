@@ -584,9 +584,11 @@ class Imputer(Transform):
             # Should never reach here due to __init__ validation
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
-        # Update quality flags (mark imputed values, preserve other flags)
+        # QM-XI-5: Only set IMPUTED flag where the value actually changed.
+        # Avoids provenance lie when a flagged value already falls within bounds.
         new_flags = matrix.quality_flags.copy()
-        new_flags[to_impute] = (new_flags[to_impute] | QualityFlag.IMPUTED).astype(new_flags.dtype)
+        actually_changed = to_impute & ~np.isclose(new_data, matrix.data, equal_nan=True)
+        new_flags[actually_changed] = (new_flags[actually_changed] | QualityFlag.IMPUTED).astype(new_flags.dtype)
 
         return BioMatrix(
             data=new_data,
@@ -594,6 +596,7 @@ class Imputer(Transform):
             sample_ids=matrix.sample_ids,
             sample_metadata=matrix.sample_metadata,
             quality_flags=new_flags,
+            provenance=matrix.provenance,
         )
 
     def validate(self, matrix: BioMatrix) -> list[str]:

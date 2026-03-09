@@ -206,7 +206,7 @@ class TestModulesToCliqueDefinitions:
         assert cd.direction == "mixed"
         assert cd.n_positive_edges == 2
         assert cd.n_negative_edges == 1
-        assert isinstance(cd.protein_ids, list)
+        assert isinstance(cd.protein_ids, (list, tuple))
 
 
 # ---------------------------------------------------------------------------

@@ -69,35 +69,36 @@ class TestFullPipeline:
         assert n_inf == 0, f"Found {n_inf} Inf values after imputation"
         print(f"   ✓ No Inf values")
 
-        # Imputed count should match outlier count
+        # QM-XI-5: IMPUTED flag is only set where the value actually changed.
+        # Some outlier-flagged positions may already be within clipping bounds,
+        # so n_imputed <= n_outliers.
         imputed_mask = (clean.quality_flags & QualityFlag.IMPUTED) > 0
         n_imputed = imputed_mask.sum()
 
-        assert n_imputed == n_outliers, \
-            f"Imputed {n_imputed} values but detected {n_outliers} outliers"
-        print(f"   ✓ All {n_outliers:,} outliers imputed")
+        assert n_imputed <= n_outliers, \
+            f"Imputed {n_imputed} values but only detected {n_outliers} outliers"
+        assert n_imputed > 0, "Expected some values to be imputed"
+        print(f"   ✓ {n_imputed:,}/{n_outliers:,} outliers required imputation")
 
-        # Imputed positions should match outlier positions
-        assert np.array_equal(imputed_mask, outlier_mask), \
-            "Imputed positions should exactly match outlier positions"
-        print(f"   ✓ Imputed positions match outliers")
+        # Imputed positions should be a subset of outlier positions
+        assert np.all(imputed_mask <= outlier_mask), \
+            "Imputed positions should be a subset of outlier positions"
+        print(f"   ✓ Imputed positions are subset of outliers")
 
-        # Quality flags should preserve OUTLIER_DETECTED and add IMPUTED
-        combined_flags = (
+        # Quality flags should preserve OUTLIER_DETECTED on all outlier positions
+        outlier_flags_preserved = (
             (clean.quality_flags & QualityFlag.OUTLIER_DETECTED) > 0
-        ) & (
-            (clean.quality_flags & QualityFlag.IMPUTED) > 0
         )
-        assert np.array_equal(combined_flags, outlier_mask), \
+        assert np.array_equal(outlier_flags_preserved, outlier_mask), \
             "Quality flags should preserve outlier detection"
         print(f"   ✓ Quality flags correctly set")
 
-        # Imputed values should differ from original outliers
-        original_outliers = large_matrix.data[outlier_mask]
+        # Imputed values should differ from original at imputed positions
+        original_at_imputed = large_matrix.data[imputed_mask]
         imputed_values = clean.data[imputed_mask]
 
-        n_changed = np.sum(~np.isclose(original_outliers, imputed_values))
-        pct_changed = 100 * n_changed / n_outliers
+        n_changed = np.sum(~np.isclose(original_at_imputed, imputed_values))
+        pct_changed = 100 * n_changed / max(n_imputed, 1)
 
         assert pct_changed > 90, \
             f"Only {pct_changed:.1f}% of outliers changed (expected >90%)"
@@ -160,7 +161,12 @@ class TestFullPipeline:
         assert not np.any(np.isinf(clean.data))
 
         imputed_mask = (clean.quality_flags & QualityFlag.IMPUTED) > 0
-        assert imputed_mask.sum() == n_outliers
+        # QM-XI-5: IMPUTED flag is only set where the value actually changed,
+        # so flagged outliers whose values already fell within clipping bounds
+        # will not be marked IMPUTED.
+        assert imputed_mask.sum() <= n_outliers
+        # All IMPUTED positions must be a subset of outlier positions
+        assert np.all(imputed_mask[~outlier_mask] == False)
 
         print(f"✓ Radius imputation successful")
 
@@ -194,7 +200,9 @@ class TestFullPipeline:
         assert not np.any(np.isinf(clean.data))
 
         imputed_mask = (clean.quality_flags & QualityFlag.IMPUTED) > 0
-        assert imputed_mask.sum() == n_outliers
+        # QM-XI-5: IMPUTED flag is only set where the value actually changed.
+        assert imputed_mask.sum() <= n_outliers
+        assert np.all(imputed_mask[~outlier_mask] == False)
 
         print(f"✓ Median imputation successful")
 

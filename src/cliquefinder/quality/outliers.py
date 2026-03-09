@@ -189,6 +189,7 @@ class OutlierDetector(Transform):
             sample_ids=matrix.sample_ids,
             sample_metadata=matrix.sample_metadata,
             quality_flags=new_flags,
+            provenance=matrix.provenance,
         )
 
     def validate(self, matrix: BioMatrix) -> list[str]:
@@ -402,6 +403,7 @@ class ResidualOutlierDetector(Transform):
             sample_ids=matrix.sample_ids,
             sample_metadata=matrix.sample_metadata,
             quality_flags=new_flags,
+            provenance=matrix.provenance,
         )
 
     def validate(self, matrix: BioMatrix) -> list[str]:
@@ -503,13 +505,14 @@ def compute_medcouple(x: np.ndarray) -> float:
 
     for xi in x_minus:
         for xj in x_plus:
-            # Handle ties at median (special case per Brys et al.)
+            # Handle ties at median (special case per Brys et al. 2004)
             if xi == xj:
-                # Both values equal to median
-                # By convention, h = 0 for this case
+                # Both values equal — kernel is 0/0, defined as 0
+                h_values.append(0.0)
                 continue
             elif xi == median_val and xj == median_val:
-                # Both at median exactly
+                # Both at median exactly — defined as 0
+                h_values.append(0.0)
                 continue
             elif xi == median_val:
                 # xi at median, xj > median
@@ -940,6 +943,7 @@ class AdaptiveOutlierDetector(Transform):
             sample_ids=matrix.sample_ids,
             sample_metadata=matrix.sample_metadata,
             quality_flags=new_flags,
+            provenance=matrix.provenance,
         )
 
     def validate(self, matrix: BioMatrix) -> list[str]:
@@ -1378,6 +1382,7 @@ class MultiPassOutlierDetector(Transform):
                     sample_ids=matrix_flagged.sample_ids,
                     sample_metadata=matrix_flagged.sample_metadata,
                     quality_flags=new_flags,
+                    provenance=matrix_flagged.provenance,
                 )
 
         # Pass 3: Global percentile cap
@@ -1402,6 +1407,7 @@ class MultiPassOutlierDetector(Transform):
                 sample_ids=matrix_flagged.sample_ids,
                 sample_metadata=matrix_flagged.sample_metadata,
                 quality_flags=new_flags,
+                provenance=matrix_flagged.provenance,
             )
 
         self.n_outliers_ = int(outlier_mask.sum())
@@ -1718,7 +1724,8 @@ class KDEAdaptiveOutlierDetector(Transform):
             feature_ids=matrix.feature_ids,
             sample_ids=matrix.sample_ids,
             sample_metadata=matrix.sample_metadata,
-            quality_flags=new_flags
+            quality_flags=new_flags,
+            provenance=matrix.provenance,
         )
 
     def validate(self, matrix: BioMatrix) -> list[str]:

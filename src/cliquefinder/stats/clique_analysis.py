@@ -61,13 +61,17 @@ from .differential import (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class CliqueDefinition:
-    """Definition of a protein clique.
+    """Definition of a protein clique (immutable).
+
+    Frozen dataclass to prevent external mutation of protein_ids or other
+    fields after construction, which would break reproducibility in
+    PreparedCliqueExperiment.
 
     Attributes:
         clique_id: Unique identifier (typically regulator name)
-        protein_ids: List of protein identifiers in the clique
+        protein_ids: Protein identifiers in the clique (frozen to tuple)
         regulator: Regulator gene symbol (if applicable)
         condition: Condition where clique was identified
         coherence: Mean pairwise correlation in discovery condition
@@ -89,7 +93,7 @@ class CliqueDefinition:
     """
 
     clique_id: str
-    protein_ids: list[str]
+    protein_ids: tuple[str, ...] | list[str]
     regulator: str | None = None
     condition: str | None = None
     coherence: float | None = None
@@ -100,6 +104,11 @@ class CliqueDefinition:
     signed_max_correlation: float | None = None
     n_positive_edges: int = 0
     n_negative_edges: int = 0
+
+    def __post_init__(self):
+        """Freeze mutable protein_ids list to tuple for immutability."""
+        if isinstance(self.protein_ids, list):
+            object.__setattr__(self, 'protein_ids', tuple(self.protein_ids))
 
     @property
     def is_coherent(self) -> bool:
