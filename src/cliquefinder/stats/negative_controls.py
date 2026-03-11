@@ -60,6 +60,9 @@ class NegativeControlResult:
         competitive_z_percentile: Percentile rank of target competitive z
             among controls (0 = most enriched, 100 = least enriched).
             None if not provided.
+        target_inter_gene_correlation: Mean pairwise correlation (rho_bar)
+            among target genes, used for Camera VIF correction of the
+            target z-score. None if not computed (e.g. no protein_results).
     """
 
     target_pvalue: float
@@ -82,6 +85,9 @@ class NegativeControlResult:
     control_competitive_z_scores: NDArray[np.float64] | None = None
     competitive_z_fpr: float | None = None
     competitive_z_percentile: float | None = None
+
+    # DF-XII-R6: Camera VIF inter-gene correlation used for target z-score
+    target_inter_gene_correlation: float | None = None
 
     # Expression-matched control metrics (M-4)
     matched_control_pvalues: NDArray[np.float64] | None = None
@@ -118,6 +124,7 @@ class NegativeControlResult:
                 and len(self.control_competitive_z_scores) > 0):
             d["competitive_z"] = {
                 "target_z": self.target_competitive_z,
+                "target_inter_gene_correlation": self.target_inter_gene_correlation,
                 "fpr": self.competitive_z_fpr,
                 "percentile": self.competitive_z_percentile,
                 "control_z_quantiles": {
@@ -324,6 +331,26 @@ def run_negative_control_sets(
                 logger.warning("Control set 0 failed: %s", e)
             control_pvalues[i] = np.nan
 
+        # DF-XIII-D5: Spot-check rho_bar for first control set to validate
+        # the VIF=1 assumption (random gene sets should have rho_bar ≈ 0).
+        if i == 0 and hasattr(engine, 'data') and engine.data is not None:
+            from .enrichment_z import estimate_inter_gene_correlation as _est_rho
+            ctrl_mask = np.zeros(engine.data.shape[0], dtype=bool)
+            for g in control_genes:
+                if g in engine.gene_to_idx:
+                    ctrl_mask[engine.gene_to_idx[g]] = True
+            if np.sum(ctrl_mask) >= 2:
+                ctrl_rho = _est_rho(engine.data, ctrl_mask)
+                if verbose:
+                    print(f"  Control set 0 rho_bar: {ctrl_rho:.4f} (expected ~0)")
+                if ctrl_rho > 0.1:
+                    logger.warning(
+                        "Control set rho_bar=%.3f exceeds 0.1; random gene "
+                        "sets may not have near-zero correlation. Consider "
+                        "investigating batch effects or gene universe bias.",
+                        ctrl_rho,
+                    )
+
     # Remove failed controls
     valid_controls = control_pvalues[~np.isnan(control_pvalues)]
     n_valid = len(valid_controls)
@@ -356,7 +383,7 @@ def run_negative_control_sets(
     comp_z_percentile = None
 
     if protein_results is not None:
-        from .enrichment_z import compute_competitive_z
+        from .enrichment_z import compute_competitive_z, estimate_inter_gene_correlation
 
         valid_pr = protein_results.dropna(subset=["t_statistic"])
         all_t = valid_pr["t_statistic"].values.astype(np.float64)
@@ -369,6 +396,31 @@ def run_negative_control_sets(
         for g in target_in_data:
             if g in feature_to_idx:
                 target_mask[feature_to_idx[g]] = True
+
+        # VIF is intentionally NOT applied in Phase 5's competitive z
+        # comparison.  Both target and controls must use the same formula for
+        # the percentile/FPR to be valid.  Computing per-control rho_bar is
+        # prohibitively expensive (O(k²) × n_control_sets), so the consistent
+        # choice is VIF=1 for both.  VIF correction is already applied in
+        # Phase 1's standalone enrichment test (compute_competitive_z with
+        # inter_gene_correlation).
+        #
+        # We still estimate target rho_bar for diagnostic reporting.
+        target_rho = 0.0
+        if hasattr(engine, 'data') and engine.data is not None:
+            engine_target_mask = np.zeros(engine.data.shape[0], dtype=bool)
+            for g in target_in_data:
+                if g in engine.gene_to_idx:
+                    engine_target_mask[engine.gene_to_idx[g]] = True
+            if np.sum(engine_target_mask) >= 2:
+                target_rho = estimate_inter_gene_correlation(
+                    engine.data, engine_target_mask
+                )
+                if verbose and target_rho > 0:
+                    vif = 1.0 + (int(np.sum(target_mask)) - 1) * target_rho
+                    print(f"  Target rho_bar={target_rho:.3f} (VIF={vif:.2f}, "
+                          f"diagnostic only — not applied in Phase 5)")
+
         target_comp_z = compute_competitive_z(all_t, target_mask)
 
         # Control competitive z-scores
@@ -379,6 +431,8 @@ def run_negative_control_sets(
                 if g in feature_to_idx:
                     ctrl_mask[feature_to_idx[g]] = True
             if np.sum(ctrl_mask) > 0:
+                # Control sets use VIF=1 (inter_gene_correlation=None):
+                # random gene sets have near-zero average correlation.
                 control_comp_z[i] = compute_competitive_z(all_t, ctrl_mask)
 
         valid_comp_z = control_comp_z[~np.isnan(control_comp_z)]
@@ -501,6 +555,7 @@ def run_negative_control_sets(
         control_competitive_z_scores=control_comp_z,
         competitive_z_fpr=comp_z_fpr,
         competitive_z_percentile=comp_z_percentile,
+        target_inter_gene_correlation=target_rho if target_comp_z is not None else None,
         matched_control_pvalues=matched_pvalues,
         matched_fpr=matched_fpr_val,
         matched_target_percentile=matched_percentile,

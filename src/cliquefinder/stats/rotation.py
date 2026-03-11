@@ -501,7 +501,7 @@ def compute_rotation_matrices_general(
     ---------------------
     1. Given design matrix X (n × p) and contrast vector c (p × 1)
     2. Construct C (p × p) invertible with last column = c
-    3. Reparameterize: X* = X @ C^(-1), so the last coefficient = c'·α
+    3. Reparameterize: X* = X @ C, so the last coefficient = c'·α
     4. QR decompose X* = Q @ R (full, Q is n × n)
     5. Extract Q2 = Q[:, p-1:] which has d+1 columns (d = n - p)
        - First column of Q2 corresponds to the contrast direction
@@ -550,10 +550,13 @@ def compute_rotation_matrices_general(
     # Construct C matrix for reparameterization
     C = _construct_c_matrix(contrast)
 
-    # Reparameterize design matrix: X* = X @ C^(-1)
-    # The last column of X* corresponds to the contrast
-    C_inv = np.linalg.inv(C)
-    X_reparam = design_matrix @ C_inv
+    # Reparameterize X* = X @ C (NOT X @ C⁻¹).
+    # C[:, -1] = c_unit, so X*[:, -1] = X @ c_unit — the contrast direction
+    # in sample space.  QR assigns Q2[:, 0] to this last column's direction,
+    # ensuring the rotation test targets c'α.  Using C⁻¹ = C' (orthogonal)
+    # would place X @ C[p-1, :] (a ROW of C) as the last column, which
+    # equals c_unit only for p=2 (2×2 orthogonal matrices are symmetric).
+    X_reparam = design_matrix @ C
 
     # Apply weights if provided
     if sample_weights is not None:
@@ -610,7 +613,12 @@ def compute_rotation_matrices_general(
     #
     # This replaces a correlation heuristic that was fragile for balanced
     # designs where the correlation could be near zero.
-    Xc = design_matrix @ contrast
+    # When weights are present, QR was done on W^{1/2} @ X_reparam,
+    # so the projection must use the weighted contrast direction.
+    if sample_weights is not None:
+        Xc = W_sqrt @ design_matrix @ contrast
+    else:
+        Xc = design_matrix @ contrast
     proj = Q2[:, 0] @ Xc
     if abs(proj) < 1e-10:
         # Near-degenerate: contrast is almost entirely in the reduced model's
@@ -1550,7 +1558,7 @@ def _compute_mean50_stat(
         # STAT-VII-1: For MIXED alternative, use absolute z-scores before averaging.
         # A bidirectional gene set (5 genes at z=+3, 5 at z=-3) should yield a
         # large statistic, not ~0. This matches limma's mean50 MIXED behavior.
-        selected_abs_wz = np.take_along_axis(w * np.abs(z), top_idx, axis=1)
+        selected_abs_wz = np.take_along_axis(np.abs(w) * np.abs(z), top_idx, axis=1)
         return np.mean(selected_abs_wz, axis=1)
 
 

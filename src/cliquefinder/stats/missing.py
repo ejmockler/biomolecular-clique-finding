@@ -401,6 +401,17 @@ def impute_qrilc(
 
     Returns:
         ImputationResult with imputed data.
+
+    Note:
+        QRILC estimates distribution parameters from observed (non-missing)
+        values, ignoring left-censoring. Under MNAR (missing not at random),
+        the observed mean overestimates the true mean by approximately 5-15%
+        depending on the missingness fraction. This is the standard algorithm
+        (Wei et al., 2018) used by Perseus, MSnbase, and other proteomics
+        packages. Downstream mitigation: ROAST's moderated t-statistics and
+        empirical Bayes shrinkage reduce sensitivity to additive shifts,
+        though asymmetric missingness across conditions can still introduce
+        differential bias that propagates as false fold-changes.
     """
     rng = np.random.default_rng(random_state)
 

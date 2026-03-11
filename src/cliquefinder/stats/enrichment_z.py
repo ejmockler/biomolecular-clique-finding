@@ -93,6 +93,12 @@ def compute_competitive_z(
     if inter_gene_correlation is not None and inter_gene_correlation > 0:
         vif = 1.0 + (k - 1) * inter_gene_correlation
 
+    # DF-XIII-D6: Camera (Wu & Smyth 2012) uses Var = sigma² × [VIF/m + 1/(G-m)].
+    # We use SE = sigma × sqrt(VIF/m), omitting the 1/(G-m) background
+    # variance term. For typical proteomics (G=5000, m=30):
+    # VIF/m ≈ 0.32 >> 1/(G-m) ≈ 0.0002. The simplification introduces
+    # < 0.1% error and avoids coupling SE to the background set size.
+
     if robust:
         target_center = float(np.median(abs_t[is_target]))
         bg_center = float(np.median(background))
@@ -163,6 +169,13 @@ def estimate_inter_gene_correlation(
         Mean pairwise correlation (rho_bar), floored at 0.0.
         Returns 0.0 if fewer than 2 target genes.
     """
+    # DF-XIII-D7: Camera (limma) estimates rho_bar from linear model residuals
+    # to exclude shared treatment signal. We use raw expression for simplicity,
+    # which may overestimate rho_bar when treatment effects are strong.
+    # This errs conservative (VIF over-corrected → z-score deflated too much
+    # → reduced power, not inflated FPR). Residual-based estimation would
+    # require passing the design matrix here, creating coupling to the linear
+    # model specification.
     target_data = expression_data[is_target, :]
     k = target_data.shape[0]
     if k < 2:
@@ -175,7 +188,6 @@ def estimate_inter_gene_correlation(
     # Sum of all entries minus diagonal (k ones), divided by k*(k-1) off-diag entries
     # M-7: Guard NaN from constant-expression genes (np.corrcoef returns NaN rows)
     np.fill_diagonal(corr_matrix, 0.0)
-    n_off_diag = k * (k - 1)
     # XI-5: After zeroing diagonal, count finite off-diagonal entries.
     # np.isfinite counts diagonal zeros as finite, so subtract k.
     n_valid = int(np.sum(np.isfinite(corr_matrix))) - k

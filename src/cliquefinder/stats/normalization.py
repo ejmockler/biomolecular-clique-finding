@@ -360,6 +360,7 @@ def vsn_normalization(
     max_iter: int = 50,
     tol: float = 1e-4,
     use_gpu: bool = False,
+    skip_scale_check: bool = False,
 ) -> NormalizationResult:
     """
     Variance Stabilizing Normalization (VSN) from Huber et al. (2002).
@@ -396,6 +397,30 @@ def vsn_normalization(
     """
     if data.ndim != 2:
         raise ValueError(f"Expected 2D array, got {data.ndim}D")
+
+    # DF-XII-1: Detect likely log-transformed input.
+    # VSN applies arcsinh((x - a) / b) which is designed for raw intensities
+    # where variance scales with mean. If data is already log-transformed
+    # (typical range 0-30 for log2), arcsinh of log-data is double-stabilization
+    # and produces statistically meaningless output.
+    # DF-XII-R4: skip_scale_check allows experts to suppress this heuristic.
+    valid_data = data[np.isfinite(data)]
+    if len(valid_data) > 0 and not skip_scale_check:
+        data_max = float(np.max(valid_data))
+        data_min = float(np.min(valid_data))
+        # Heuristic: log2 proteomics intensities are typically in [0, 30].
+        # Raw intensities are typically > 100 with max > 1000.
+        # A tight range with small maximum strongly suggests log-scale.
+        if data_max < 35 and data_min >= -5:
+            import warnings
+            warnings.warn(
+                f"VSN expects raw intensities but data range [{data_min:.1f}, {data_max:.1f}] "
+                f"suggests log-transformed input. Applying VSN to log-data produces "
+                f"double variance-stabilization. Consider using normalization_method='median' "
+                f"or 'quantile' for log-transformed data, or provide raw intensities.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     if method == "simple":
         return _vsn_simple(data)

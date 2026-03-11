@@ -539,7 +539,8 @@ def batched_ols_contrast_test(
     matrices: OLSPrecomputedMatrices,
     use_gpu: bool = True,
     chunk_size: int | None = None,
-) -> NDArray[np.float64]:
+    return_log2fc: bool = False,
+) -> NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64]]:
     """
     Batched OLS regression with contrast testing for permutation tests.
 
@@ -567,9 +568,14 @@ def batched_ols_contrast_test(
         use_gpu: Whether to use MLX for GPU acceleration
         chunk_size: Process Y in chunks of this size (for memory management)
                     If None, processes all at once
+        return_log2fc: If True, return (t_statistics, log2fc) tuple instead of
+            just t-statistics. The log2fc is the contrast estimate (β @ c),
+            computed internally anyway — returning it avoids redundant
+            recomputation by callers (DF-XIII-D4).
 
     Returns:
-        Array of t-statistics (n_total,) for each test
+        If return_log2fc is False: array of t-statistics (n_total,).
+        If return_log2fc is True: tuple of (t_statistics, log2fc), both (n_total,).
 
     Example:
         >>> # Precompute once
@@ -596,25 +602,34 @@ def batched_ols_contrast_test(
             chunk_size = 100000  # Default chunk size
 
         t_stats = np.zeros(n_total)
+        log2fc_arr = np.zeros(n_total) if return_log2fc else None
 
         for start_idx in range(0, n_total, chunk_size):
             end_idx = min(start_idx + chunk_size, n_total)
             Y_chunk = Y[start_idx:end_idx]
 
-            t_stats[start_idx:end_idx] = _batched_ols_contrast_test_impl(
-                Y_chunk, matrices, can_use_gpu
+            result = _batched_ols_contrast_test_impl(
+                Y_chunk, matrices, can_use_gpu, return_log2fc
             )
+            if return_log2fc:
+                t_stats[start_idx:end_idx] = result[0]
+                log2fc_arr[start_idx:end_idx] = result[1]
+            else:
+                t_stats[start_idx:end_idx] = result
 
-        return t_stats
+        return (t_stats, log2fc_arr) if return_log2fc else t_stats
     else:
-        return _batched_ols_contrast_test_impl(Y, matrices, can_use_gpu)
+        return _batched_ols_contrast_test_impl(
+            Y, matrices, can_use_gpu, return_log2fc
+        )
 
 
 def _batched_ols_contrast_test_impl(
     Y: NDArray[np.float64],
     matrices: OLSPrecomputedMatrices,
     use_gpu: bool,
-) -> NDArray[np.float64]:
+    return_log2fc: bool = False,
+) -> NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64]]:
     """
     Internal implementation of batched OLS contrast test.
 
@@ -624,16 +639,17 @@ def _batched_ols_contrast_test_impl(
 
     if use_gpu:
         # GPU implementation with MLX
-        return _batched_ols_gpu(Y, matrices)
+        return _batched_ols_gpu(Y, matrices, return_log2fc)
     else:
         # CPU implementation with NumPy
-        return _batched_ols_cpu(Y, matrices)
+        return _batched_ols_cpu(Y, matrices, return_log2fc)
 
 
 def _batched_ols_gpu(
     Y: NDArray[np.float64],
     matrices: OLSPrecomputedMatrices,
-) -> NDArray[np.float64]:
+    return_log2fc: bool = False,
+) -> NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64]]:
     """
     GPU implementation using MLX.
 
@@ -710,13 +726,16 @@ def _batched_ols_gpu(
     # t-statistic: t = estimate / SE (CPU)
     t_stats = estimate_np / se
 
+    if return_log2fc:
+        return t_stats, estimate_np
     return t_stats
 
 
 def _batched_ols_cpu(
     Y: NDArray[np.float64],
     matrices: OLSPrecomputedMatrices,
-) -> NDArray[np.float64]:
+    return_log2fc: bool = False,
+) -> NDArray[np.float64] | tuple[NDArray[np.float64], NDArray[np.float64]]:
     """
     CPU implementation using NumPy.
 
@@ -778,6 +797,8 @@ def _batched_ols_cpu(
     # t-statistic: t = estimate / SE
     t_stats = estimate / se
 
+    if return_log2fc:
+        return t_stats, estimate
     return t_stats
 
 
@@ -995,6 +1016,52 @@ def batched_median_polish_gpu(
                 _nan_sub_total, batch_size,
             )
         return sample_abundances
+
+
+def _generate_indices_for_chunk(
+    pool_size: int,
+    size: int,
+    n_cliques: int,
+    chunk_perms: int,
+    rng: np.random.Generator,
+) -> NDArray[np.int32]:
+    """Generate random gene pool indices for one (size, perm-chunk) combination.
+
+    DF-XIII-D2: Used for lazy index generation — produces the same index
+    format as precompute_random_indices but only for a single perm-chunk,
+    avoiding the O(n_cliques × n_perms × size) memory footprint.
+
+    Returns:
+        Array of shape (n_cliques, chunk_perms, size) with int32 pool indices.
+    """
+    total_samples = n_cliques * chunk_perms
+
+    if size > pool_size:
+        all_samples = rng.choice(
+            pool_size, size=(total_samples, size), replace=True
+        ).astype(np.int32)
+    elif pool_size <= 2 * size:
+        all_samples = np.zeros((total_samples, size), dtype=np.int32)
+        for i in range(total_samples):
+            all_samples[i] = rng.choice(pool_size, size=size, replace=False)
+    else:
+        _CHUNK_MAX_ELEMS = 50_000 * 1_000  # ~400 MB of float64
+        chunk_rows = max(1, _CHUNK_MAX_ELEMS // pool_size)
+        if total_samples <= chunk_rows:
+            random_keys = rng.random((total_samples, pool_size))
+            all_samples = np.argpartition(
+                random_keys, size, axis=1
+            )[:, :size].astype(np.int32)
+        else:
+            all_samples = np.zeros((total_samples, size), dtype=np.int32)
+            for start in range(0, total_samples, chunk_rows):
+                end = min(start + chunk_rows, total_samples)
+                random_keys = rng.random((end - start, pool_size))
+                all_samples[start:end] = np.argpartition(
+                    random_keys, size, axis=1
+                )[:, :size].astype(np.int32)
+
+    return all_samples.reshape(n_cliques, chunk_perms, size)
 
 
 def precompute_random_indices(
@@ -1543,13 +1610,24 @@ def run_permutation_test_gpu(
         print(f"PHASE 1: Precomputation")
         print(f"{'=' * 70}")
 
-    # Precompute random indices
-    random_indices_dict, unique_sizes = precompute_random_indices(
-        clique_sizes=clique_sizes,
-        pool_size=len(regulated_genes_list),
-        n_permutations=n_permutations,
-        random_state=random_state,
+    # DF-XIII-D2: Lazy index generation — instead of storing ALL random indices
+    # upfront (O(n_cliques × n_perms × size) int32, potentially 4GB+), we store
+    # only per-size SeedSequences and regenerate indices per perm-chunk on demand.
+    # Each chunk's indices are ~40MB and discarded after the chunk is processed.
+    _size_to_cliques_phase1: dict[int, list[str]] = {}
+    for clique_id, size in clique_sizes.items():
+        _size_to_cliques_phase1.setdefault(size, []).append(clique_id)
+    _unique_sizes = sorted(_size_to_cliques_phase1.keys())
+    _master_ss = np.random.SeedSequence(random_state)
+    _size_seeds: dict[int, np.random.SeedSequence] = dict(
+        zip(_unique_sizes, _master_ss.spawn(len(_unique_sizes)))
     )
+    _pool_size = len(regulated_genes_list)
+
+    # DF-XIII-D1/R1: Bound batch memory by capping elements per allocation.
+    # protein_batch is (n_items, size, n_samples) float64.
+    # Target ~400MB: 400e6 / 8 = 50M elements. Used by Phase 2 and Phase 3.
+    _MAX_BATCH_ELEMS = 50_000_000
 
     # Precompute OLS matrices
     if verbose:
@@ -1602,22 +1680,31 @@ def run_permutation_test_gpu(
 
     for size in sorted(obs_size_to_cliques.keys()):
         clique_ids_batch = obs_size_to_cliques[size]
-        batch_size = len(clique_ids_batch)
 
-        # Gather protein data for this size class
-        protein_batch = np.zeros((batch_size, size, n_samples), dtype=np.float64)
+        # DF-XIII-D1: Bound Phase 2 memory using same _MAX_BATCH_ELEMS cap
+        # as Phase 3.  For typical runs (100-500 cliques) this is a no-op;
+        # for 10k+ cliques it prevents multi-GB single allocations.
+        elems_per_clique = size * n_samples
+        max_per_chunk = max(1, _MAX_BATCH_ELEMS // elems_per_clique)
 
-        for i, clique_id in enumerate(clique_ids_batch):
-            proteins = clique_proteins[clique_id]
-            indices = [feature_to_idx[p] for p in proteins]
-            protein_batch[i] = data[indices, :]
+        for offset in range(0, len(clique_ids_batch), max_per_chunk):
+            clique_ids_sub = clique_ids_batch[offset:offset + max_per_chunk]
+            sub_size = len(clique_ids_sub)
 
-        # Batched median polish (GPU)
-        Y_batch = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
+            # Gather protein data for this sub-chunk
+            protein_batch = np.zeros((sub_size, size, n_samples), dtype=np.float64)
 
-        # Store results
-        for i, clique_id in enumerate(clique_ids_batch):
-            Y_observed_dict[clique_id] = Y_batch[i]
+            for i, clique_id in enumerate(clique_ids_sub):
+                proteins = clique_proteins[clique_id]
+                indices = [feature_to_idx[p] for p in proteins]
+                protein_batch[i] = data[indices, :]
+
+            # Batched median polish (GPU)
+            Y_batch = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
+
+            # Store results
+            for i, clique_id in enumerate(clique_ids_sub):
+                Y_observed_dict[clique_id] = Y_batch[i]
 
     # Reconstruct Y_observed in original order
     Y_observed = np.array([Y_observed_dict[cid] for cid in observed_clique_ids])
@@ -1681,8 +1768,15 @@ def run_permutation_test_gpu(
         print(f"PHASE 3: Null Distribution (GPU Batched)")
         print(f"{'=' * 70}")
 
-    null_t: dict[str, list[float]] = {cid: [] for cid in observed_clique_ids}
-    null_log2fc: dict[str, list[float]] = {cid: [] for cid in observed_clique_ids}
+    # DF-XIII-D3: Pre-allocate numpy arrays instead of list.append().
+    # Each Python float is ~28 bytes vs 8 bytes in numpy — 3.5x memory saving.
+    null_t_arrays: dict[str, NDArray] = {
+        cid: np.empty(n_permutations) for cid in observed_clique_ids
+    }
+    null_log2fc_arrays: dict[str, NDArray] = {
+        cid: np.empty(n_permutations) for cid in observed_clique_ids
+    }
+    null_cursors: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
 
     # Group by size for batched processing
     size_to_cliques = {}
@@ -1706,56 +1800,120 @@ def run_permutation_test_gpu(
         if verbose:
             print(f"  Size {size}: {n_cliques_this_size} cliques × {n_permutations} perms")
 
+        # Compute max cliques per sub-chunk to stay within memory budget
+        elems_per_clique_perm = size * n_samples
+        max_cliques_per_chunk = max(
+            1, _MAX_BATCH_ELEMS // (perm_chunk_size * elems_per_clique_perm)
+        )
+
+        # DF-XIII-D2: Spawn per-chunk seeds for lazy index generation.
+        # Each chunk gets a unique, reproducible SeedSequence derived from
+        # this size class's seed via spawn().
+        n_perm_chunks = (n_permutations + perm_chunk_size - 1) // perm_chunk_size
+        chunk_seeds = _size_seeds[size].spawn(n_perm_chunks)
+
         # Process permutations in chunks for memory management
-        for chunk_start in range(0, n_permutations, perm_chunk_size):
+        for chunk_idx, chunk_start in enumerate(
+            range(0, n_permutations, perm_chunk_size)
+        ):
             chunk_end = min(chunk_start + perm_chunk_size, n_permutations)
             chunk_perms = chunk_end - chunk_start
 
-            # Total items in this batch: n_cliques × chunk_perms
-            batch_size = n_cliques_this_size * chunk_perms
+            # D2: Generate random indices for this perm-chunk on demand.
+            # Shape: (n_cliques_this_size, chunk_perms, size)
+            chunk_rng = np.random.Generator(np.random.PCG64(chunk_seeds[chunk_idx]))
+            indices_chunk = _generate_indices_for_chunk(
+                pool_size=_pool_size,
+                size=size,
+                n_cliques=n_cliques_this_size,
+                chunk_perms=chunk_perms,
+                rng=chunk_rng,
+            )
 
-            # Gather all protein data into 3D batch array: (batch, size, n_samples)
-            protein_batch = np.zeros((batch_size, size, n_samples), dtype=np.float64)
+            # Sub-chunk by clique count within this perm chunk
+            for clique_offset in range(0, n_cliques_this_size, max_cliques_per_chunk):
+                clique_end = min(clique_offset + max_cliques_per_chunk, n_cliques_this_size)
+                clique_ids_sub = clique_ids_this_size[clique_offset:clique_end]
+                n_sub = len(clique_ids_sub)
 
-            batch_idx = 0
-            for clique_id in clique_ids_this_size:
-                random_indices_for_clique = random_indices_dict[clique_id]
+                # Slice indices for this clique sub-chunk
+                indices_sub = indices_chunk[clique_offset:clique_end]
 
-                for p in range(chunk_start, chunk_end):
-                    # Get random gene pool indices for this permutation
-                    pool_indices = random_indices_for_clique[p]
-                    # Map to actual data indices
-                    data_indices = regulated_gene_indices[pool_indices]
-                    # Gather protein data
-                    protein_batch[batch_idx] = data[data_indices, :]
-                    batch_idx += 1
+                # Total items in this batch: n_sub × chunk_perms
+                batch_size = n_sub * chunk_perms
 
-            # BATCHED MEDIAN POLISH (GPU) - single call for entire batch
-            Y_chunk = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
+                # Gather all protein data into 3D batch array: (batch, size, n_samples)
+                protein_batch = np.zeros((batch_size, size, n_samples), dtype=np.float64)
 
-            # BATCHED OLS (GPU)
-            t_chunk = batched_ols_contrast_test(Y_chunk, matrices, use_gpu=use_gpu)
+                batch_idx = 0
+                for ci in range(n_sub):
+                    for p_local in range(chunk_perms):
+                        # Get random gene pool indices for this permutation
+                        pool_indices = indices_sub[ci, p_local]
+                        # Map to actual data indices
+                        data_indices = regulated_gene_indices[pool_indices]
+                        # Gather protein data
+                        protein_batch[batch_idx] = data[data_indices, :]
+                        batch_idx += 1
 
-            # Compute log2FC from beta coefficients
-            beta_chunk = Y_chunk @ matrices.X @ matrices.XtX_inv.T
-            log2fc_chunk = beta_chunk @ matrices.c
+                assert batch_idx == batch_size, (
+                    f"Gather batch_idx mismatch: {batch_idx} != {batch_size}"
+                )
 
-            # Store results back to clique dictionaries
-            batch_idx = 0
-            for clique_id in clique_ids_this_size:
-                for p_local in range(chunk_perms):
-                    null_t[clique_id].append(t_chunk[batch_idx])
-                    null_log2fc[clique_id].append(log2fc_chunk[batch_idx])
-                    batch_idx += 1
+                # BATCHED MEDIAN POLISH (GPU) - single call for entire batch
+                Y_chunk = batched_median_polish_gpu(protein_batch, max_iter=10, eps=0.01, use_gpu=use_gpu)
+
+                # BATCHED OLS (GPU)
+                # DF-XII-2: EB priors (d0, s0²) were estimated from observed clique variances
+                # (Phase 2, line 1639) and are reused here for null gene sets via `matrices`.
+                # When observed cliques have real differential signal, their residual variance
+                # is LOW (good model fit). So s0² is estimated LOW. Null gene sets (no signal)
+                # have HIGHER residual variance. Applying low s0² shrinks null variances DOWN,
+                # inflating null |t-statistics| → wider null distribution → more null values
+                # exceed observed → larger empirical p-values → conservative bias.
+                # NOTE: This conservative direction holds when observed cliques capture real
+                # signal (the intended use case). If cliques are noise (no signal), their
+                # residual variance matches null sets and EB priors shrink correctly. The
+                # anti-conservative scenario (noisy cliques with HIGHER variance than null)
+                # is caught by mandatory Phase 1/3 validation gates before results are trusted.
+                # This is an intentional tradeoff: conservative direction (reduced power, not
+                # inflated FPR). Per-size-class re-estimation is feasible but changes test
+                # semantics; current approach follows ROAST convention (fixed priors).
+                # DF-XIII-D4: return_log2fc=True avoids redundant beta recomputation.
+                # The contrast estimate (beta @ c) is already computed inside OLS;
+                # returning it saves one full Y @ X @ (X'X)^-1' matmul per chunk.
+                t_chunk, log2fc_chunk = batched_ols_contrast_test(
+                    Y_chunk, matrices, use_gpu=use_gpu, return_log2fc=True
+                )
+
+                # Store results back to pre-allocated arrays (D3: vectorized slice)
+                batch_idx = 0
+                for clique_id in clique_ids_sub:
+                    cursor = null_cursors[clique_id]
+                    null_t_arrays[clique_id][cursor:cursor + chunk_perms] = (
+                        t_chunk[batch_idx:batch_idx + chunk_perms]
+                    )
+                    null_log2fc_arrays[clique_id][cursor:cursor + chunk_perms] = (
+                        log2fc_chunk[batch_idx:batch_idx + chunk_perms]
+                    )
+                    null_cursors[clique_id] += chunk_perms
+                    batch_idx += chunk_perms
+
+                assert batch_idx == batch_size, (
+                    f"Scatter batch_idx mismatch: {batch_idx} != {batch_size}"
+                )
+
+    # D3: Verify all cursors reached n_permutations
+    for cid in observed_clique_ids:
+        assert null_cursors[cid] == n_permutations, (
+            f"Null array cursor mismatch for {cid}: "
+            f"{null_cursors[cid]} != {n_permutations}"
+        )
 
     phase3_elapsed = time.time() - phase3_start
 
     if verbose:
         print(f"  Completed in {phase3_elapsed:.2f}s")
-
-    # Convert to arrays
-    null_t_arrays = {cid: np.array(vals) for cid, vals in null_t.items()}
-    null_log2fc_arrays = {cid: np.array(vals) for cid, vals in null_log2fc.items()}
 
     # PHASE 4: Empirical P-values
     if verbose:

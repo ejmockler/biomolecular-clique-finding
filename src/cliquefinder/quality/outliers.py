@@ -1347,7 +1347,7 @@ class MultiPassOutlierDetector(Transform):
             # contaminated by values already flagged.  Use nanmedian so
             # masked positions don't inflate the reference.
             masked_data = matrix.data.astype(np.float64).copy()
-            masked_data[combined_mask] = np.nan
+            masked_data[outlier_mask] = np.nan
             row_medians = np.nanmedian(masked_data, axis=1, keepdims=True)
             col_medians = np.nanmedian(masked_data, axis=0, keepdims=True)
             grand_median = np.nanmedian(masked_data)
@@ -1355,8 +1355,8 @@ class MultiPassOutlierDetector(Transform):
             residuals = matrix.data - expected
 
             # MAD-based z-scores on residuals
-            residual_median = np.median(residuals)
-            residual_mad = np.median(np.abs(residuals - residual_median)) * 1.4826
+            residual_median = np.nanmedian(residuals)
+            residual_mad = np.nanmedian(np.abs(residuals - residual_median)) * 1.4826
             if residual_mad > 0:
                 z_residuals = (residuals - residual_median) / residual_mad
 
