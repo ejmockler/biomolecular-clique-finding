@@ -234,6 +234,12 @@ def impute_min_value(
     missing_mask = np.isnan(data)
     n_imputed = int(np.sum(missing_mask))
 
+    # XIII-6: Guard against all-NaN input — np.nanmin raises ValueError.
+    if np.all(missing_mask):
+        raise ValueError(
+            "Cannot impute: all values are NaN. No observed minimum exists."
+        )
+
     if method == "feature":
         # Per-feature minimum
         feature_mins = np.nanmin(data, axis=1)

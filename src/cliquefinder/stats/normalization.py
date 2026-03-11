@@ -333,11 +333,26 @@ def global_standards_normalization(
     else:
         sample_refs = np.nanmean(standard_data, axis=0)
 
-    # Global reference (median of sample references)
+    # XIII-5: Guard against all-NaN standards for individual samples.
+    # If all spike-ins are NaN for a sample, sample_refs[j] = NaN, which
+    # would silently fill that sample's column with NaN after subtraction.
+    nan_samples = np.isnan(sample_refs)
+    if nan_samples.any():
+        import warnings
+        n_nan = int(nan_samples.sum())
+        warnings.warn(
+            f"All standard proteins are NaN for {n_nan} sample(s). "
+            f"These samples will not be normalized (original values preserved).",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Global reference (median of valid sample references)
     global_ref = np.nanmedian(sample_refs)
 
-    # Normalization factors
+    # Normalization factors — NaN samples get factor=0 (no normalization)
     norm_factors = sample_refs - global_ref
+    norm_factors[nan_samples] = 0.0
 
     # Apply normalization
     normalized = data - norm_factors[np.newaxis, :]
@@ -676,8 +691,8 @@ def _vsn_proper_mlx(
         a_new = mx.array(a_new_np)
         b_new = mx.array(b_new_np)
 
-        # Check convergence
-        a_change = float(mx.max(mx.abs(a_new - a)))
+        # Check convergence (relative for both, matching CPU path)
+        a_change = float(mx.max(mx.abs(a_new - a) / (mx.abs(a) + 1e-10)))
         b_change = float(mx.max(mx.abs(b_new - b) / mx.maximum(b, 1e-10)))
         max_change = max(a_change, b_change)
 

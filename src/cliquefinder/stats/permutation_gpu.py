@@ -907,6 +907,17 @@ def batched_median_polish_gpu(
     converged = False
     # DATA-III-1 (Audit III): Track NaN substitution count in batched median polish.
     _nan_sub_total = 0
+
+    # XV-9: Suppress RuntimeWarning from np.nanmedian on all-NaN slices.
+    # Expected when protein rows are entirely NaN — the NaN result is correct,
+    # but numpy emits "All-NaN slice encountered" per call. With thousands of
+    # permutations this generates excessive noise. The aggregate count is
+    # logged once at the end via _nan_sub_total.
+    def _nanmedian_quiet(arr, axis):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarning)
+            return np.nanmedian(arr, axis=axis)
+
     for iteration in range(max_iter):
         # Row sweep: subtract row medians
         # Handle NaN by using nanmedian
@@ -914,7 +925,9 @@ def batched_median_polish_gpu(
             # MLX doesn't have nanmedian, so we handle NaN by masking
             # For the batched case, we assume data is clean (no NaN)
             row_medians = mx.median(residuals, axis=2)  # (batch, n_proteins)
-            # Replace any NaN with 0 for numerical stability
+            # XV-2: GPU NaN→0.0 is a numerical stability guard (not data missingness).
+            # The input NaN guard (line ~869) forces CPU fallback when data contains NaN,
+            # so this only triggers for GPU-generated NaN from mx.median overflow.
             row_medians = mx.where(mx.isnan(row_medians), mx.zeros_like(row_medians), row_medians)
             residuals = residuals - row_medians[:, :, None]  # Still float32 on GPU
             # Accumulate in float64 on CPU
@@ -922,19 +935,21 @@ def batched_median_polish_gpu(
             row_med_np = np.array(row_medians, dtype=np.float64)
             row_effects_np += row_med_np
         else:
-            row_medians = np.nanmedian(residuals, axis=2)  # (batch, n_proteins)
+            row_medians = _nanmedian_quiet(residuals, axis=2)  # (batch, n_proteins)
             _nan_mask = np.isnan(row_medians)
             if _nan_mask.any():
                 _nan_sub_total += int(_nan_mask.sum())
-                row_medians[_nan_mask] = 0.0
-            else:
-                pass  # no NaNs — fast path
+                # XIII-9: Let NaN propagate (not 0.0). An all-NaN protein row
+                # has no valid median. NaN stays within that row (NaN - NaN = NaN)
+                # and doesn't contaminate other proteins. The NaN row effect is
+                # excluded by nanmedian in the final overall extraction.
             residuals = residuals - row_medians[:, :, np.newaxis]
             row_effects_np += row_medians
 
         # Column sweep: subtract column medians
         if use_mlx:
             col_medians = mx.median(residuals, axis=1)  # (batch, n_samples)
+            # XV-2: Same numerical stability guard as row sweep above.
             col_medians = mx.where(mx.isnan(col_medians), mx.zeros_like(col_medians), col_medians)
             residuals = residuals - col_medians[:, None, :]  # Still float32 on GPU
             # Accumulate in float64 on CPU
@@ -942,13 +957,12 @@ def batched_median_polish_gpu(
             col_med_np = np.array(col_medians, dtype=np.float64)
             col_effects_np += col_med_np
         else:
-            col_medians = np.nanmedian(residuals, axis=1)  # (batch, n_samples)
+            col_medians = _nanmedian_quiet(residuals, axis=1)  # (batch, n_samples)
             _nan_mask = np.isnan(col_medians)
             if _nan_mask.any():
                 _nan_sub_total += int(_nan_mask.sum())
-                col_medians[_nan_mask] = 0.0
-            else:
-                pass  # no NaNs — fast path
+                # XIII-9: Let NaN propagate. A column is all-NaN only when ALL
+                # proteins are NaN for that sample — the abundance is undefined.
             residuals = residuals - col_medians[:, np.newaxis, :]
             col_effects_np += col_medians
 
@@ -962,8 +976,10 @@ def batched_median_polish_gpu(
             max_row_adj = float(mx.max(mx.abs(row_medians)))
             max_col_adj = float(mx.max(mx.abs(col_medians)))
         else:
-            max_row_adj = float(np.max(np.abs(row_medians)))
-            max_col_adj = float(np.max(np.abs(col_medians)))
+            # XIII-9: Use nanmax so NaN medians (from all-NaN rows/cols)
+            # don't block convergence detection for the valid entries.
+            max_row_adj = float(np.nanmax(np.abs(row_medians))) if np.any(np.isfinite(row_medians)) else 0.0
+            max_col_adj = float(np.nanmax(np.abs(col_medians))) if np.any(np.isfinite(col_medians)) else 0.0
 
         max_adjustment = max(max_row_adj, max_col_adj)
 
@@ -982,40 +998,25 @@ def batched_median_polish_gpu(
     # Extract overall effect from row effects (all in float64 now)
     # We take the median of row effects for each batch element
     # This matches the sequential algorithm in summarization.py
-    if use_mlx:
-        overall = np.nanmedian(row_effects_np, axis=1)  # (batch,) float64
-        _nan_mask = np.isnan(overall)
-        if _nan_mask.any():
-            _nan_sub_total += int(_nan_mask.sum())
-            overall[_nan_mask] = 0.0
-        # Adjust row_effects by subtracting overall (for consistency with sequential)
-        row_effects_np = row_effects_np - overall[:, np.newaxis]
-        # Combine overall + col_effects for final abundances (all float64)
-        sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
-        if _nan_sub_total > 0:
-            logger.warning(
-                "Batched median polish: %d NaN→0 substitutions across %d permutations. "
-                "This may indicate all-NaN peptide rows in some permutation batches.",
-                _nan_sub_total, batch_size,
-            )
-        return sample_abundances
-    else:
-        overall = np.nanmedian(row_effects_np, axis=1)  # (batch,)
-        _nan_mask = np.isnan(overall)
-        if _nan_mask.any():
-            _nan_sub_total += int(_nan_mask.sum())
-            overall[_nan_mask] = 0.0
-        # Adjust row_effects by subtracting overall (for consistency with sequential)
-        row_effects_np = row_effects_np - overall[:, np.newaxis]
-        # Combine overall + col_effects for final abundances
-        sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
-        if _nan_sub_total > 0:
-            logger.warning(
-                "Batched median polish: %d NaN→0 substitutions across %d permutations. "
-                "This may indicate all-NaN peptide rows in some permutation batches.",
-                _nan_sub_total, batch_size,
-            )
-        return sample_abundances
+    # Extract overall effect — nanmedian ignores NaN row effects (all-NaN proteins).
+    # XIII-9: If ALL row effects are NaN (degenerate batch element), overall is NaN,
+    # and sample_abundances will be NaN. This propagates to OLS as a NaN t-statistic,
+    # which is correctly excluded from empirical p-value computation.
+    overall = _nanmedian_quiet(row_effects_np, axis=1)  # (batch,) float64
+    _nan_mask = np.isnan(overall)
+    if _nan_mask.any():
+        _nan_sub_total += int(_nan_mask.sum())
+    # Adjust row_effects by subtracting overall (for consistency with sequential)
+    row_effects_np = row_effects_np - overall[:, np.newaxis]
+    # Combine overall + col_effects for final abundances
+    sample_abundances = overall[:, np.newaxis] + col_effects_np  # (batch, n_samples)
+    if _nan_sub_total > 0:
+        logger.warning(
+            "Batched median polish: %d NaN entries across %d permutations "
+            "(all-NaN protein rows — NaN propagated to sample abundances).",
+            _nan_sub_total, batch_size,
+        )
+    return sample_abundances
 
 
 def _generate_indices_for_chunk(
@@ -1414,7 +1415,13 @@ def compute_empirical_pvalues(
         if clique_id not in null_t:
             continue
 
-        null_tvals = null_t[clique_id]
+        null_tvals_raw = null_t[clique_id]
+
+        # XIII-9: Filter NaN null values (from degenerate permutation batches
+        # where median polish produced NaN sample abundances → NaN t-stats).
+        # Denominator uses valid count, not total permutations, to avoid
+        # anti-conservative bias from NaN entries.
+        null_tvals = null_tvals_raw[np.isfinite(null_tvals_raw)]
 
         if len(null_tvals) < 10:
             # Too few successful permutations
@@ -1435,7 +1442,9 @@ def compute_empirical_pvalues(
         percentile = 100 * np.mean(np.abs(null_tvals) < np.abs(obs_tval))
 
         # Compute null distribution statistics
-        null_log2fc_vals = null_log2fc.get(clique_id, np.array([]))
+        # XV-3: Same filtering pattern as null_tvals (line 1410)
+        null_log2fc_vals_raw = null_log2fc.get(clique_id, np.array([]))
+        null_log2fc_vals = null_log2fc_vals_raw[np.isfinite(null_log2fc_vals_raw)]
         null_log2fc_mean = float(np.mean(null_log2fc_vals)) if len(null_log2fc_vals) > 0 else 0.0
         null_log2fc_std = float(np.std(null_log2fc_vals, ddof=1)) if len(null_log2fc_vals) > 1 else 0.0
         null_tvalue_mean = float(np.mean(null_tvals))
@@ -1940,17 +1949,19 @@ def run_permutation_test_gpu(
             log2fc_vals = null_log2fc_arrays[clique_id]
             tval_vals = null_t_arrays[clique_id]
 
+            # XIII-9: Use nan-aware summary stats — NaN entries from
+            # degenerate median polish batches should not corrupt summaries.
             null_summary_rows.append({
                 'clique_id': clique_id,
-                'null_log2FC_mean': np.mean(log2fc_vals),
-                'null_log2FC_std': np.std(log2fc_vals, ddof=1),
-                'null_log2FC_5pct': np.percentile(log2fc_vals, 5),
-                'null_log2FC_95pct': np.percentile(log2fc_vals, 95),
-                'null_tvalue_mean': np.mean(tval_vals),
-                'null_tvalue_std': np.std(tval_vals, ddof=1),
-                'null_tvalue_5pct': np.percentile(tval_vals, 5),
-                'null_tvalue_95pct': np.percentile(tval_vals, 95),
-                'n_permutations': len(tval_vals),
+                'null_log2FC_mean': float(np.nanmean(log2fc_vals)),
+                'null_log2FC_std': float(np.nanstd(log2fc_vals, ddof=1)),
+                'null_log2FC_5pct': float(np.nanpercentile(log2fc_vals, 5)),
+                'null_log2FC_95pct': float(np.nanpercentile(log2fc_vals, 95)),
+                'null_tvalue_mean': float(np.nanmean(tval_vals)),
+                'null_tvalue_std': float(np.nanstd(tval_vals, ddof=1)),
+                'null_tvalue_5pct': float(np.nanpercentile(tval_vals, 5)),
+                'null_tvalue_95pct': float(np.nanpercentile(tval_vals, 95)),
+                'n_permutations': int(np.sum(np.isfinite(tval_vals))),
             })
 
     null_df = pd.DataFrame(null_summary_rows)

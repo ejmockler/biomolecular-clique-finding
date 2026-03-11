@@ -189,16 +189,32 @@ def _sample_expression_matched_set(
         # Not enough non-targets; fall back to random sample
         return rng.choice(non_target_indices, size=n_targets, replace=False).tolist()
 
-    # Build cost matrix: |mean_i - mean_j| + 0.5 * |var_i - var_j|
+    # XIV-3: Standardize both dimensions before combining into cost matrix.
+    # Without standardization, mean expression (log2, range ~0-30) dominates
+    # variance (range ~0-5), reducing variance-matching quality.
     target_means = gene_means[target_indices]
     target_vars = gene_variances[target_indices]
     pool_means = gene_means[non_target_indices]
     pool_vars = gene_variances[non_target_indices]
 
-    # Shape: (n_targets, n_pool)
+    all_means = np.concatenate([target_means, pool_means])
+    all_vars = np.concatenate([target_vars, pool_vars])
+    _finite_means = all_means[np.isfinite(all_means)]
+    _finite_vars = all_vars[np.isfinite(all_vars)]
+    mean_scale = float(np.std(_finite_means)) if len(_finite_means) > 1 else 1.0
+    var_scale = float(np.std(_finite_vars)) if len(_finite_vars) > 1 else 1.0
+    # XV-1: Guard zero-std (all identical values) — NaN can't reach here
+    # because the len>1 check catches empty arrays, and std of identical
+    # finite values is 0.0, not NaN.
+    if mean_scale == 0.0:
+        mean_scale = 1.0
+    if var_scale == 0.0:
+        var_scale = 1.0
+
+    # Shape: (n_targets, n_pool) — equal weight after standardization
     cost = (
-        np.abs(target_means[:, None] - pool_means[None, :])
-        + 0.5 * np.abs(target_vars[:, None] - pool_vars[None, :])
+        np.abs(target_means[:, None] - pool_means[None, :]) / mean_scale
+        + np.abs(target_vars[:, None] - pool_vars[None, :]) / var_scale
     )
 
     # Add small noise for diversity across repeated calls
