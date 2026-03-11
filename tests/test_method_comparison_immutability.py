@@ -1,11 +1,7 @@
 """
-Tests for Audit II Wave 5 — MCOMP-{3,4,5,6,7} method comparison cleanup.
-
-MCOMP-6: MethodComparisonResult is frozen (immutable)
-MCOMP-3: Permutation adapter stores unclamped p-values
-MCOMP-4: O(1) clique lookup via pre-built dict (not O(N*M) linear scan)
-MCOMP-5: n_proteins_found uses clique_to_feature_indices
-MCOMP-7: Metadata is defensively copied before passing to permutation engine
+Tests for method comparison result immutability, unclamped p-value storage,
+O(1) dict-based clique lookup, protein count consistency via
+clique_to_feature_indices, and defensive metadata copying.
 """
 
 from __future__ import annotations
@@ -73,11 +69,11 @@ def _make_mcr(**overrides) -> MethodComparisonResult:
 
 
 # ===========================================================================
-# MCOMP-6: MethodComparisonResult is frozen
+# MethodComparisonResult is frozen
 # ===========================================================================
 
 
-class TestMCOMP6Frozen:
+class TestMethodComparisonFrozen:
     """MethodComparisonResult must be frozen (immutable after construction)."""
 
     def test_frozen_attribute_assignment_raises(self):
@@ -190,7 +186,7 @@ class TestMCOMP6Frozen:
 
 
 # ===========================================================================
-# MCOMP-3: Permutation adapter stores unclamped p-values
+# Permutation adapter stores unclamped p-values
 # ===========================================================================
 
 
@@ -241,7 +237,7 @@ def _make_null_df(clique_ids):
     })
 
 
-class TestMCOMP3UnclampedPValues:
+class TestUnclampedPValues:
     """
     The permutation adapter must store the original empirical p-value,
     not a clamped version. Clamping should only happen for z-score computation.
@@ -323,11 +319,11 @@ class TestMCOMP3UnclampedPValues:
 
 
 # ===========================================================================
-# MCOMP-4: O(1) clique lookup via dict
+# O(1) clique lookup via dict
 # ===========================================================================
 
 
-class TestMCOMP4DictLookup:
+class TestCliqueDictLookup:
     """
     Verify that the permutation adapter builds a dict for clique lookup
     instead of doing a linear scan inside the result loop.
@@ -404,11 +400,11 @@ class TestMCOMP4DictLookup:
 
 
 # ===========================================================================
-# MCOMP-5: n_proteins_found uses clique_to_feature_indices
+# n_proteins_found uses clique_to_feature_indices
 # ===========================================================================
 
 
-class TestMCOMP5ProteinFoundConsistency:
+class TestProteinFoundConsistency:
     """
     n_proteins_found must use experiment.clique_to_feature_indices,
     which reflects the actual mapping used during testing, not
@@ -497,11 +493,11 @@ class TestMCOMP5ProteinFoundConsistency:
 
 
 # ===========================================================================
-# MCOMP-7: Metadata defensively copied
+# Metadata defensively copied
 # ===========================================================================
 
 
-class TestMCOMP7MetadataCopy:
+class TestMetadataDefensiveCopy:
     """
     The permutation adapter must pass a copy of sample_metadata to
     run_permutation_test_gpu to prevent mutation of the experiment.

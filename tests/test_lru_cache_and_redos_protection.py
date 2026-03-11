@@ -1,16 +1,9 @@
 """
-Tests for Wave 6 (Audit II) — low-priority infrastructure and polish items.
-
-Covers code changes from the following findings:
-  KG-14   corr_cache LRU eviction
-  SEC-13  ReDoS protection (input length limit)
-  SEC-17  Symlink check on cache directory
-  CLI-14  Top-level exception handler
-  CLI-15  Runtime default resolution for indra-env-file
-  CLI-5   O(n) sample alignment
-  CLI-10  NaN in clique_genes
-  STAT-CORE-19  Fisher Z clip precision
-  GPU-12  SE floor debug logging
+Tests for infrastructure and polish: correlation cache LRU eviction,
+ReDoS input length protection, symlink cache protection, CLI exception
+handling, INDRA env file defaults, sample alignment efficiency, NaN
+clique gene handling, Fisher Z clip precision, SE floor logging,
+CoGEx client docstring, and documentation comments.
 """
 
 from __future__ import annotations
@@ -31,7 +24,7 @@ import pytest
 
 
 # =====================================================================
-# KG-14: corr_cache LRU eviction
+# corr_cache LRU eviction
 # =====================================================================
 
 
@@ -109,7 +102,7 @@ class TestCorrCacheLRU:
 
 
 # =====================================================================
-# SEC-13: ReDoS protection — input string length limit
+# ReDoS protection — input string length limit
 # =====================================================================
 
 
@@ -158,7 +151,7 @@ class TestReDoSProtection:
 
 
 # =====================================================================
-# SEC-17: Symlink attack on cache directory
+# Symlink attack on cache directory
 # =====================================================================
 
 
@@ -195,7 +188,7 @@ class TestSymlinkCacheProtection:
 
 
 # =====================================================================
-# CLI-14: Top-level exception handler
+# Top-level exception handler
 # =====================================================================
 
 
@@ -245,11 +238,11 @@ class TestCLIExceptionHandler:
 
 
 # =====================================================================
-# CLI-15: Runtime default resolution for indra-env-file
+# Runtime default resolution for indra-env-file
 # =====================================================================
 
 
-class TestIndarEnvFileRuntimeDefault:
+class TestIndraEnvFileRuntimeDefault:
     """Verify indra-env-file default is resolved at runtime, not import time."""
 
     def test_default_is_none_in_parser(self):
@@ -283,7 +276,7 @@ class TestIndarEnvFileRuntimeDefault:
         )
 
         with mock.patch.dict(os.environ, {"INDRA_ENV_FILE": "/tmp/test.env"}):
-            # CLI-15 resolution code
+            # Runtime resolution logic
             if getattr(args, "indra_env_file", None) is None:
                 env_from_var = os.environ.get("INDRA_ENV_FILE")
                 args.indra_env_file = (
@@ -306,7 +299,7 @@ class TestIndarEnvFileRuntimeDefault:
 
 
 # =====================================================================
-# CLI-5: O(n) sample alignment
+# O(n) sample alignment
 # =====================================================================
 
 
@@ -348,7 +341,7 @@ class TestSampleAlignmentEfficiency:
 
 
 # =====================================================================
-# CLI-10: NaN in clique_genes
+# NaN in clique_genes
 # =====================================================================
 
 
@@ -413,7 +406,7 @@ class TestNaNCliqueGenes:
 
 
 # =====================================================================
-# STAT-CORE-19: Fisher Z clip precision
+# Fisher Z clip precision
 # =====================================================================
 
 
@@ -469,7 +462,7 @@ class TestFisherZClipPrecision:
 
 
 # =====================================================================
-# GPU-12: SE floor debug logging
+# SE floor debug logging
 # =====================================================================
 
 
@@ -512,7 +505,7 @@ class TestSEFloorLogging:
 
 
 # =====================================================================
-# KG-11: CoGExClient thread-safety docstring
+# CoGExClient thread-safety docstring
 # =====================================================================
 
 
@@ -532,10 +525,10 @@ class TestCoGExClientDocstring:
 
 
 class TestDocumentationComments:
-    """Spot-check that documentation-only findings have their comments."""
+    """Spot-check that key documentation comments are present in source."""
 
     def test_stat_core_18_censoring_threshold_comment(self):
-        """STAT-CORE-18: censoring threshold comment should be present."""
+        """Censoring threshold comment should be present."""
         import inspect
         from cliquefinder.stats import missing
 
@@ -543,7 +536,7 @@ class TestDocumentationComments:
         assert "diagnostics only" in source
 
     def test_set_test_15_msq_direction_comment(self):
-        """SET-TEST-15: MSQ direction comment should be present."""
+        """MSQ direction comment should be present."""
         import inspect
         from cliquefinder.stats import rotation
 
@@ -551,7 +544,7 @@ class TestDocumentationComments:
         assert "MSQ UP/DOWN zeros the opposite direction" in source
 
     def test_gpu_6_global_convergence_comment(self):
-        """GPU-6: global convergence comment should be present."""
+        """Global convergence comment should be present."""
         import inspect
         from cliquefinder.stats import permutation_gpu
 
@@ -559,7 +552,7 @@ class TestDocumentationComments:
         assert "GLOBAL criterion" in source
 
     def test_gpu_11_float32_precision_comment(self):
-        """GPU-11: float32 precision comment should be present."""
+        """float32 precision comment should be present."""
         import inspect
         from cliquefinder.stats import permutation_gpu
 
@@ -567,7 +560,7 @@ class TestDocumentationComments:
         assert "float32" in source and "6e-8" in source
 
     def test_val_5_categorical_dummies_comment(self):
-        """VAL-5: categorical dummies ordering comment should be present."""
+        """Categorical dummies ordering comment should be present."""
         import inspect
         from cliquefinder.stats import design_matrix
 
@@ -575,7 +568,7 @@ class TestDocumentationComments:
         assert "VAL-5" in source
 
     def test_val_8_specificity_ratio_comment(self):
-        """VAL-8: specificity ratio interpretation comment should be present."""
+        """Specificity ratio interpretation comment should be present."""
         import inspect
         from cliquefinder.stats import specificity
 
@@ -583,7 +576,7 @@ class TestDocumentationComments:
         assert "opposite signs" in source
 
     def test_val_9_l_matrix_assertion(self):
-        """VAL-9: L matrix column ordering assertion should be present."""
+        """L matrix column ordering assertion should be present."""
         import inspect
         from cliquefinder.stats import design_matrix
 
@@ -591,7 +584,7 @@ class TestDocumentationComments:
         assert "Condition columns must be the first" in source
 
     def test_val_11_n_covariate_params_comment(self):
-        """VAL-11: n_covariate_params interaction comment should be present."""
+        """n_covariate_params interaction comment should be present."""
         import inspect
         from cliquefinder.stats import design_matrix
 
@@ -599,7 +592,7 @@ class TestDocumentationComments:
         assert "VAL-11" in source
 
     def test_set_test_14_bootstrap_frequency_comment(self):
-        """SET-TEST-14: bootstrap frequency denominator comment should be present."""
+        """Bootstrap frequency denominator comment should be present."""
         import inspect
         from cliquefinder.stats import bootstrap_comparison
 
@@ -607,7 +600,7 @@ class TestDocumentationComments:
         assert "SET-TEST-14" in source
 
     def test_stat_core_9_vsn_init_comment(self):
-        """STAT-CORE-9: VSN initialization comment should be present."""
+        """VSN initialization comment should be present."""
         import inspect
         from cliquefinder.stats import normalization
 
@@ -615,14 +608,14 @@ class TestDocumentationComments:
         assert "STAT-CORE-9" in source
 
     def test_stat_core_13_quantile_nan_warning(self):
-        """STAT-CORE-13: quantile normalization NaN warning should be present."""
+        """Quantile normalization NaN warning should be present."""
         from cliquefinder.stats.normalization import quantile_normalization
 
         assert "simple" in quantile_normalization.__doc__
         assert "NaN" in quantile_normalization.__doc__
 
     def test_sec_15_dependency_comment(self):
-        """SEC-15: unpinned dependency rationale comment should be present."""
+        """Unpinned dependency rationale comment should be present."""
         pyproject = Path(__file__).parent.parent / "pyproject.toml"
         content = pyproject.read_text()
         assert "SEC-15" in content

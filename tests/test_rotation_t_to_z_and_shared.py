@@ -1,18 +1,19 @@
 """
-Tests for rotation framework precision fixes (Audit II Wave 5):
+Tests for the rotation framework's t-to-z conversion, shared rotation
+matrices, and float64 vector normalization.
 
-SET-TEST-6: t->z approximation threshold raised from df>100 to df>1000
+t->z approximation threshold raised from df>100 to df>1000:
     - df=500 must use proper t-distribution CDF (not normal approximation)
-    - df=1500 may use normal approximation (z ≈ t)
+    - df=1500 may use normal approximation (z ~ t)
     - Verifies the threshold change in GPU path, CPU path, and observed stats
 
-SET-TEST-8: Shared rotations for FWER correction in test_gene_sets
+Shared rotations for FWER correction in test_gene_sets:
     - test_gene_set accepts rotation_matrices= parameter
     - test_gene_sets pre-generates shared rotations by default
     - shared_rotations=False reverts to independent generation
     - Pre-generated rotations have correct shape and unit norms
 
-SET-TEST-12: Rotation vector normalization always in float64 on CPU
+Rotation vector normalization always in float64 on CPU:
     - generate_rotation_vectors always normalizes in float64
     - Output has correct dtype and unit norms
     - use_gpu=True does not affect normalization precision
@@ -68,11 +69,11 @@ def _make_engine_and_fit(
 
 
 # =============================================================================
-# SET-TEST-6: t->z approximation threshold
+# t->z approximation threshold
 # =============================================================================
 
 
-class TestSetTest6_TtoZThreshold:
+class TestTtoZThreshold:
     """Verify df>100 was raised to df>1000 for the t->z approximation."""
 
     def test_cpu_path_df500_uses_t_distribution(self):
@@ -224,11 +225,11 @@ class TestSetTest6_TtoZThreshold:
 
 
 # =============================================================================
-# SET-TEST-8: Shared rotations for FWER correction
+# Shared rotations for FWER correction
 # =============================================================================
 
 
-class TestSetTest8_SharedRotations:
+class TestSharedRotations:
     """Verify test_gene_sets uses shared rotations for valid FWER correction."""
 
     def test_test_gene_set_accepts_rotation_matrices_param(self):
@@ -345,11 +346,11 @@ class TestSetTest8_SharedRotations:
 
 
 # =============================================================================
-# SET-TEST-12: Rotation normalization in float64
+# Rotation normalization in float64
 # =============================================================================
 
 
-class TestSetTest12_Float64Normalization:
+class TestFloat64Normalization:
     """Verify rotation vectors are always normalized in float64 on CPU."""
 
     def test_normalization_always_float64(self):
@@ -416,12 +417,13 @@ class TestSetTest12_Float64Normalization:
 
 
 # =============================================================================
-# Integration: verify the full pipeline works with fixes
+# Integration
 # =============================================================================
 
 
 class TestIntegration:
-    """End-to-end integration tests for all three fixes."""
+    """End-to-end integration tests for t->z threshold, shared rotations,
+    and float64 normalization."""
 
     def test_full_pipeline_shared_rotations(self):
         """Full pipeline: fit, test_gene_sets with shared rotations,

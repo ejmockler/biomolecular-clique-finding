@@ -1,9 +1,5 @@
-"""Tests for Wave 5 miscellaneous architecture findings.
-
-GPU-9:  OLSPrecomputedMatrices immutability (dataclasses.replace)
-STAT-CORE-8: OLS formula with .T on pinv matches reference
-VAL-4:  details dict stored on ValidationReport and in to_dict()
-"""
+"""Tests for OLS precomputed matrix immutability, OLS formula correctness
+with .T on pinv, and ValidationReport details storage."""
 
 from __future__ import annotations
 
@@ -16,11 +12,11 @@ from cliquefinder.stats.validation_report import ValidationReport
 
 
 # =============================================================================
-# GPU-9: OLSPrecomputedMatrices not mutated in place
+# OLSPrecomputedMatrices not mutated in place
 # =============================================================================
 
 
-class TestGPU9_ImmutableMatrices:
+class TestImmutableOLSMatrices:
     """Verify OLSPrecomputedMatrices uses replace() instead of mutation."""
 
     def _make_matrices(self, **overrides) -> OLSPrecomputedMatrices:
@@ -93,11 +89,11 @@ class TestGPU9_ImmutableMatrices:
 
 
 # =============================================================================
-# STAT-CORE-8: OLS formula correctness
+# OLS formula correctness
 # =============================================================================
 
 
-class TestSTATCORE8_OLSFormula:
+class TestOLSFormulaCorrectness:
     """Verify row-major OLS formula Y @ X @ XtX_inv.T matches reference."""
 
     def _ols_reference(self, X, Y_row):
@@ -210,11 +206,11 @@ class TestSTATCORE8_OLSFormula:
 
 
 # =============================================================================
-# VAL-4: details dict stored and included in to_dict()
+# details dict stored and included in to_dict()
 # =============================================================================
 
 
-class TestVAL4_DetailsStored:
+class TestValidationReportDetails:
     """Verify that compute_verdict stores details and to_dict includes them."""
 
     def test_details_stored_on_validated(self):

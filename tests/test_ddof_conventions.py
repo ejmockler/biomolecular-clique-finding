@@ -1,7 +1,6 @@
-"""Tests for Wave 6 — ddof=0 fixes and documentation corrections.
-
-Covers findings: STAT-CORE-14, STAT-CORE-16, STAT-CORE-17, SET-TEST-13,
-SET-TEST-16, MCOMP-8, MCOMP-12, STAT-CORE-20, VAL-13.
+"""Tests for ddof=0 conventions across QRILC, normalization CV, summarization,
+and permutation z-score; fit_f_dist documentation; ROAST effect size
+documentation; n_draws deprecation; supplementary phase messages.
 """
 
 from __future__ import annotations
@@ -13,12 +12,7 @@ import numpy as np
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# STAT-CORE-14: QRILC global fallback uses ddof=1
-# ---------------------------------------------------------------------------
-
-
-class TestStatCore14QrilcDdof:
+class TestQrilcDdof:
     """QRILC global fallback in impute_qrilc should use ddof=1."""
 
     def test_qrilc_global_fallback_uses_ddof1(self):
@@ -46,12 +40,7 @@ class TestStatCore14QrilcDdof:
         assert result.n_imputed == 3
 
 
-# ---------------------------------------------------------------------------
-# STAT-CORE-16: CV computation in normalization uses ddof=1
-# ---------------------------------------------------------------------------
-
-
-class TestStatCore16NormalizationCvDdof:
+class TestNormalizationCvDdof:
     """CV computation in assess_normalization_quality uses ddof=1."""
 
     def test_cv_computation_uses_ddof1(self):
@@ -86,12 +75,7 @@ class TestStatCore16NormalizationCvDdof:
         assert np.isnan(result["median_cv_before"])
 
 
-# ---------------------------------------------------------------------------
-# STAT-CORE-17: CliqueSummary.to_dict uses ddof=1
-# ---------------------------------------------------------------------------
-
-
-class TestStatCore17SummarizationDdof:
+class TestSummarizationDdof:
     """CliqueSummary.to_dict should use ddof=1 for std_abundance."""
 
     def test_to_dict_uses_ddof1(self):
@@ -151,12 +135,7 @@ class TestStatCore17SummarizationDdof:
         assert abs(result["std_abundance"] - expected_std) < 1e-10
 
 
-# ---------------------------------------------------------------------------
-# SET-TEST-13: PermutationResult z-score uses ddof=1
-# ---------------------------------------------------------------------------
-
-
-class TestSetTest13PermutationZscoreDdof:
+class TestPermutationZscoreDdof:
     """PermutationResult.zscore should use ddof=1."""
 
     def _make_result(self, null_dist, observed_stat=10.0):
@@ -217,12 +196,7 @@ class TestSetTest13PermutationZscoreDdof:
         assert abs(result.zscore - expected_z) < 1e-10
 
 
-# ---------------------------------------------------------------------------
-# SET-TEST-16: fit_f_dist comment about R limma weighted moments
-# ---------------------------------------------------------------------------
-
-
-class TestSetTest16FitFDistComment:
+class TestFitFDistComment:
     """fit_f_dist should document that R limma uses weighted moments."""
 
     def test_fit_f_dist_has_weighted_moments_comment(self):
@@ -238,21 +212,15 @@ class TestSetTest16FitFDistComment:
         )
 
 
-# ---------------------------------------------------------------------------
-# MCOMP-8: robust_hits() comment accurately describes NaN behavior
-# ---------------------------------------------------------------------------
-
-
-class TestMcomp8RobustHitsComment:
+class TestRobustHitsComment:
     """robust_hits() comment should accurately describe NaN filtering."""
 
     def test_comment_explains_dropna_usage(self):
-        """The robust_hits() method uses dropna correctly (Wave 2 MCOMP-1 fix)."""
+        """The robust_hits() method uses dropna correctly."""
         from cliquefinder.stats.concordance import MethodComparisonResult
 
         source = inspect.getsource(MethodComparisonResult.robust_hits)
-        # After Wave 2 fix, robust_hits uses explicit .dropna() per-row,
-        # so mentioning "dropna" in comments is now accurate.
+        # robust_hits uses explicit .dropna() per-row.
         assert "dropna" in source.lower(), (
             "robust_hits() should reference its dropna-based NaN handling"
         )
@@ -267,12 +235,7 @@ class TestMcomp8RobustHitsComment:
         )
 
 
-# ---------------------------------------------------------------------------
-# MCOMP-12: roast.py effect_size "up" direction has rationale comment
-# ---------------------------------------------------------------------------
-
-
-class TestMcomp12RoastEffectSizeComment:
+class TestRoastEffectSizeComment:
     """Roast effect_size 'up' direction should have rationale comment."""
 
     def test_effect_size_up_direction_documented(self):
@@ -289,12 +252,7 @@ class TestMcomp12RoastEffectSizeComment:
         )
 
 
-# ---------------------------------------------------------------------------
-# STAT-CORE-20: n_draws parameter is deprecated
-# ---------------------------------------------------------------------------
-
-
-class TestStatCore20NDrawsDeprecated:
+class TestNDrawsDeprecated:
     """impute_aft_model n_draws parameter should warn when != 1."""
 
     def test_n_draws_default_no_warning(self):
@@ -332,12 +290,7 @@ class TestStatCore20NDrawsDeprecated:
         )
 
 
-# ---------------------------------------------------------------------------
-# VAL-13: Supplementary phases message distinguishes "not run" vs "no effect"
-# ---------------------------------------------------------------------------
-
-
-class TestVal13SupplementaryPhaseMessages:
+class TestSupplementaryPhaseMessages:
     """Validation report should distinguish unexecuted vs no-effect phases."""
 
     def _make_report_with_gates_passing(self, extra_phases=None):

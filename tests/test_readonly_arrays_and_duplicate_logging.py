@@ -1,17 +1,11 @@
-"""
-Wave 6 — Defensive coding fixes and logging level adjustments.
+"""Tests for defensive coding and logging level correctness.
 
-Tests for 10 LOW/INFO findings from Audit II Wave 6:
-  MCOMP-9:    Read-only array copy in ROAST engine
-  MCOMP-10:   Consistent MethodName enum keys
-  MCOMP-11:   Duplicate clique_id guard in permutation
-  KG-10:      Dead force_reconnect parameter removed
-  KG-15:      norm_id stub raises clear ImportError
-  VAL-12:     to_dict() handles empty null_z_scores
-  SET-TEST-17: Single-gene set warning + NaN p-values
-  SEC-10:     Credential logging at DEBUG level
-  KG-13:      Per-gene resolution logging at DEBUG
-  VAL-10:     Interaction permutation failures logged
+Covers read-only array handling in ROAST, enum key consistency in
+results_by_method, duplicate clique ID detection, Neo4j reconnection
+parameter removal, HGNC normalization stub behavior, empty null z-score
+serialization, single gene set rotation warnings, credential sanitization
+in logs, gene resolution logging levels, and interaction permutation
+failure logging with suppression.
 """
 
 from __future__ import annotations
@@ -26,15 +20,15 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# MCOMP-9: Read-only array defensively copied before ROAST engine
+# Read-only array defensively copied before ROAST engine
 # ---------------------------------------------------------------------------
 
 
-class TestMCOMP9ReadOnlyArray:
+class TestReadOnlyArray:
     """RotationTestEngine receives a writeable copy of read-only data."""
 
     def test_roast_copies_readonly_data(self):
-        """MCOMP-9: If experiment.data is read-only, ROAST should copy it."""
+        """If experiment.data is read-only, ROAST should copy it."""
         from cliquefinder.stats.methods.roast import ROASTMethod
 
         # Build a minimal mock experiment with read-only data
@@ -58,7 +52,7 @@ class TestMCOMP9ReadOnlyArray:
         assert results == []  # no cliques, but no crash
 
     def test_roast_skips_copy_when_writeable(self):
-        """MCOMP-9: No unnecessary copy when data is already writeable."""
+        """No unnecessary copy when data is already writeable."""
         data = np.random.default_rng(42).standard_normal((10, 6))
         assert data.flags.writeable  # sanity
 
@@ -71,15 +65,15 @@ class TestMCOMP9ReadOnlyArray:
 
 
 # ---------------------------------------------------------------------------
-# MCOMP-10: Consistent MethodName enum keys in results_by_method
+# Consistent MethodName enum keys in results_by_method
 # ---------------------------------------------------------------------------
 
 
-class TestMCOMP10ConsistentKeys:
+class TestConsistentEnumKeys:
     """results_by_method always uses MethodName enum, never strings."""
 
     def test_results_by_method_keys_are_enum(self):
-        """MCOMP-10: All keys in results_by_method are MethodName enum."""
+        """All keys in results_by_method are MethodName enum."""
         from cliquefinder.stats.method_comparison_types import MethodName
 
         # Simulate the dict construction from run_method_comparison
@@ -94,7 +88,7 @@ class TestMCOMP10ConsistentKeys:
             )
 
     def test_failed_methods_uses_string_value(self):
-        """MCOMP-10: failed_methods uses .value strings by design."""
+        """failed_methods uses .value strings by design."""
         from cliquefinder.stats.method_comparison_types import MethodName
 
         failed_methods: dict[str, str] = {}
@@ -106,15 +100,15 @@ class TestMCOMP10ConsistentKeys:
 
 
 # ---------------------------------------------------------------------------
-# MCOMP-11: Duplicate clique_id guard in permutation null_df
+# Duplicate clique_id guard in permutation null_df
 # ---------------------------------------------------------------------------
 
 
-class TestMCOMP11DuplicateCliqueId:
+class TestDuplicateCliqueId:
     """Duplicate clique_ids in null_df are detected and deduplicated."""
 
     def test_duplicate_warning_logged(self, caplog):
-        """MCOMP-11: Warning when duplicate clique_ids in null_df."""
+        """Warning when duplicate clique_ids in null_df."""
         from cliquefinder.stats.methods.permutation import PermutationMethod
 
         method = PermutationMethod(n_permutations=100)
@@ -160,7 +154,7 @@ class TestMCOMP11DuplicateCliqueId:
         )
 
     def test_no_warning_when_no_duplicates(self, caplog):
-        """MCOMP-11: No warning when clique_ids are unique."""
+        """No warning when clique_ids are unique."""
         null_df = pd.DataFrame({
             "clique_id": ["clique_1", "clique_2"],
             "null_tvalue_mean": [0.0, 0.1],
@@ -170,15 +164,15 @@ class TestMCOMP11DuplicateCliqueId:
 
 
 # ---------------------------------------------------------------------------
-# KG-10: Dead force_reconnect parameter removed
+# Dead force_reconnect parameter removed
 # ---------------------------------------------------------------------------
 
 
-class TestKG10ForceReconnect:
+class TestForceReconnect:
     """force_reconnect parameter has been removed from _get_client."""
 
     def test_get_client_no_force_reconnect_param(self):
-        """KG-10: _get_client no longer accepts force_reconnect."""
+        """_get_client no longer accepts force_reconnect."""
         import inspect
         from cliquefinder.knowledge.cogex import CoGExClient
 
@@ -189,7 +183,7 @@ class TestKG10ForceReconnect:
         )
 
     def test_get_client_signature_is_self_only(self):
-        """KG-10: _get_client takes only self."""
+        """_get_client takes only self."""
         import inspect
         from cliquefinder.knowledge.cogex import CoGExClient
 
@@ -201,15 +195,15 @@ class TestKG10ForceReconnect:
 
 
 # ---------------------------------------------------------------------------
-# KG-15: norm_id stub raises ImportError when INDRA is not installed
+# norm_id stub raises ImportError when INDRA is not installed
 # ---------------------------------------------------------------------------
 
 
-class TestKG15NormIdStub:
+class TestNormIdStub:
     """norm_id raises ImportError (not TypeError) when INDRA missing."""
 
     def test_stub_raises_import_error(self):
-        """KG-15: When INDRA is unavailable, norm_id gives a clear error."""
+        """When INDRA is unavailable, norm_id gives a clear error."""
         # Import the module-level norm_id that's either real or stub
         import cliquefinder.knowledge.cogex as cogex_mod
 
@@ -222,7 +216,7 @@ class TestKG15NormIdStub:
             assert callable(cogex_mod.norm_id)
 
     def test_stub_is_callable(self):
-        """KG-15: Stub is callable (not None), preventing confusing TypeError."""
+        """Stub is callable (not None), preventing confusing TypeError."""
         import cliquefinder.knowledge.cogex as cogex_mod
 
         # Whether INDRA is installed or not, norm_id should be callable
@@ -230,15 +224,15 @@ class TestKG15NormIdStub:
 
 
 # ---------------------------------------------------------------------------
-# VAL-12: to_dict() handles empty null_z_scores gracefully
+# to_dict() handles empty null_z_scores gracefully
 # ---------------------------------------------------------------------------
 
 
-class TestVAL12EmptyNullZScores:
+class TestEmptyNullZScores:
     """LabelPermutationResult.to_dict() handles empty arrays."""
 
     def test_to_dict_with_empty_array(self):
-        """VAL-12: to_dict does not crash when null_z_scores is empty."""
+        """to_dict does not crash when null_z_scores is empty."""
         from cliquefinder.stats.label_permutation import LabelPermutationResult
 
         result = LabelPermutationResult(
@@ -260,7 +254,7 @@ class TestVAL12EmptyNullZScores:
             )
 
     def test_to_dict_with_normal_array(self):
-        """VAL-12: to_dict still works normally with populated array."""
+        """to_dict still works normally with populated array."""
         from cliquefinder.stats.label_permutation import LabelPermutationResult
 
         rng = np.random.default_rng(42)
@@ -279,7 +273,7 @@ class TestVAL12EmptyNullZScores:
         assert np.isfinite(d["null_z_quantiles"]["q50"])
 
     def test_to_dict_with_none_scores(self):
-        """VAL-12: to_dict handles None null_z_scores."""
+        """to_dict handles None null_z_scores."""
         from cliquefinder.stats.label_permutation import LabelPermutationResult
 
         result = LabelPermutationResult(
@@ -296,15 +290,15 @@ class TestVAL12EmptyNullZScores:
 
 
 # ---------------------------------------------------------------------------
-# SET-TEST-17: Single-gene sets warn and return NaN p-values
+# Single-gene sets warn and return NaN p-values
 # ---------------------------------------------------------------------------
 
 
-class TestSETTEST17SingleGeneSet:
+class TestSingleGeneSet:
     """Single-gene sets produce a warning and NaN p-values, not silent empty."""
 
     def test_single_gene_set_warns(self):
-        """SET-TEST-17: Warning issued for single-gene sets."""
+        """Warning issued for single-gene sets."""
         from cliquefinder.stats.rotation import (
             RotationTestEngine,
             RotationTestConfig,
@@ -352,7 +346,7 @@ class TestSETTEST17SingleGeneSet:
         assert np.isnan(result.get_pvalue("msq", "mixed"))
 
     def test_zero_gene_set_no_warning(self):
-        """SET-TEST-17: Zero-gene sets return empty result without warning."""
+        """Zero-gene sets return empty result without warning."""
         from cliquefinder.stats.rotation import (
             RotationTestEngine,
             RotationTestConfig,
@@ -391,7 +385,7 @@ class TestSETTEST17SingleGeneSet:
         assert result.n_genes_found == 0
 
     def test_multi_gene_set_no_warning(self):
-        """SET-TEST-17: Multi-gene sets work normally without warning."""
+        """Multi-gene sets work normally without warning."""
         from cliquefinder.stats.rotation import (
             RotationTestEngine,
             RotationTestConfig,
@@ -430,15 +424,15 @@ class TestSETTEST17SingleGeneSet:
 
 
 # ---------------------------------------------------------------------------
-# SEC-10: Credential and connection logging at DEBUG level
+# Credential and connection logging at DEBUG level
 # ---------------------------------------------------------------------------
 
 
-class TestSEC10CredentialLogging:
+class TestCredentialLogging:
     """Sensitive info (URLs, .env paths) logged at DEBUG, not INFO."""
 
     def test_credential_env_var_logs_at_debug(self, caplog):
-        """SEC-10: 'Using credentials from environment variables' at DEBUG."""
+        """'Using credentials from environment variables' at DEBUG."""
         import cliquefinder.knowledge.cogex as cogex_mod
 
         client = cogex_mod.CoGExClient.__new__(cogex_mod.CoGExClient)
@@ -469,7 +463,7 @@ class TestSEC10CredentialLogging:
             )
 
     def test_credential_explicit_logs_at_debug(self, caplog):
-        """SEC-10: 'Using explicit credentials' at DEBUG."""
+        """'Using explicit credentials' at DEBUG."""
         import cliquefinder.knowledge.cogex as cogex_mod
 
         client = cogex_mod.CoGExClient.__new__(cogex_mod.CoGExClient)
@@ -491,7 +485,7 @@ class TestSEC10CredentialLogging:
         assert credential_messages[0].levelno == logging.DEBUG
 
     def test_connection_url_not_at_info(self, caplog):
-        """SEC-10: Connection URL not logged at INFO level."""
+        """Connection URL not logged at INFO level."""
         import cliquefinder.knowledge.cogex as cogex_mod
 
         # Verify the log message uses DEBUG by inspecting source
@@ -506,15 +500,15 @@ class TestSEC10CredentialLogging:
 
 
 # ---------------------------------------------------------------------------
-# KG-13: Per-gene resolution logging at DEBUG level
+# Per-gene resolution logging at DEBUG level
 # ---------------------------------------------------------------------------
 
 
-class TestKG13GeneResolutionLogging:
+class TestGeneResolutionLogging:
     """Per-gene 'Could not resolve' messages are DEBUG, not INFO."""
 
     def test_per_gene_failure_is_debug(self):
-        """KG-13: Per-gene resolution failures logged at DEBUG."""
+        """Per-gene resolution failures logged at DEBUG."""
         import inspect
         import cliquefinder.knowledge.cogex as cogex_mod
 
@@ -525,7 +519,7 @@ class TestKG13GeneResolutionLogging:
         )
 
     def test_aggregate_resolution_is_info(self):
-        """KG-13: Aggregate resolution summary logged at INFO."""
+        """Aggregate resolution summary logged at INFO."""
         import inspect
         import cliquefinder.knowledge.cogex as cogex_mod
 
@@ -537,15 +531,15 @@ class TestKG13GeneResolutionLogging:
 
 
 # ---------------------------------------------------------------------------
-# VAL-10: Interaction permutation failures logged with warning
+# Interaction permutation failures logged with warning
 # ---------------------------------------------------------------------------
 
 
-class TestVAL10InteractionPermFailureLogging:
+class TestInteractionPermFailureLogging:
     """Failed interaction permutations are logged, not silently swallowed."""
 
     def test_failure_logged_as_warning(self, caplog):
-        """VAL-10: Failed interaction permutation logged as WARNING."""
+        """Failed interaction permutation logged as WARNING."""
         from cliquefinder.stats.specificity import _run_interaction_permutation
 
         rng = np.random.default_rng(42)
@@ -603,7 +597,7 @@ class TestVAL10InteractionPermFailureLogging:
             assert record.levelno == logging.WARNING
 
     def test_no_warning_when_all_succeed(self, caplog):
-        """VAL-10: No warning when all interaction permutations succeed."""
+        """No warning when all interaction permutations succeed."""
         from cliquefinder.stats.specificity import _run_interaction_permutation
 
         rng = np.random.default_rng(42)
@@ -650,7 +644,7 @@ class TestVAL10InteractionPermFailureLogging:
         )
 
     def test_warning_suppression_after_three(self, caplog):
-        """VAL-10: After 3 failures, further warnings are suppressed."""
+        """After 3 failures, further warnings are suppressed."""
         from cliquefinder.stats.specificity import _run_interaction_permutation
 
         rng = np.random.default_rng(42)

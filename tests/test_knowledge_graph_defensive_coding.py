@@ -1,10 +1,5 @@
-"""Tests for Audit II Wave 5 knowledge graph defensive coding fixes.
-
-KG-5:  Gene cache bounded to 50k entries with LRU eviction.
-KG-6:  CURIE parsing skips malformed records instead of crashing.
-KG-7:  RuntimeError from _execute_query propagates without double-wrapping.
-KG-8:  Condition delimiter changed from '_' to '||' to support underscored metadata.
-KG-9:  discover_regulators parameter order matches parent class (LSP).
+"""Tests for knowledge graph defensive coding: bounded gene cache, CURIE parsing,
+error propagation, condition delimiters, and discover_regulators LSP compliance.
 """
 
 import logging
@@ -52,12 +47,7 @@ from cliquefinder.knowledge.cogex import (  # noqa: E402
 )
 
 
-# ===========================================================================
-# KG-5: Bounded gene cache
-# ===========================================================================
-
-
-class TestKG5_BoundedGeneCache:
+class TestBoundedGeneCache:
     """Gene symbol lookup cache must not grow without bound."""
 
     def test_cache_is_ordered_dict(self, _mock_indra):
@@ -139,12 +129,7 @@ class TestKG5_BoundedGeneCache:
             assert len(ext._gene_cache) <= 10
 
 
-# ===========================================================================
-# KG-6: CURIE parsing crash protection
-# ===========================================================================
-
-
-class TestKG6_CURIEParsingDefensive:
+class TestCURIEParsingDefensive:
     """Malformed CURIE records must be skipped, not crash."""
 
     def _make_query_row(
@@ -289,12 +274,7 @@ class TestKG6_CURIEParsingDefensive:
                 assert "Skipping malformed" in caplog.text
 
 
-# ===========================================================================
-# KG-7: No double-wrapped RuntimeError
-# ===========================================================================
-
-
-class TestKG7_NoDoubleWrappedRuntimeError:
+class TestNoDoubleWrappedRuntimeError:
     """RuntimeError from _execute_query must propagate without re-wrapping."""
 
     def test_runtime_error_not_double_wrapped(self, _mock_indra):
@@ -388,12 +368,7 @@ class TestKG7_NoDoubleWrappedRuntimeError:
                 assert exc_info.value.__cause__ is not None
 
 
-# ===========================================================================
-# KG-8: Condition delimiter '||' instead of '_'
-# ===========================================================================
-
-
-class TestKG8_ConditionDelimiter:
+class TestConditionDelimiter:
     """Condition strings use '||' delimiter to handle underscored metadata."""
 
     @pytest.fixture
@@ -516,12 +491,7 @@ class TestKG8_ConditionDelimiter:
         assert validator.get_available_conditions() == ['all']
 
 
-# ===========================================================================
-# KG-9: discover_regulators LSP compliance
-# ===========================================================================
-
-
-class TestKG9_DiscoverRegulatorsLSP:
+class TestDiscoverRegulatorsLSP:
     """INDRAKnowledgeSource.discover_regulators signature matches parent."""
 
     def test_parameter_order_matches_parent(self):
