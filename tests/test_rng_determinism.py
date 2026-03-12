@@ -410,11 +410,11 @@ class TestPhase2SeedSequence:
 
         assert _seed_phase2 is None
 
-    def test_validate_baselines_source_has_spawn6(self):
-        """validate_baselines.py must use spawn(6) to include Phase 2."""
+    def test_validate_baselines_source_has_spawn7(self):
+        """validate_baselines.py must use spawn(7) to include Phase 2 + graph perm."""
         source = _VALIDATE_BASELINES.read_text()
-        assert ".spawn(6)" in source, \
-            "SeedSequence.spawn(6) not found in validate_baselines.py"
+        assert ".spawn(7)" in source, \
+            "SeedSequence.spawn(7) not found in validate_baselines.py"
 
     def test_validate_baselines_source_has_phase2_seed(self):
         """validate_baselines.py must define _seed_phase2."""
@@ -444,16 +444,18 @@ class TestPhase2SeedSequence:
         assert "seed=_seed_phase2" in phase2_section, \
             "Phase 2 does not use seed=_seed_phase2"
 
-    def test_phase2_seed_appended_at_end_of_spawn(self):
-        """_ss_p2 must be the LAST element in the spawn tuple.
+    def test_phase2_and_graph_seeds_appended_at_end_of_spawn(self):
+        """_ss_p2 and _ss_p5g must be the last elements in the spawn tuple.
 
         This ensures existing seeds for phases 3-5 are not perturbed
-        by the addition of Phase 2.
+        by the addition of Phase 2 and graph permutation seeds.
         """
         source = _VALIDATE_BASELINES.read_text()
         # Find the spawn destructuring line
-        match = re.search(r"\(([^)]+)\)\s*=\s*_ss\.spawn\(6\)", source)
-        assert match is not None, "Could not find spawn(6) destructuring"
+        match = re.search(r"\(([^)]+)\)\s*=\s*_ss\.spawn\(7\)", source)
+        assert match is not None, "Could not find spawn(7) destructuring"
         names = [n.strip() for n in match.group(1).split(",")]
-        assert names[-1] == "_ss_p2", \
-            f"_ss_p2 must be last in spawn tuple, got: {names}"
+        assert names[-2] == "_ss_p2", \
+            f"_ss_p2 must be second-to-last in spawn tuple, got: {names}"
+        assert names[-1] == "_ss_p5g", \
+            f"_ss_p5g must be last in spawn tuple, got: {names}"

@@ -112,6 +112,13 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Number of random gene sets for FPR calibration (default: 200)",
     )
 
+    # Graph permutation
+    parser.add_argument(
+        "--graph-permutations", type=_positive_int, default=100,
+        dest="n_graph_perms",
+        help="Number of graph node-label permutations (default: 100)",
+    )
+
     # INDRA settings
     parser.add_argument(
         "--min-evidence", type=_positive_int, default=1,
@@ -299,13 +306,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         from numpy.random import SeedSequence
         _ss = SeedSequence(_base_seed)
         # VAL-6: Phase 2 appended at END to preserve existing seed streams
-        (_ss_boot, _ss_p3s, _ss_p3f, _ss_p4, _ss_p5, _ss_p2) = _ss.spawn(6)
+        # Graph permutation appended at END to preserve all existing streams
+        (_ss_boot, _ss_p3s, _ss_p3f, _ss_p4, _ss_p5, _ss_p2, _ss_p5g) = _ss.spawn(7)
         _seed_bootstrap = int(_ss_boot.generate_state(1)[0])
         _seed_phase2 = int(_ss_p2.generate_state(1)[0])
         _seed_phase3_strat = int(_ss_p3s.generate_state(1)[0])
         _seed_phase3_free = int(_ss_p3f.generate_state(1)[0])
         _seed_phase4 = int(_ss_p4.generate_state(1)[0])
         _seed_phase5 = int(_ss_p5.generate_state(1)[0])
+        _seed_phase5_graph = int(_ss_p5g.generate_state(1)[0])
     else:
         _seed_bootstrap = None
         _seed_phase2 = None
@@ -313,6 +322,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         _seed_phase3_free = None
         _seed_phase4 = None
         _seed_phase5 = None
+        _seed_phase5_graph = None
 
     # --- Load data ---
     print(f"Loading data: {args.data}")
@@ -712,48 +722,60 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
-    # PHASE 5: Negative control gene sets
+    # PHASE 5a: Negative control gene sets (uniform random)
     # =====================================================================
+    # XVI-3: Phase 5a and 5b have independent checkpoint keys so each can
+    # be retried independently (e.g., if INDRA times out for 5b but 5a
+    # succeeded, a resume will only re-run 5b).
+
+    # Shared engine for both 5a and 5b — built once if either sub-phase runs.
+    engine = None
+
+    def _ensure_engine():
+        nonlocal engine
+        if engine is not None:
+            return engine
+        from cliquefinder.stats.rotation import RotationTestEngine
+        # M-6 note: RotationTestEngine.fit() builds its own design matrix
+        # from the full data + metadata + covariates. It uses the same
+        # covariate columns listed in args.covariates, so its internal NaN
+        # mask is consistent with the covariate_design built above. The
+        # engine operates on the full sample set (not a subset), matching
+        # Phase 1's scope.
+        conditions_list = list(primary_contrast)
+        engine = RotationTestEngine(data, feature_ids, metadata)
+        engine.fit(
+            conditions=conditions_list,
+            contrast=primary_contrast,
+            condition_column=condition_col,
+            covariates=args.covariates,
+        )
+        return engine
+
     if "negative_controls" in report.phases:
         print(f"\n{'=' * 70}")
-        print("PHASE 5: NEGATIVE CONTROL GENE SETS  [SKIPPED — checkpoint]")
+        print("PHASE 5a: NEGATIVE CONTROLS  [SKIPPED — checkpoint]")
         print("=" * 70)
     else:
         print(f"\n{'=' * 70}")
-        print("PHASE 5: NEGATIVE CONTROL GENE SETS")
+        print("PHASE 5a: NEGATIVE CONTROLS")
         print("=" * 70)
 
         try:
             from cliquefinder.stats.negative_controls import run_negative_control_sets
-            from cliquefinder.stats.rotation import RotationTestEngine
 
-            # M-6 note: RotationTestEngine.fit() builds its own design matrix
-            # from the full data + metadata + covariates. It uses the same
-            # covariate columns listed in args.covariates, so its internal NaN
-            # mask is consistent with the covariate_design built above. The
-            # engine operates on the full sample set (not a subset), matching
-            # Phase 1's scope.
-            conditions_list = list(primary_contrast)
-            engine = RotationTestEngine(data, feature_ids, metadata)
-            engine.fit(
-                conditions=conditions_list,
-                contrast=primary_contrast,
-                condition_column=condition_col,
-                covariates=args.covariates,
-            )
+            eng = _ensure_engine()
 
             # protein_df may be None if Phase 1 failed. Pass it through;
             # run_negative_control_sets() handles None gracefully (skips
             # competitive z-score computation).
             neg_result = run_negative_control_sets(
-                engine=engine,
+                engine=eng,
                 target_gene_ids=target_gene_ids,
                 target_set_id=f"{args.network_query}_targets",
                 n_control_sets=args.n_neg_controls,
                 seed=_seed_phase5,
                 protein_results=protein_df,
-                data=data,
-                matching="both",
                 verbose=True,
             )
 
@@ -762,8 +784,77 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             neg_out = args.output / "phase5_negative_controls.json"
             atomic_write_json(neg_out, neg_result.to_dict())
         except Exception as e:
-            logger.warning("Phase 5 (negative_controls) failed: %s", e)
+            logger.warning("Phase 5a (negative_controls) failed: %s", e)
             report.add_phase("negative_controls", {"status": "failed", "error": str(e)})
+
+        _save_checkpoint(report, args.output)
+    report.save(args.output / "validation_report.json")
+
+    # =====================================================================
+    # PHASE 5b: Graph permutation null (node-label permutation on INDRA)
+    # =====================================================================
+    # XVI-4 note: This queries INDRA for ALL regulators in the data universe,
+    # not just the query gene's targets. The broader scope is intentional —
+    # the null distribution requires multiple regulator neighborhoods to
+    # sample from. The Phase 1 single-gene query (query_network_targets)
+    # returns only one regulator, which would produce a degenerate null.
+
+    if "graph_permutation" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 5b: GRAPH PERMUTATION  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 5b: GRAPH PERMUTATION")
+        print("=" * 70)
+
+        try:
+            from cliquefinder.stats.graph_permutation import run_graph_permutation_null
+            from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
+
+            eng = _ensure_engine()
+
+            # Build symbol_to_feature mapping (gene_symbol -> feature_id)
+            symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
+
+            # Pull INDRA subgraph: all regulatory edges for genes in our data
+            from cliquefinder.knowledge.indra_source import INDRAKnowledgeSource
+            indra_source = INDRAKnowledgeSource(env_file=str(args.indra_env_file))
+            gene_universe = set(symbol_to_feature.keys())
+            indra_modules = indra_source.discover_regulators(
+                target_universe=gene_universe,
+                min_targets=2,
+                min_evidence=args.min_evidence,
+            )
+            indra_source.close()
+
+            # Build adjacency dict: regulator_name -> [target_name, ...]
+            adjacency = {}
+            for module in indra_modules:
+                adjacency[module.regulator] = sorted(module.targets)
+
+            if adjacency:
+                graph_result = run_graph_permutation_null(
+                    engine=eng,
+                    target_gene_ids=target_gene_ids,
+                    target_set_id=f"{args.network_query}_targets",
+                    adjacency=adjacency,
+                    symbol_to_feature=symbol_to_feature,
+                    n_permutations=args.n_graph_perms,
+                    seed=_seed_phase5_graph,
+                    verbose=True,
+                )
+                report.add_phase("graph_permutation", graph_result.to_dict())
+                graph_out = args.output / "phase5_graph_permutation.json"
+                atomic_write_json(graph_out, graph_result.to_dict())
+            else:
+                logger.warning("No INDRA modules found for graph permutation -- skipping")
+        except ImportError:
+            logger.warning("INDRA not available for graph permutation -- skipping")
+        except Exception as e:
+            logger.warning("Graph permutation failed: %s", e)
+            report.add_phase("graph_permutation", {"status": "failed", "error": str(e)})
+
         _save_checkpoint(report, args.output)
     report.save(args.output / "validation_report.json")
 

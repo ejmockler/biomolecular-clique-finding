@@ -262,6 +262,17 @@ class ValidationReport:
                 f"({'pass' if passed else 'fail'})"
             )
 
+        # Phase 5b: Graph permutation
+        graph_perm = self.phases.get("graph_permutation")
+        if graph_perm and graph_perm.get("status") != "failed":
+            percentile = graph_perm.get("target_percentile", 100)
+            passed = percentile < neg_ctrl_percentile
+            supplementary_pass += int(passed)
+            supplementary_total += 1
+            details["graph_permutation"] = (
+                f"percentile={percentile:.1f}% ({'pass' if passed else 'fail'})"
+            )
+
         # --- Compute verdict ---
         # ARCH-17: Distinguish skipped supplementary phases from failed ones.
         # Phases that didn't run (e.g., Phase 2 for single-contrast datasets)

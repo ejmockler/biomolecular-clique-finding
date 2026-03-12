@@ -80,56 +80,6 @@ class TestCensoredQuantileDirection:
         assert np.all(np.isnan(result[:4, 1]))
 
 
-class TestNegativeControlsIndexSpace:
-    """Expression-matched controls must use engine's filtered index space."""
-
-    def test_gene_means_use_engine_data(self):
-        """gene_means must be computed from engine.data (filtered), not
-        the caller-supplied data (unfiltered)."""
-        from cliquefinder.stats.negative_controls import (
-            _sample_expression_matched_set,
-        )
-
-        # Simulate filtered engine data: 3 genes with known means
-        gene_means = np.array([1.0, 5.0, 10.0])
-        gene_variances = np.array([0.1, 0.5, 1.0])
-        rng = np.random.default_rng(42)
-
-        target_indices = [0]
-        non_target_indices = np.array([1, 2])
-
-        matched = _sample_expression_matched_set(
-            target_indices, non_target_indices,
-            gene_means, gene_variances, rng,
-        )
-        # Should match gene 1 (mean=5) rather than gene 2 (mean=10)
-        # because gene 0 has mean=1 and gene 1 is closer
-        assert matched[0] == 1
-
-    def test_nan_variance_guarded(self):
-        """NaN variances (from single-observation genes) should not crash."""
-        from cliquefinder.stats.negative_controls import (
-            _sample_expression_matched_set,
-        )
-
-        gene_means = np.array([1.0, 2.0, 3.0])
-        gene_variances = np.array([0.1, np.nan, 0.5])  # gene 1 has NaN var
-        # The NaN guard in the main code replaces NaN with 0,
-        # so we simulate that here
-        gene_variances = np.where(np.isfinite(gene_variances), gene_variances, 0.0)
-
-        rng = np.random.default_rng(42)
-        target_indices = [0]
-        non_target_indices = np.array([1, 2])
-
-        # Should not raise
-        matched = _sample_expression_matched_set(
-            target_indices, non_target_indices,
-            gene_means, gene_variances, rng,
-        )
-        assert len(matched) == 1
-
-
 class TestSubjectColWarning:
     """subject_col and use_mixed_model must warn when passed to GPU path."""
 

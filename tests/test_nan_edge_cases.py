@@ -2,8 +2,7 @@
 
 Covers: VSN convergence parity, global standards normalization with missing
 spike-ins, min-value imputation on empty data, median polish NaN propagation
-through the permutation null distribution, and expression-matched cost matrix
-scaling for negative controls.
+through the permutation null distribution, and empirical p-value NaN exclusion.
 """
 
 import numpy as np
@@ -255,63 +254,3 @@ class TestEmpiricalPValueNaNExclusion:
             err_msg="NaN null values should be excluded, not counted")
 
 
-# ---------------------------------------------------------------------------
-# Expression-matched negative controls — cost matrix scaling
-# ---------------------------------------------------------------------------
-
-class TestExpressionMatchedCostMatrix:
-    """Cost matrix for expression-matched negative control selection must
-    standardize mean and variance dimensions for equal weighting."""
-
-    def test_standardization_applied(self):
-        """Source code uses scale factors, not hardcoded 0.5 weight."""
-        import inspect
-        from cliquefinder.stats import negative_controls
-
-        source = inspect.getsource(negative_controls)
-        assert "mean_scale" in source
-        assert "var_scale" in source
-        assert "+ 0.5 * np.abs" not in source
-
-    def test_matching_returns_valid_indices(self):
-        """Matched controls come from the non-target pool."""
-        from cliquefinder.stats.negative_controls import _sample_expression_matched_set
-
-        rng = np.random.default_rng(42)
-        n_genes = 100
-        gene_means = rng.uniform(0, 30, n_genes)
-        gene_variances = rng.uniform(0, 3, n_genes)
-
-        target_indices = [0, 1, 2, 3, 4]
-        non_target_indices = np.arange(5, n_genes)
-
-        matched = _sample_expression_matched_set(
-            target_indices, non_target_indices,
-            gene_means, gene_variances, rng)
-
-        assert len(matched) == len(target_indices)
-        for idx in matched:
-            assert idx in non_target_indices
-
-    def test_no_hardcoded_variance_weight(self):
-        """The old 0.5 * variance term should not appear."""
-        import inspect
-        from cliquefinder.stats.negative_controls import _sample_expression_matched_set
-
-        source = inspect.getsource(_sample_expression_matched_set)
-        assert "0.5 *" not in source
-
-    def test_zero_std_scale_fallback(self):
-        """Identical gene means (std=0) should not produce NaN cost."""
-        from cliquefinder.stats.negative_controls import _sample_expression_matched_set
-
-        rng = np.random.default_rng(42)
-        n_genes = 50
-        gene_means = np.full(n_genes, 15.0)  # zero variance
-        gene_variances = rng.uniform(0, 3, n_genes)
-
-        matched = _sample_expression_matched_set(
-            [0, 1, 2], np.arange(3, n_genes),
-            gene_means, gene_variances, rng)
-
-        assert len(matched) == 3

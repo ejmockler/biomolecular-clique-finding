@@ -1,6 +1,6 @@
 """Tests for RNG isolation across modules.
 
-Verifies that regulatory_coherence, stability, marker_discovery, and layouts
+Verifies that stability, marker_discovery, and layouts
 use local RNG instances instead of polluting np.random global state.
 """
 
@@ -30,108 +30,7 @@ def _make_biomatrix(n_genes=20, n_samples=30, seed=42):
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: regulatory_coherence.py — CoherenceAnalyzer
-# ---------------------------------------------------------------------------
-
-class TestCoherenceAnalyzerRNG:
-    """Verify CoherenceAnalyzer uses instance RNG, not global."""
-
-    def _make_analyzer(self, seed=None):
-        from cliquefinder.knowledge.regulatory_coherence import (
-            CoherenceAnalyzer,
-            CoherenceConfig,
-        )
-
-        matrix = _make_biomatrix(n_genes=10, n_samples=30)
-        config = CoherenceConfig()
-        config.min_samples_per_condition = 1
-        analyzer = CoherenceAnalyzer(matrix, config=config, seed=seed)
-        # Inject sample group so 'all' condition is available
-        return analyzer
-
-    def test_coherence_analyzer_seed_reproducibility(self):
-        """Two analyzers with the same seed produce identical bootstrap results."""
-        from cliquefinder.knowledge.regulatory_coherence import CoherenceAnalyzer, CoherenceConfig
-
-        matrix = _make_biomatrix(n_genes=10, n_samples=30)
-        config = CoherenceConfig()
-        config.min_samples_per_condition = 1
-        config.n_bootstrap = 5
-
-        a1 = CoherenceAnalyzer(matrix, config=config, seed=123)
-        a2 = CoherenceAnalyzer(matrix, config=config, seed=123)
-
-        genes = set(matrix.feature_ids[:6])
-
-        result1 = a1.bootstrap_stability(genes, "all", n_bootstrap=5)
-        result2 = a2.bootstrap_stability(genes, "all", n_bootstrap=5)
-
-        assert result1 == result2
-
-    def test_coherence_analyzer_no_global_rng_pollution(self):
-        """Running bootstrap_stability does not change np.random global state."""
-        from cliquefinder.knowledge.regulatory_coherence import CoherenceAnalyzer, CoherenceConfig
-
-        matrix = _make_biomatrix(n_genes=10, n_samples=30)
-        config = CoherenceConfig()
-        config.min_samples_per_condition = 1
-        config.n_bootstrap = 3
-
-        analyzer = CoherenceAnalyzer(matrix, config=config, seed=42)
-        genes = set(matrix.feature_ids[:5])
-
-        state_before = np.random.get_state()
-        analyzer.bootstrap_stability(genes, "all", n_bootstrap=3)
-        state_after = np.random.get_state()
-
-        # Global state arrays should be identical
-        np.testing.assert_array_equal(state_before[1], state_after[1])
-        assert state_before[2] == state_after[2]
-
-    def test_coherence_permutation_null_rng(self):
-        """permutation_null uses instance RNG, not global."""
-        from cliquefinder.knowledge.regulatory_coherence import CoherenceAnalyzer, CoherenceConfig
-
-        matrix = _make_biomatrix(n_genes=10, n_samples=30)
-        config = CoherenceConfig()
-        config.min_samples_per_condition = 1
-        config.n_permutations = 3
-
-        analyzer = CoherenceAnalyzer(matrix, config=config, seed=42)
-        genes = set(matrix.feature_ids[:5])
-
-        state_before = np.random.get_state()
-        analyzer.permutation_null(genes, "all", observed_modularity=0.5, n_permutations=3)
-        state_after = np.random.get_state()
-
-        np.testing.assert_array_equal(state_before[1], state_after[1])
-        assert state_before[2] == state_after[2]
-
-    def test_coherence_analyzer_different_seeds_differ(self):
-        """Different seeds produce different RNG streams."""
-        from cliquefinder.knowledge.regulatory_coherence import CoherenceAnalyzer, CoherenceConfig
-
-        matrix = _make_biomatrix(n_genes=10, n_samples=30)
-        config = CoherenceConfig()
-        config.min_samples_per_condition = 1
-
-        a1 = CoherenceAnalyzer(matrix, config=config, seed=1)
-        a2 = CoherenceAnalyzer(matrix, config=config, seed=999)
-
-        # Verify the underlying RNG streams produce different sequences
-        arr = np.arange(100)
-        s1 = a1._rng.choice(arr, size=50, replace=True)
-        s2 = a2._rng.choice(arr, size=50, replace=True)
-        assert not np.array_equal(s1, s2)
-
-    def test_rng_attribute_is_default_rng(self):
-        """Analyzer stores a numpy default_rng instance."""
-        analyzer = self._make_analyzer(seed=42)
-        assert isinstance(analyzer._rng, np.random.Generator)
-
-
-# ---------------------------------------------------------------------------
-# Fix 2: stability.py — bootstrap_clique_stability
+# Fix 1: stability.py — bootstrap_clique_stability
 # ---------------------------------------------------------------------------
 
 class TestStabilityRNG:

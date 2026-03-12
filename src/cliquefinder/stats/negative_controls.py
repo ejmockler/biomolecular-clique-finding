@@ -1,9 +1,9 @@
 """
 Negative control gene sets for false positive rate calibration.
 
-Runs ROAST on random gene sets of the same size as the target set
-to estimate the false positive rate (FPR) and calibrate the significance
-of the target gene set result.
+Runs ROAST on uniformly sampled random gene sets of the same size as
+the target set to estimate the false positive rate (FPR) and calibrate
+the significance of the target gene set result.
 
 The key insight is that we reuse the already-fitted ROAST engine (QR
 decomposition computed once). Only the gene set membership changes per
@@ -25,7 +25,7 @@ Warning convention:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -89,12 +89,6 @@ class NegativeControlResult:
     # DF-XII-R6: Camera VIF inter-gene correlation used for target z-score
     target_inter_gene_correlation: float | None = None
 
-    # Expression-matched control metrics (M-4)
-    matched_control_pvalues: NDArray[np.float64] | None = None
-    matched_fpr: float | None = None
-    matched_target_percentile: float | None = None
-    matched_competitive_z_percentile: float | None = None
-
     def to_dict(self) -> dict:
         """Serialize to JSON-compatible dict."""
         d = {
@@ -136,94 +130,7 @@ class NegativeControlResult:
                 },
             }
 
-        if self.matched_control_pvalues is not None and len(self.matched_control_pvalues) > 0:
-            d["matched_controls"] = {
-                "matched_fpr": self.matched_fpr,
-                "matched_target_percentile": self.matched_target_percentile,
-                "matched_competitive_z_percentile": self.matched_competitive_z_percentile,
-                "matched_pvalue_quantiles": {
-                    "q05": float(np.percentile(self.matched_control_pvalues, 5)),
-                    "q25": float(np.percentile(self.matched_control_pvalues, 25)),
-                    "q50": float(np.percentile(self.matched_control_pvalues, 50)),
-                    "q75": float(np.percentile(self.matched_control_pvalues, 75)),
-                    "q95": float(np.percentile(self.matched_control_pvalues, 95)),
-                },
-            }
-
         return d
-
-
-def _sample_expression_matched_set(
-    target_indices: list[int],
-    non_target_indices: NDArray[np.intp],
-    gene_means: NDArray[np.float64],
-    gene_variances: NDArray[np.float64],
-    rng: np.random.Generator,
-) -> list[int]:
-    """
-    Sample a control gene set matched on mean expression and variance.
-
-    Uses bipartite matching (Hungarian algorithm) to find the set of
-    non-target genes that minimizes total distance to target genes in
-    (mean, variance) space.
-
-    Small random noise is added to the cost matrix for diversity across
-    repeated calls.
-
-    Args:
-        target_indices: Row indices of target genes in the data matrix.
-        non_target_indices: Row indices of non-target genes.
-        gene_means: Mean expression per gene (n_features,).
-        gene_variances: Variance per gene (n_features,).
-        rng: NumPy random generator.
-
-    Returns:
-        List of matched non-target indices (same length as target_indices).
-    """
-    from scipy.optimize import linear_sum_assignment
-
-    n_targets = len(target_indices)
-    n_pool = len(non_target_indices)
-
-    if n_pool < n_targets:
-        # Not enough non-targets; fall back to random sample
-        return rng.choice(non_target_indices, size=n_targets, replace=False).tolist()
-
-    # XIV-3: Standardize both dimensions before combining into cost matrix.
-    # Without standardization, mean expression (log2, range ~0-30) dominates
-    # variance (range ~0-5), reducing variance-matching quality.
-    target_means = gene_means[target_indices]
-    target_vars = gene_variances[target_indices]
-    pool_means = gene_means[non_target_indices]
-    pool_vars = gene_variances[non_target_indices]
-
-    all_means = np.concatenate([target_means, pool_means])
-    all_vars = np.concatenate([target_vars, pool_vars])
-    _finite_means = all_means[np.isfinite(all_means)]
-    _finite_vars = all_vars[np.isfinite(all_vars)]
-    mean_scale = float(np.std(_finite_means)) if len(_finite_means) > 1 else 1.0
-    var_scale = float(np.std(_finite_vars)) if len(_finite_vars) > 1 else 1.0
-    # XV-1: Guard zero-std (all identical values) — NaN can't reach here
-    # because the len>1 check catches empty arrays, and std of identical
-    # finite values is 0.0, not NaN.
-    if mean_scale == 0.0:
-        mean_scale = 1.0
-    if var_scale == 0.0:
-        var_scale = 1.0
-
-    # Shape: (n_targets, n_pool) — equal weight after standardization
-    cost = (
-        np.abs(target_means[:, None] - pool_means[None, :]) / mean_scale
-        + np.abs(target_vars[:, None] - pool_vars[None, :]) / var_scale
-    )
-
-    # Add small noise for diversity across repeated calls
-    cost *= 1.0 + rng.uniform(-0.1, 0.1, size=cost.shape)
-
-    # Hungarian algorithm: O(n^2 * m)
-    row_idx, col_idx = linear_sum_assignment(cost)
-
-    return [int(non_target_indices[c]) for c in col_idx]
 
 
 def run_negative_control_sets(
@@ -234,8 +141,6 @@ def run_negative_control_sets(
     alpha: float = 0.05,
     seed: int | None = None,
     protein_results: pd.DataFrame | None = None,
-    data: NDArray[np.float64] | None = None,
-    matching: str = "uniform",
     verbose: bool = True,
 ) -> NegativeControlResult:
     """
@@ -258,14 +163,6 @@ def run_negative_control_sets(
             columns 't_statistic' and 'is_target'. When provided, computes
             competitive z-scores alongside ROAST p-values for cross-phase
             consistency with Phases 1/3/4.
-        data: Expression matrix (n_features, n_samples). When provided with
-            matching="expression_matched" or "both", samples control gene
-            sets matched on mean expression and variance using bipartite
-            matching (Hungarian algorithm).
-        matching: Sampling strategy for control gene sets. Options:
-            - "uniform" (default): Random uniform sampling.
-            - "expression_matched": Matched on mean/variance.
-            - "both": Run both uniform and expression-matched.
         verbose: Print progress.
 
     Returns:
@@ -465,95 +362,6 @@ def run_negative_control_sets(
             print(f"  Competitive z FPR (z >= target): {comp_z_fpr:.3f}")
             print(f"  Competitive z percentile: {comp_z_percentile:.1f}%")
 
-    # --- Expression-matched controls (M-4) ---
-    matched_pvalues = None
-    matched_fpr_val = None
-    matched_percentile = None
-    matched_comp_z_percentile = None
-
-    if matching in ("expression_matched", "both") and data is not None:
-        if verbose:
-            print(f"  Running expression-matched controls ({n_control_sets} sets)...")
-
-        # H-1 (Audit XI): Use engine.data (filtered) for gene_means/variances so
-        # the indices from engine.gene_to_idx align with the correct rows.
-        # The caller-supplied `data` may be the original unfiltered matrix whose
-        # row indices do not match the engine's filtered gene_to_idx.
-        engine_data = getattr(engine, "data", data)
-        gene_means = np.nanmean(engine_data, axis=1)
-        gene_variances = np.nanvar(engine_data, axis=1, ddof=1)
-        # NC-XI-2: Guard NaN variances (single-observation genes have ddof=1 → NaN).
-        # Replace NaN with 0 so the cost matrix remains finite.
-        gene_variances = np.where(np.isfinite(gene_variances), gene_variances, 0.0)
-
-        target_idx_set = set()
-        for g in target_in_data:
-            if g in engine.gene_to_idx:
-                target_idx_set.add(engine.gene_to_idx[g])
-        target_indices = sorted(target_idx_set)
-        non_target_indices = np.array(
-            [i for i in range(n_total) if i not in target_idx_set],
-            dtype=np.intp,
-        )
-
-        matched_pvalues_arr = np.full(n_control_sets, np.nan)
-
-        # First pass: generate and cache matched gene sets, compute p-values
-        matched_gene_sets: list[list[str]] = []
-        for i in range(n_control_sets):
-            if verbose and (i + 1) % 50 == 0:
-                print(f"  Matched control set {i + 1}/{n_control_sets}...")
-
-            matched_indices = _sample_expression_matched_set(
-                target_indices, non_target_indices,
-                gene_means, gene_variances, rng,
-            )
-            matched_genes = [all_gene_ids[idx] for idx in matched_indices]
-            matched_gene_sets.append(matched_genes)
-
-            try:
-                matched_result = engine.test_gene_set(
-                    gene_set=matched_genes,
-                    gene_set_id=f"matched_control_{i}",
-                )
-                matched_pvalues_arr[i] = float(
-                    matched_result.p_values.get("msq", {}).get("mixed", 1.0)
-                )
-            except Exception:
-                matched_pvalues_arr[i] = np.nan
-
-        valid_matched = matched_pvalues_arr[~np.isnan(matched_pvalues_arr)]
-        n_valid_matched = len(valid_matched)
-
-        if n_valid_matched > 0:
-            matched_pvalues = valid_matched
-            matched_fpr_val = float(np.sum(valid_matched < alpha)) / n_valid_matched
-            matched_percentile = (
-                float(np.sum(valid_matched <= target_pvalue)) / n_valid_matched * 100
-            )
-
-            # Second pass: reuse SAME matched gene sets for competitive z-scores
-            if protein_results is not None and target_comp_z is not None:
-                matched_comp_z = np.full(n_control_sets, np.nan)
-                for i, matched_genes in enumerate(matched_gene_sets):
-                    ctrl_mask = np.zeros(n_features, dtype=bool)
-                    for g in matched_genes:
-                        if g in feature_to_idx:
-                            ctrl_mask[feature_to_idx[g]] = True
-                    if np.sum(ctrl_mask) > 0:
-                        matched_comp_z[i] = compute_competitive_z(all_t, ctrl_mask)
-
-                valid_matched_z = matched_comp_z[~np.isnan(matched_comp_z)]
-                if len(valid_matched_z) > 0:
-                    matched_comp_z_percentile = (
-                        float(np.sum(valid_matched_z >= target_comp_z))
-                        / len(valid_matched_z) * 100
-                    )
-
-            if verbose:
-                print(f"  Matched FPR (p < {alpha}): {matched_fpr_val:.3f}")
-                print(f"  Matched target percentile: {matched_percentile:.1f}%")
-
     return NegativeControlResult(
         target_pvalue=target_pvalue,
         target_set_id=target_set_id,
@@ -572,8 +380,4 @@ def run_negative_control_sets(
         competitive_z_fpr=comp_z_fpr,
         competitive_z_percentile=comp_z_percentile,
         target_inter_gene_correlation=target_rho if target_comp_z is not None else None,
-        matched_control_pvalues=matched_pvalues,
-        matched_fpr=matched_fpr_val,
-        matched_target_percentile=matched_percentile,
-        matched_competitive_z_percentile=matched_comp_z_percentile,
     )
