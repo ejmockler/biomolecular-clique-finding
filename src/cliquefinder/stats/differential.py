@@ -1663,19 +1663,30 @@ def run_network_enrichment_test(
     n_extreme = np.sum(null_means >= observed_mean_abs_t)
     empirical_pvalue = float((n_extreme + 1) / (n_permutations + 1))
 
+    # Background t-statistics (needed for direction test and Mann-Whitney)
+    background_t_stats = all_t_stats[~is_target]
+
     # Directional bias: what fraction of targets are down-regulated?
     n_negative = int(np.sum(target_t_stats < 0))
     pct_down = 100.0 * n_negative / n_targets
 
-    # Binomial test for directional bias (two-sided test vs 50%)
-    # Tests whether the fraction of negative t-stats differs from 50%
+    # Compute background downregulation rate for proper null
+    n_background_down = int(np.sum(background_t_stats < 0))
+    background_down_rate = n_background_down / n_background if n_background > 0 else 0.5
+
+    # Binomial test for directional bias vs BACKGROUND RATE (not 50%)
+    # Tests whether the target set's directional bias exceeds the
+    # genome-wide background rate.  A test against p=0.5 is uninformative
+    # when the entire proteome is biased (e.g. 86% down in disease).
     # STAT-CORE-5: Use binomtest (binom_test was removed in SciPy 1.12)
     direction_pvalue = float(
-        scipy_stats.binomtest(n_negative, n_targets, p=0.5, alternative='two-sided').pvalue
+        scipy_stats.binomtest(
+            n_negative, n_targets, p=background_down_rate,
+            alternative='two-sided',
+        ).pvalue
     )
 
     # Mann-Whitney U test: compare |t| distributions between targets and background
-    background_t_stats = all_t_stats[~is_target]
     mannwhitney_stat, mannwhitney_pvalue = scipy_stats.mannwhitneyu(
         np.abs(target_t_stats),
         np.abs(background_t_stats),
