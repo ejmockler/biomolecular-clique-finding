@@ -46,6 +46,7 @@ def _make_args(tmp_path: Path) -> argparse.Namespace:
         specificity_z_threshold=1.5,
         neg_ctrl_percentile=10.0,
         interaction_n_perms=10,
+        target_set_file=None,
     )
 
 

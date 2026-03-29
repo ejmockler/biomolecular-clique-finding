@@ -147,6 +147,8 @@ def run_graph_permutation_null(
     alpha: float = 0.05,
     seed: int | None = None,
     verbose: bool = True,
+    size_match_tolerance: float = 0.0,
+    target_weights: list[float] | None = None,
 ) -> GraphPermutationResult:
     """
     Run node-label permutation test on the INDRA knowledge graph.
@@ -168,6 +170,11 @@ def run_graph_permutation_null(
         alpha: Significance threshold for FPR calculation (default: 0.05).
         seed: Random seed for reproducibility.
         verbose: Print progress updates.
+        size_match_tolerance: If > 0, restrict null sampling to regulators
+            whose resolvable target count is within this fraction of the
+            target set size (e.g. 0.5 means ±50%).  Falls back to all
+            eligible regulators if fewer than 10 are size-matched.
+            Default 0.0 = no size matching (all eligible regulators).
 
     Returns:
         GraphPermutationResult with null distribution and calibration stats.
@@ -217,6 +224,44 @@ def run_graph_permutation_null(
     n_eligible = len(eligible_regulators)
     n_excluded = n_total_regulators - n_eligible
 
+    # Find target genes in the measured universe (needed for size matching)
+    target_in_data = [g for g in target_gene_ids if g in engine.gene_to_idx]
+    target_size = len(target_in_data)
+
+    if target_size == 0:
+        raise ValueError("No target genes found in the measured gene universe.")
+
+    # Size-matched filtering: restrict to regulators with similar target counts
+    import math
+    n_size_matched = 0
+    _size_match_active = False
+    if size_match_tolerance > 0:
+        # Clamp tolerance to (0, 1] to avoid degenerate bounds
+        _tol = min(size_match_tolerance, 1.0)
+        lo = max(math.floor(target_size * (1 - _tol)), 2)
+        hi = math.ceil(target_size * (1 + _tol))
+        matched = [
+            r for r in eligible_regulators
+            if lo <= len(regulator_resolvable_targets[r]) <= hi
+        ]
+        n_size_matched = len(matched)
+        n_before = n_eligible
+        if n_size_matched >= 10:
+            eligible_regulators = matched
+            n_eligible = n_size_matched
+            n_excluded = n_total_regulators - n_eligible
+            _size_match_active = True
+            if verbose:
+                print(
+                    f"  Size-matched to [{lo}, {hi}]: "
+                    f"{n_size_matched} regulators (from {n_before})"
+                )
+        elif verbose:
+            print(
+                f"  Size-match [{lo}, {hi}]: only {n_size_matched} regulators "
+                f"(< 10 minimum) — using all {n_eligible} eligible"
+            )
+
     if n_eligible == 0:
         raise RuntimeError(
             f"No eligible regulators: all {n_total_regulators} regulators "
@@ -226,17 +271,15 @@ def run_graph_permutation_null(
             f"n_regulators={n_total_regulators})"
         )
 
-    # Find target genes in the measured universe
-    target_in_data = [g for g in target_gene_ids if g in engine.gene_to_idx]
-    target_size = len(target_in_data)
-
-    if target_size == 0:
-        raise ValueError("No target genes found in the measured gene universe.")
-
-    # Run ROAST on actual target set
+    # Run ROAST on actual target set (with evidence weights if provided)
+    _tw = None
+    if target_weights is not None:
+        _tw_map = dict(zip(target_gene_ids, target_weights))
+        _tw = np.array([_tw_map.get(g, 1.0) for g in target_in_data])
     target_result = engine.test_gene_set(
         gene_set=target_in_data,
         gene_set_id=target_set_id,
+        weights=_tw,
     )
     target_pvalue = float(target_result.p_values.get("msq", {}).get("mixed", 1.0))
 
@@ -280,13 +323,16 @@ def run_graph_permutation_null(
         # Map targets through the permutation
         fake_target_symbols = [forward_map[t] for t in reg_targets]
 
-        # Resolve to feature IDs -- guaranteed to succeed by construction
-        fake_feature_ids = [
-            symbol_to_feature[sym]
-            for sym in fake_target_symbols
-            if sym in symbol_to_feature
-            and symbol_to_feature[sym] in engine.gene_to_idx
-        ]
+        # Resolve to feature IDs — guaranteed by XVI-2 (all permuted
+        # symbols are in the resolvable set).  Assert rather than guard
+        # so invariant violations surface as errors, not silent shrinkage.
+        fake_feature_ids = []
+        for sym in fake_target_symbols:
+            if sym not in symbol_to_feature or symbol_to_feature[sym] not in engine.gene_to_idx:
+                # Invariant violation — should never happen by XVI-2 construction
+                logger.warning("XVI-2 invariant broken: %s not resolvable", sym)
+                continue
+            fake_feature_ids.append(symbol_to_feature[sym])
 
         set_sizes.append(len(fake_feature_ids))
 

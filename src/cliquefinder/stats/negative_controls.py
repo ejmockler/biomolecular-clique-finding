@@ -142,6 +142,7 @@ def run_negative_control_sets(
     seed: int | None = None,
     protein_results: pd.DataFrame | None = None,
     verbose: bool = True,
+    target_weights: list[float] | None = None,
 ) -> NegativeControlResult:
     """
     Run ROAST on random gene sets to calibrate false positive rate.
@@ -195,10 +196,16 @@ def run_negative_control_sets(
 
     rng = np.random.default_rng(seed)
 
-    # Run ROAST on actual target set
+    # Run ROAST on actual target set (with evidence weights if provided)
+    # Filter weights to match the target_in_data subset
+    _tw = None
+    if target_weights is not None:
+        _tw_map = dict(zip(target_gene_ids, target_weights))
+        _tw = np.array([_tw_map.get(g, 1.0) for g in target_in_data])
     target_result = engine.test_gene_set(
         gene_set=target_in_data,
         gene_set_id=target_set_id,
+        weights=_tw,
     )
     # test_gene_set returns a RotationResult dataclass; extract p-value
     target_pvalue = float(target_result.p_values.get("msq", {}).get("mixed", 1.0))

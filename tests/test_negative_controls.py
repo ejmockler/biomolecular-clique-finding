@@ -28,7 +28,7 @@ class MockRotationEngine:
         self._fitted = True
         self._pvalue_func = pvalue_func or (lambda _: 0.5)
 
-    def test_gene_set(self, gene_set, gene_set_id):
+    def test_gene_set(self, gene_set, gene_set_id, weights=None):
         """Return mock RotationResult (matches real API)."""
         pval = self._pvalue_func(gene_set)
         return MockRotationResult(gene_set_id, len(gene_set), pval)

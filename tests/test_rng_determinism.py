@@ -410,11 +410,11 @@ class TestPhase2SeedSequence:
 
         assert _seed_phase2 is None
 
-    def test_validate_baselines_source_has_spawn7(self):
-        """validate_baselines.py must use spawn(7) to include Phase 2 + graph perm."""
+    def test_validate_baselines_source_has_spawn8(self):
+        """validate_baselines.py must use spawn(8) to include Phase 2 + graph perm + proximity."""
         source = _VALIDATE_BASELINES.read_text()
-        assert ".spawn(7)" in source, \
-            "SeedSequence.spawn(7) not found in validate_baselines.py"
+        assert ".spawn(8)" in source, \
+            "SeedSequence.spawn(8) not found in validate_baselines.py"
 
     def test_validate_baselines_source_has_phase2_seed(self):
         """validate_baselines.py must define _seed_phase2."""

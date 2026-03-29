@@ -273,6 +273,35 @@ class ValidationReport:
                 f"percentile={percentile:.1f}% ({'pass' if passed else 'fail'})"
             )
 
+        # Phase 5c: Signed concordance (prefer permutation p-value)
+        concordance = self.phases.get("signed_concordance")
+        if concordance and concordance.get("status") != "failed":
+            conc_p = concordance.get("permutation_pvalue",
+                                     concordance.get("binomial_pvalue", 1.0))
+            conc_rate = concordance.get("concordance_rate", 0.0)
+            best_model = concordance.get("best_model", "neither")
+            passed = conc_p < alpha
+            supplementary_pass += int(passed)
+            supplementary_total += 1
+            details["signed_concordance"] = (
+                f"rate={conc_rate:.1%}, perm_p={conc_p:.4f}, "
+                f"model={best_model} ({'pass' if passed else 'fail'})"
+            )
+
+        # Phase 5d: Subgroup enrichment (directional ROAST)
+        subgroup = self.phases.get("subgroup_enrichment")
+        if subgroup and subgroup.get("status") not in ("failed", "skipped"):
+            act = subgroup.get("activation", {})
+            if act:
+                act_p = act.get("bonferroni_p", 1.0)
+                passed = act_p < alpha
+                supplementary_pass += int(passed)
+                supplementary_total += 1
+                details["subgroup_activation"] = (
+                    f"MEAN-down p={act.get('p_mean_down', 1.0):.4f}, "
+                    f"Bonf p={act_p:.4f} ({'pass' if passed else 'fail'})"
+                )
+
         # --- Compute verdict ---
         # ARCH-17: Distinguish skipped supplementary phases from failed ones.
         # Phases that didn't run (e.g., Phase 2 for single-contrast datasets)

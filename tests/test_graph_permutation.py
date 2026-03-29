@@ -355,7 +355,7 @@ class TestGraphPermutation:
         observed_sizes = []
         original_test = engine.test_gene_set
 
-        def recording_test_gene_set(gene_set, gene_set_id):
+        def recording_test_gene_set(gene_set, gene_set_id, weights=None):
             # Skip the real target set call (first call)
             observed_sizes.append(len(gene_set))
             return original_test(gene_set=gene_set, gene_set_id=gene_set_id)
@@ -440,7 +440,7 @@ class TestGraphPermutation:
         observed_sets = []
         original_test = engine.test_gene_set
 
-        def recording_test(gene_set, gene_set_id):
+        def recording_test(gene_set, gene_set_id, weights=None):
             observed_sets.append(set(gene_set))
             return original_test(gene_set=gene_set, gene_set_id=gene_set_id)
 
@@ -498,7 +498,7 @@ class TestGraphPermutation:
         observed_sizes = []
         original_test = engine.test_gene_set
 
-        def recording_test(gene_set, gene_set_id):
+        def recording_test(gene_set, gene_set_id, weights=None):
             observed_sizes.append(len(gene_set))
             return original_test(gene_set=gene_set, gene_set_id=gene_set_id)
 
