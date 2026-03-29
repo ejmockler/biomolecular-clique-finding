@@ -88,7 +88,11 @@ class INDRAKnowledgeSource(KnowledgeSource):
                 evidence_count=indra_edge.evidence_count,
                 confidence=1.0,
                 sources=list(indra_edge.source_counts_dict.keys()),
-                metadata={'stmt_hash': indra_edge.stmt_hash}
+                metadata={
+                    'stmt_hash': indra_edge.stmt_hash,
+                    'regulation_type': indra_edge.regulation_type,
+                    'source_counts': dict(indra_edge.source_counts_dict),
+                },
             ))
 
         return edges

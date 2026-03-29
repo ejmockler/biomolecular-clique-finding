@@ -37,8 +37,10 @@ def query_network_targets(
     gene_symbol: str,
     feature_ids: list[str],
     min_evidence: int = 1,
+    min_sources: int | None = None,
     env_file: Path = None,
     verbose: bool = True,
+    output_dir: Path | None = None,
 ) -> dict[str, str]:
     """
     Query INDRA CoGEx for regulatory targets and map to UniProt IDs in data.
@@ -49,6 +51,9 @@ def query_network_targets(
         min_evidence: Minimum INDRA evidence count (default: 1)
         env_file: Path to .env file with INDRA credentials
         verbose: Print progress information
+        output_dir: If provided, serialize the TargetSet to
+            ``output_dir/indra_targets.json`` so the validation pipeline
+            can consume the exact same gene set.
 
     Returns:
         Dict mapping {gene_symbol: uniprot_id} for targets found in data
@@ -99,10 +104,26 @@ def query_network_targets(
         indra_source.close()
         return {}
 
-    # Extract target gene symbols
-    target_symbols = {edge.target for edge in edges}
+    # Extract target gene symbols — filter to valid HGNC genes only
+    # (matches 2-hop path which uses hgnc_client.get_current_hgnc_id)
+    from indra.databases import hgnc_client  # guaranteed available (already used above)
+
+    raw_symbols = {edge.target for edge in edges}
+    target_symbols = set()
+    n_filtered = 0
+    for sym in raw_symbols:
+        if hgnc_client.get_current_hgnc_id(sym):
+            target_symbols.add(sym)
+        else:
+            n_filtered += 1
+    if verbose and n_filtered:
+        print(f"  Filtered {n_filtered} non-HGNC targets "
+              f"(family aliases, complexes, etc.)")
+
+    target_symbols.discard(gene_symbol)
+
     if verbose:
-        print(f"  Found {len(target_symbols)} INDRA targets for {gene_symbol}")
+        print(f"  Found {len(target_symbols)} INDRA gene targets for {gene_symbol}")
         print(f"  Evidence counts: min={min([e.evidence_count for e in edges])}, "
               f"max={max([e.evidence_count for e in edges])}, "
               f"median={np.median([e.evidence_count for e in edges]):.1f}")
@@ -112,20 +133,329 @@ def query_network_targets(
         print(f"\nMapping {len(feature_ids)} feature IDs to gene symbols...")
     symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=verbose)
 
+    # Collect per-target edge metadata
+    from collections import defaultdict
+    _edge_meta: dict[str, list[dict]] = defaultdict(list)
+    for edge in edges:
+        sym = edge.target
+        if sym not in target_symbols:
+            continue
+        meta = edge.metadata or {}
+        _edge_meta[sym].append({
+            "regulation_type": meta.get("regulation_type", "unknown"),
+            "sources": list(edge.sources),
+            "evidence_count": edge.evidence_count,
+        })
+    edge_metadata_all = dict(_edge_meta)
+
     # Find targets present in the data
     targets_in_data = {}
     for target_symbol in target_symbols:
         if target_symbol in symbol_to_feature:
             targets_in_data[target_symbol] = symbol_to_feature[target_symbol]
 
+    # Apply min_sources filtering if requested
+    if min_sources is not None and min_sources > 0:
+        n_before = len(targets_in_data)
+        targets_in_data = {
+            sym: fid for sym, fid in targets_in_data.items()
+            if any(
+                len(e.get("sources", [])) >= min_sources
+                for e in edge_metadata_all.get(sym, [])
+            )
+        }
+        n_dropped = n_before - len(targets_in_data)
+        if verbose and n_dropped:
+            print(f"  min_sources={min_sources}: dropped {n_dropped}, "
+                  f"kept {len(targets_in_data)}")
+        if len(targets_in_data) < 5 and verbose:
+            print(f"  WARNING: Only {len(targets_in_data)} targets survive "
+                  f"min_sources={min_sources} filter")
+
     if verbose:
         print(f"\nNetwork query results:")
         print(f"  {gene_symbol} -> {len(target_symbols)} INDRA targets")
-        print(f"  {len(targets_in_data)} targets found in dataset ({len(targets_in_data)/len(target_symbols)*100:.1f}%)")
+        pct = (len(targets_in_data)/len(target_symbols)*100) if target_symbols else 0.0
+        print(f"  {len(targets_in_data)} targets found in dataset ({pct:.1f}%)")
         if targets_in_data:
             print(f"  Example targets: {', '.join(list(targets_in_data.keys())[:5])}")
 
     indra_source.close()
+
+    # Trim edge_metadata to only targets in the final set
+    edge_metadata = {
+        sym: edge_metadata_all[sym]
+        for sym in targets_in_data if sym in edge_metadata_all
+    }
+
+    if output_dir is not None:
+        from cliquefinder.stats.target_set import TargetSet
+        ts = TargetSet.from_query(
+            targets_in_data=targets_in_data,
+            gene_symbol=gene_symbol,
+            min_evidence=min_evidence,
+            n_hops=1,
+            n_indra_edges_raw=len(edges),
+            edge_metadata=edge_metadata,
+            min_sources=min_sources,
+        )
+        out_path = ts.save(Path(output_dir) / "indra_targets.json")
+        if verbose:
+            print(f"  Saved target set to {out_path}")
+
+    return targets_in_data
+
+
+def query_network_targets_multihop(
+    gene_symbol: str,
+    feature_ids: list[str],
+    n_hops: int = 1,
+    min_evidence: int = 1,
+    min_sources: int | None = None,
+    min_intermediaries: int = 1,
+    env_file: Path = None,
+    verbose: bool = True,
+    output_dir: Path | None = None,
+) -> dict[str, str]:
+    """
+    Query INDRA CoGEx for regulatory targets up to n_hops away.
+
+    Hop 1 returns the direct regulatory targets of ``gene_symbol`` (same as
+    ``query_network_targets``).  Hop 2 expands each hop-1 gene target,
+    collecting their downstream targets.  Only gene entities (valid HGNC
+    symbols) are traversed — diseases, processes, and other non-gene nodes
+    are filtered at each hop.
+
+    For n_hops >= 2, ``min_intermediaries`` controls inclusion: a hop-2
+    target must be reachable through at least this many independent hop-1
+    intermediaries.  This prevents dilution from weakly connected genes.
+
+    Args:
+        gene_symbol: Seed gene symbol (e.g., "C9orf72").
+        feature_ids: Feature IDs in the proteomics data.
+        n_hops: Path length from seed gene (1 or 2).
+        min_evidence: Minimum INDRA evidence count per edge.
+        min_intermediaries: For hop-2 targets, minimum number of hop-1
+            intermediaries required (default: 1).  Higher values select
+            genes with stronger convergent evidence.
+        env_file: Path to .env file with INDRA credentials.
+        verbose: Print progress.
+
+    Returns:
+        Dict mapping {gene_symbol: feature_id} for targets found in data.
+        When n_hops=1, identical to ``query_network_targets``.
+    """
+    if n_hops < 1 or n_hops > 2:
+        raise ValueError(f"n_hops must be 1 or 2, got {n_hops}")
+
+    # For 1-hop, delegate to the existing function.
+    if n_hops == 1:
+        return query_network_targets(
+            gene_symbol, feature_ids,
+            min_evidence=min_evidence, min_sources=min_sources,
+            env_file=env_file, verbose=verbose, output_dir=output_dir,
+        )
+
+    from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
+
+    if verbose:
+        print(f"\nQuerying INDRA CoGEx for {gene_symbol} "
+              f"{n_hops}-hop network (min_evidence={min_evidence}, "
+              f"min_intermediaries={min_intermediaries})...")
+
+    try:
+        from cliquefinder.knowledge.indra_source import INDRAKnowledgeSource
+        from indra.databases import hgnc_client
+    except ImportError as e:
+        raise ImportError(
+            "INDRA packages required for network queries."
+        ) from e
+
+    try:
+        if env_file and env_file.exists():
+            indra_source = INDRAKnowledgeSource(env_file=str(env_file))
+        else:
+            indra_source = INDRAKnowledgeSource()
+    except ValueError as e:
+        raise ValueError(
+            f"INDRA credentials not available: {e}"
+        ) from e
+
+    # ── Hop 1 ───────────────────────────────────────────────────────
+    hop1_edges = indra_source.get_edges(
+        source_entity=gene_symbol,
+        min_evidence=min_evidence,
+    )
+    # Filter to HGNC gene entities + collect edge metadata
+    hop1_genes: set[str] = set()
+    from collections import defaultdict
+    _edge_meta: dict[str, list[dict]] = defaultdict(list)
+    for e in hop1_edges:
+        if not hgnc_client.get_current_hgnc_id(e.target):
+            continue
+        hop1_genes.add(e.target)
+        meta = e.metadata or {}
+        _edge_meta[e.target].append({
+            "regulation_type": meta.get("regulation_type", "unknown"),
+            "sources": list(e.sources),
+            "evidence_count": e.evidence_count,
+        })
+    hop1_genes.discard(gene_symbol)
+
+    if verbose:
+        print(f"  Hop 1: {gene_symbol} → {len(hop1_genes)} gene targets "
+              f"(filtered from {len({e.target for e in hop1_edges})} raw)")
+
+    # ── Hop 2 ───────────────────────────────────────────────────────
+    # For each hop-1 gene, query its downstream targets.
+    # Track which hop-1 intermediaries reach each hop-2 target.
+
+    # Build seed→intermediary regulation lookup for direction chaining.
+    # If seed has both activation AND repression to the same intermediary,
+    # mark as "unknown" (ambiguous — mirrors get_unambiguous_targets logic).
+    _seed_to_h1_regs: dict[str, set[str]] = defaultdict(set)
+    for e in hop1_edges:
+        sym = e.target
+        if sym in hop1_genes:
+            meta = e.metadata or {}
+            reg = meta.get("regulation_type", "unknown")
+            if reg != "unknown":
+                _seed_to_h1_regs[sym].add(reg)
+    _seed_to_h1_reg: dict[str, str] = {}
+    for sym, regs in _seed_to_h1_regs.items():
+        if regs == {"activation"}:
+            _seed_to_h1_reg[sym] = "activation"
+        elif regs == {"repression"}:
+            _seed_to_h1_reg[sym] = "repression"
+        else:
+            _seed_to_h1_reg[sym] = "unknown"  # mixed or phosphorylation
+
+    hop2_intermediaries: dict[str, set[str]] = {}
+    for h1 in sorted(hop1_genes):
+        edges = indra_source.get_edges(h1, min_evidence=min_evidence)
+        for e in edges:
+            t = e.target
+            if t == h1 or t == gene_symbol:
+                continue
+            if not hgnc_client.get_current_hgnc_id(t):
+                continue
+            # Skip hop-2 metadata for targets already in hop-1 (avoid contamination)
+            if t in hop1_genes:
+                continue
+            if t not in hop2_intermediaries:
+                hop2_intermediaries[t] = set()
+            hop2_intermediaries[t].add(h1)
+            # Compute chained net regulation: seed→h1 + h1→target
+            meta = e.metadata or {}
+            h1_to_target_reg = meta.get("regulation_type", "unknown")
+            seed_to_h1_reg = _seed_to_h1_reg.get(h1, "unknown")
+            # Chain rule (binary only: activation/repression)
+            # act+act=act, rep+rep=act (double negative), act+rep=rep, rep+act=rep
+            # Any non-binary type (phosphorylation, unknown) → unknown
+            _binary = {"activation", "repression"}
+            if seed_to_h1_reg in _binary and h1_to_target_reg in _binary:
+                if seed_to_h1_reg == h1_to_target_reg:
+                    net_reg = "activation"  # same×same = activation
+                else:
+                    net_reg = "repression"  # opposite = repression
+            else:
+                net_reg = "unknown"
+            _edge_meta[t].append({
+                "regulation_type": net_reg,
+                "sources": list(e.sources),
+                "evidence_count": e.evidence_count,
+                "via": h1,
+                "seed_to_intermediary": seed_to_h1_reg,
+                "intermediary_to_target": h1_to_target_reg,
+            })
+
+    # Apply min_intermediaries filter
+    hop2_genes = {
+        t for t, ints in hop2_intermediaries.items()
+        if len(ints) >= min_intermediaries
+    } - hop1_genes  # hop-2 only (hop-1 already included)
+
+    if verbose:
+        n_raw = len(hop2_intermediaries)
+        print(f"  Hop 2: {n_raw} raw gene targets → "
+              f"{len(hop2_genes)} with >= {min_intermediaries} intermediaries")
+
+    indra_source.close()
+
+    # ── Map to proteomics data ──────────────────────────────────────
+    if verbose:
+        print(f"\nMapping {len(feature_ids)} feature IDs to gene symbols...")
+    symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=verbose)
+
+    all_genes = hop1_genes | hop2_genes
+    targets_in_data: dict[str, str] = {}
+    hop_labels: dict[str, int] = {}
+    for sym in all_genes:
+        if sym in symbol_to_feature:
+            targets_in_data[sym] = symbol_to_feature[sym]
+            hop_labels[sym] = 1 if sym in hop1_genes else 2
+
+    if verbose:
+        n_h1 = sum(1 for h in hop_labels.values() if h == 1)
+        n_h2 = sum(1 for h in hop_labels.values() if h == 2)
+        print(f"\nNetwork query results ({n_hops}-hop):")
+        print(f"  {gene_symbol} → {len(all_genes)} gene targets "
+              f"(hop1={len(hop1_genes)}, hop2={len(hop2_genes)})")
+        print(f"  {len(targets_in_data)} in dataset "
+              f"(hop1={n_h1}, hop2={n_h2})")
+        if hop2_genes:
+            top5 = sorted(
+                [(t, len(hop2_intermediaries[t]))
+                 for t in hop2_genes if t in targets_in_data],
+                key=lambda x: -x[1],
+            )[:5]
+            if top5:
+                top_str = ", ".join(f"{t}(via {n})" for t, n in top5)
+                print(f"  Top hop-2: {top_str}")
+
+    # Trim edge_metadata to only targets in the final set
+    edge_metadata = {
+        sym: _edge_meta[sym]
+        for sym in targets_in_data if sym in _edge_meta
+    }
+
+    # Apply min_sources filtering if requested
+    if min_sources is not None and min_sources > 0:
+        n_before = len(targets_in_data)
+        targets_in_data = {
+            sym: fid for sym, fid in targets_in_data.items()
+            if any(
+                len(e.get("sources", [])) >= min_sources
+                for e in edge_metadata.get(sym, [])
+            )
+        }
+        n_dropped = n_before - len(targets_in_data)
+        if verbose and n_dropped:
+            print(f"  min_sources={min_sources}: dropped {n_dropped}, "
+                  f"kept {len(targets_in_data)}")
+        # Re-trim edge_metadata after filtering
+        edge_metadata = {
+            sym: edge_metadata[sym]
+            for sym in targets_in_data if sym in edge_metadata
+        }
+
+    if output_dir is not None:
+        from cliquefinder.stats.target_set import TargetSet
+        n_raw = len(hop1_edges) + len(hop2_intermediaries)
+        ts = TargetSet.from_query(
+            targets_in_data=targets_in_data,
+            gene_symbol=gene_symbol,
+            min_evidence=min_evidence,
+            n_hops=n_hops,
+            min_intermediaries=min_intermediaries,
+            n_indra_edges_raw=n_raw,
+            edge_metadata=edge_metadata,
+            min_sources=min_sources,
+        )
+        out_path = ts.save(Path(output_dir) / "indra_targets.json")
+        if verbose:
+            print(f"  Saved target set to {out_path}")
+
     return targets_in_data
 
 
