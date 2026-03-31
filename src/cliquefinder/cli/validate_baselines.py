@@ -1658,9 +1658,6 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         print("=" * 70)
 
         try:
-            import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent
-                                   / "causal-path-scoring" / "src"))
             from causal_path_scoring.core.reliability import Edge as CPSEdge
             from causal_path_scoring.core.discovery import run_discovery
             from cliquefinder.stats.discovery_bridge import DiscoveryBridge
