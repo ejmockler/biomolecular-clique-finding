@@ -1673,7 +1673,8 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             if (_ts_disc is not None and _ts_disc.edge_metadata
                     and hasattr(args, 'indra_env_file')):
                 eng = _ensure_engine()
-                symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
+                from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols as _map_syms
+                symbol_to_feature = _map_syms(feature_ids, verbose=False)
 
                 # Build adjacency for graph structure
                 disc_adjacency = {args.network_query: []}
@@ -1718,16 +1719,22 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 disc_dict = disc_result.to_dict()
 
                 # Resolve feature IDs to canonical HGNC symbols for output
-                from cliquefinder.stats.clique_analysis import build_canonical_feature_to_symbol
-                _canonical = build_canonical_feature_to_symbol(feature_ids, verbose=False)
-                for hop_data in disc_dict.get("hops", []):
-                    for cp in hop_data.get("convergence_points", []):
-                        fid = cp.get("target", "")
-                        cp["symbol"] = _canonical.get(fid, fid)
-                    for chain in hop_data.get("top_chains", []):
-                        chain["nodes"] = [
-                            _canonical.get(n, n) for n in chain.get("nodes", [])
-                        ]
+                try:
+                    from cliquefinder.stats.clique_analysis import build_canonical_feature_to_symbol as _build_canon
+                    _canonical = _build_canon(feature_ids, verbose=False)
+                    if _canonical:
+                        for hop_data in disc_dict.get("hops", []):
+                            for cp in hop_data.get("convergence_points", []):
+                                fid = cp.get("target", "")
+                                if fid in _canonical:
+                                    cp["symbol"] = _canonical[fid]
+                            for chain in hop_data.get("top_chains", []):
+                                chain["nodes"] = [
+                                    _canonical.get(n, n) for n in chain.get("nodes", [])
+                                ]
+                        print(f"  Resolved {len(_canonical)} canonical symbols")
+                except Exception as e:
+                    logger.warning("Symbol resolution failed: %s", e)
 
                 report.add_phase("discovery", disc_dict)
                 disc_out = args.output / "discovery_results.json"
