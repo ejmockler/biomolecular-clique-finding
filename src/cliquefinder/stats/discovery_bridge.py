@@ -8,7 +8,6 @@ the SAME p-values as the manual validation analysis.
 """
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +33,7 @@ class DiscoveryBridge:
         engine,  # RotationTestEngine — already fitted
         sym_to_feat: dict[str, str],
         env_file: Path | str | None = None,
-        min_evidence: int = 1,
+        min_evidence: int = 2,  # matches pipeline default (indra_source.py:60)
         roast_config=None,
     ):
         self.engine = engine
@@ -96,18 +95,9 @@ class DiscoveryBridge:
     def test_gene_set(self, gene_ids: list[str], set_id: str) -> float:
         """Run ROAST on a gene set.
 
-        Accepts either gene symbols or feature IDs.  If symbols, maps
-        through sym_to_feat first.
+        Accepts feature IDs (UniProt) as returned by get_targets().
         """
-        # Determine if these are symbols or feature IDs
-        fids = []
-        for g in gene_ids:
-            if g in self.engine.gene_to_idx:
-                fids.append(g)  # already a feature ID
-            elif g in self.sym_to_feat:
-                fid = self.sym_to_feat[g]
-                if fid in self.engine.gene_to_idx:
-                    fids.append(fid)
+        fids = [g for g in gene_ids if g in self.engine.gene_to_idx]
 
         if len(fids) < 2:
             return 1.0
@@ -118,7 +108,14 @@ class DiscoveryBridge:
         return result.p_values.get("msq", {}).get("mixed", 1.0)
 
     def close(self):
-        """Release INDRA connection."""
+        """Release INDRA connection and clear cache."""
         if self._indra_source is not None:
             self._indra_source.close()
             self._indra_source = None
+        self._target_cache.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
