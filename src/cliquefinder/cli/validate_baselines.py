@@ -1686,7 +1686,11 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                             edge_type=e.get('regulation_type', 'unknown'),
                         ))
 
-                # Effect maps from protein_df
+                # Effect maps from protein_df (restore from CSV if needed)
+                if protein_df is None:
+                    csv_path = args.output / "protein_differential_results.csv"
+                    if csv_path.exists():
+                        protein_df = pd.read_csv(csv_path)
                 disc_effects = {}
                 disc_directions = {}
                 if protein_df is not None:
