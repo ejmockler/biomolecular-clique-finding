@@ -1715,9 +1715,23 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         verbose=True,
                     )
 
-                report.add_phase("discovery", disc_result.to_dict())
+                disc_dict = disc_result.to_dict()
+
+                # Resolve feature IDs to canonical HGNC symbols for output
+                from cliquefinder.stats.clique_analysis import build_canonical_feature_to_symbol
+                _canonical = build_canonical_feature_to_symbol(feature_ids, verbose=False)
+                for hop_data in disc_dict.get("hops", []):
+                    for cp in hop_data.get("convergence_points", []):
+                        fid = cp.get("target", "")
+                        cp["symbol"] = _canonical.get(fid, fid)
+                    for chain in hop_data.get("top_chains", []):
+                        chain["nodes"] = [
+                            _canonical.get(n, n) for n in chain.get("nodes", [])
+                        ]
+
+                report.add_phase("discovery", disc_dict)
                 disc_out = args.output / "discovery_results.json"
-                atomic_write_json(disc_out, disc_result.to_dict())
+                atomic_write_json(disc_out, disc_dict)
                 print(disc_result.summary())
             else:
                 reason = []

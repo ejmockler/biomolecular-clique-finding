@@ -539,6 +539,46 @@ def map_feature_ids_to_symbols(
     return symbol_to_feature
 
 
+def build_canonical_feature_to_symbol(
+    feature_ids: list[str],
+    verbose: bool = False,
+) -> dict[str, str]:
+    """Build a reverse map from feature_id → canonical HGNC symbol.
+
+    Unlike the full sym_to_feat which stores every alias, this returns
+    exactly ONE symbol per feature ID — the primary HGNC-approved name
+    from MyGeneInfo's 'symbol' field (not aliases).
+
+    Use for display/output where canonical names are needed.
+    """
+    try:
+        import mygene
+    except ImportError:
+        raise ImportError("mygene package required")
+
+    # Detect ID type
+    sample = feature_ids[:100]
+    is_ensembl = sum(1 for f in sample if f.startswith('ENSG')) > len(sample) * 0.5
+
+    mg = mygene.MyGeneInfo()
+    scopes = 'ensembl.gene' if is_ensembl else 'uniprot'
+    results = mg.querymany(
+        feature_ids, scopes=scopes, fields='symbol',
+        species='human', returnall=True,
+    )
+
+    feat_to_sym: dict[str, str] = {}
+    for hit in results.get('out', []):
+        if 'symbol' in hit and 'query' in hit:
+            fid = hit['query']
+            if fid not in feat_to_sym:  # first hit = canonical
+                feat_to_sym[fid] = hit['symbol']
+
+    if verbose:
+        print(f"  Canonical symbols: {len(feat_to_sym)} features resolved")
+    return feat_to_sym
+
+
 def clear_id_mapping_cache() -> int:
     """Clear the module-level ID mapping cache.
 
