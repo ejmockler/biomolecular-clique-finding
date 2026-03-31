@@ -1715,34 +1715,14 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         max_hops=3,
                         min_targets_per_arm=5,
                         fdr_threshold=args.alpha,
-                        convergence_min_arms=5,
+                        effect_threshold=1.5,
                         get_targets=bridge.get_targets,
                         verbose=True,
                     )
 
-                disc_dict = disc_result.to_dict()
-
-                # Resolve feature IDs to canonical HGNC symbols for output
-                try:
-                    from cliquefinder.stats.clique_analysis import build_canonical_feature_to_symbol as _build_canon
-                    _canonical = _build_canon(feature_ids, verbose=False)
-                    if _canonical:
-                        for hop_data in disc_dict.get("hops", []):
-                            for cp in hop_data.get("convergence_points", []):
-                                fid = cp.get("target", "")
-                                if fid in _canonical:
-                                    cp["symbol"] = _canonical[fid]
-                            for chain in hop_data.get("top_chains", []):
-                                chain["nodes"] = [
-                                    _canonical.get(n, n) for n in chain.get("nodes", [])
-                                ]
-                        print(f"  Resolved {len(_canonical)} canonical symbols")
-                except Exception as e:
-                    logger.warning("Symbol resolution failed: %s", e)
-
-                report.add_phase("discovery", disc_dict)
+                report.add_phase("discovery", disc_result.to_dict())
                 disc_out = args.output / "discovery_results.json"
-                atomic_write_json(disc_out, disc_dict)
+                atomic_write_json(disc_out, disc_result.to_dict())
                 print(disc_result.summary())
             else:
                 reason = []
