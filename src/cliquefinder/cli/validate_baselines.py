@@ -1642,6 +1642,108 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
     report.save(args.output / "validation_report.json")
 
     # =====================================================================
+    # PHASE 7: HIERARCHICAL DISCOVERY (n-hop pathway decomposition)
+    # =====================================================================
+    # Uses the causal-path-scoring framework to decompose the regulatory
+    # network by intermediary (hop 2) and find convergence points (hop 3).
+    # Informational — not a validation gate.
+
+    if "discovery" in report.phases:
+        print(f"\n{'=' * 70}")
+        print("PHASE 7: HIERARCHICAL DISCOVERY  [SKIPPED — checkpoint]")
+        print("=" * 70)
+    else:
+        print(f"\n{'=' * 70}")
+        print("PHASE 7: HIERARCHICAL DISCOVERY")
+        print("=" * 70)
+
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent
+                                   / "causal-path-scoring" / "src"))
+            from causal_path_scoring.core.reliability import Edge as CPSEdge
+            from causal_path_scoring.core.discovery import run_discovery
+            from cliquefinder.stats.discovery_bridge import DiscoveryBridge
+
+            # Build adjacency from TargetSet edge metadata
+            _ts_disc = _loaded_target_set
+            if _ts_disc is None:
+                _ts_path = args.output / "indra_targets.json"
+                if _ts_path.exists():
+                    from cliquefinder.stats.target_set import TargetSet as _TSD
+                    _ts_disc = _TSD.load(_ts_path)
+
+            if (_ts_disc is not None and _ts_disc.edge_metadata
+                    and hasattr(args, 'indra_env_file')):
+                eng = _ensure_engine()
+                symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
+
+                # Build adjacency for graph structure
+                disc_adjacency = {args.network_query: []}
+                for sym, edges in _ts_disc.edge_metadata.items():
+                    for e in edges:
+                        disc_adjacency[args.network_query].append(CPSEdge(
+                            source=args.network_query, target=sym,
+                            belief=0.5,
+                            edge_type=e.get('regulation_type', 'unknown'),
+                        ))
+
+                # Effect maps from protein_df
+                disc_effects = {}
+                disc_directions = {}
+                if protein_df is not None:
+                    for _, row in protein_df.iterrows():
+                        if pd.notna(row.get('t_statistic')):
+                            fid = row['feature_id']
+                            disc_effects[fid] = abs(float(row['t_statistic']))
+                            disc_directions[fid] = 'down' if float(row['t_statistic']) < 0 else 'up'
+
+                with DiscoveryBridge(
+                    eng, symbol_to_feature,
+                    env_file=args.indra_env_file,
+                    min_evidence=args.min_evidence,
+                ) as bridge:
+                    disc_result = run_discovery(
+                        seed=args.network_query,
+                        adjacency=disc_adjacency,
+                        test_gene_set=bridge.test_gene_set,
+                        target_to_effect=disc_effects,
+                        target_to_direction=disc_directions,
+                        measurable_genes=set(),
+                        max_hops=3,
+                        min_targets_per_arm=5,
+                        fdr_threshold=args.alpha,
+                        convergence_min_arms=5,
+                        get_targets=bridge.get_targets,
+                        verbose=True,
+                    )
+
+                report.add_phase("discovery", disc_result.to_dict())
+                disc_out = args.output / "discovery_results.json"
+                atomic_write_json(disc_out, disc_result.to_dict())
+                print(disc_result.summary())
+            else:
+                reason = []
+                if _ts_disc is None:
+                    reason.append("no target set")
+                elif not _ts_disc.edge_metadata:
+                    reason.append("no edge metadata")
+                logger.warning("Phase 7 skipped — %s", ", ".join(reason) or "unknown")
+                report.add_phase("discovery", {
+                    "status": "skipped", "reason": ", ".join(reason) or "unknown",
+                })
+
+        except ImportError as e:
+            logger.warning("Phase 7 skipped — causal-path-scoring not available: %s", e)
+            report.add_phase("discovery", {"status": "skipped", "reason": str(e)})
+        except Exception as e:
+            logger.warning("Phase 7 (discovery) failed: %s", e, exc_info=True)
+            report.add_phase("discovery", {"status": "failed", "error": str(e)})
+
+        _save_checkpoint(report, args.output)
+    report.save(args.output / "validation_report.json")
+
+    # =====================================================================
     # AGGREGATE REPORT
     # =====================================================================
     report.compute_verdict(
