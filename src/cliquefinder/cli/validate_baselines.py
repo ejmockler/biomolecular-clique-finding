@@ -1660,6 +1660,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         try:
             from causal_path_scoring.core.reliability import Edge as CPSEdge
             from causal_path_scoring.core.discovery import run_discovery
+            from causal_path_scoring.core.belief import compute_belief_with_contradiction
             from cliquefinder.stats.discovery_bridge import DiscoveryBridge
 
             # Build adjacency from TargetSet edge metadata
@@ -1676,15 +1677,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols as _map_syms
                 symbol_to_feature = _map_syms(feature_ids, verbose=False)
 
-                # Build adjacency for graph structure
+                # Build adjacency for graph structure with computed beliefs
                 disc_adjacency = {args.network_query: []}
                 for sym, edges in _ts_disc.edge_metadata.items():
-                    for e in edges:
-                        disc_adjacency[args.network_query].append(CPSEdge(
-                            source=args.network_query, target=sym,
-                            belief=0.5,
-                            edge_type=e.get('regulation_type', 'unknown'),
-                        ))
+                    belief, direction, contradictory = compute_belief_with_contradiction(edges)
+                    disc_adjacency[args.network_query].append(CPSEdge(
+                        source=args.network_query, target=sym,
+                        belief=belief,
+                        edge_type=direction,
+                    ))
 
                 # Effect maps from protein_df (restore from CSV if needed)
                 if protein_df is None:
@@ -1711,7 +1712,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         test_gene_set=bridge.test_gene_set,
                         target_to_effect=disc_effects,
                         target_to_direction=disc_directions,
-                        measurable_genes=set(),
+                        measurable_genes=set(),  # empty: get_targets callback handles filtering
                         max_hops=3,
                         min_targets_per_arm=5,
                         fdr_threshold=args.alpha,
@@ -1720,10 +1721,86 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         verbose=True,
                     )
 
-                report.add_phase("discovery", disc_result.to_dict())
+                    # --- Soft posterior propagation ---
+                    # Must be inside `with` block: bridge._target_cache
+                    # is cleared on __exit__
+                    from causal_path_scoring.core.posterior_propagation import (
+                        compute_posterior_target_scores as _compute_pts,
+                    )
+                    # Extract intermediary posteriors from all hop results
+                    _inter_posteriors = {}
+                    for hop_res in disc_result.hops:
+                        for arm in hop_res.all_arms:
+                            if not np.isnan(arm.posterior):
+                                _inter_posteriors[arm.intermediary] = arm.posterior
+
+                    # Build full adjacency including intermediary→target edges
+                    # from the bridge's cached target lookups + edge metadata
+                    _full_adj = dict(disc_adjacency)
+                    for intermediary, edge_metas in bridge._edge_metadata_cache.items():
+                        if intermediary not in _full_adj:
+                            _full_adj[intermediary] = []
+                        for em in edge_metas:
+                            # Compute per-edge belief from INDRA noise model
+                            from causal_path_scoring.core.belief import compute_belief as _cb
+                            _src_counts = em.get("source_counts", {})
+                            if _src_counts:
+                                _sources = []
+                                _total_ev = 0
+                                for src_name, cnt in _src_counts.items():
+                                    _sources.extend([src_name] * cnt)
+                                    _total_ev += cnt
+                                _edge_belief = _cb(_sources, _total_ev)
+                            else:
+                                _edge_belief = _cb(em.get("sources", []), em.get("evidence_count", 1))
+                            _full_adj[intermediary].append(CPSEdge(
+                                source=intermediary, target=em["target_fid"],
+                                belief=_edge_belief,
+                                edge_type=em.get("regulation_type", "unknown"),
+                            ))
+
+                    _target_scores = {}
+                    if _inter_posteriors and _full_adj:
+                        _target_scores = _compute_pts(
+                            source=args.network_query,
+                            adjacency=_full_adj,
+                            intermediary_posteriors=_inter_posteriors,
+                            max_hops=2,
+                        )
+
+                # Build serializable output (outside with — bridge no longer needed)
+                _pts_list = sorted(
+                    [
+                        {
+                            "target": ts.target,
+                            "posterior": round(ts.posterior, 4),
+                            "belief_only": round(ts.belief_only, 4),
+                            "n_paths": ts.n_paths,
+                            "net_direction": ts.net_direction,
+                        }
+                        for ts in _target_scores.values()
+                    ],
+                    key=lambda x: x["posterior"],
+                    reverse=True,
+                )
+
+                disc_dict = disc_result.to_dict()
+                disc_dict["posterior_target_scores"] = _pts_list
+                disc_dict["n_intermediary_posteriors"] = len(_inter_posteriors)
+
+                report.add_phase("discovery", disc_dict)
                 disc_out = args.output / "discovery_results.json"
-                atomic_write_json(disc_out, disc_result.to_dict())
+                atomic_write_json(disc_out, disc_dict)
                 print(disc_result.summary())
+
+                if _pts_list:
+                    print(f"\n  Posterior target scores: {len(_pts_list)} targets")
+                    print(f"  Top 10 by posterior:")
+                    for t in _pts_list[:10]:
+                        delta = t["posterior"] - t["belief_only"]
+                        print(f"    {t['target']:12s}  post={t['posterior']:.3f}  "
+                              f"belief={t['belief_only']:.3f}  Δ={delta:+.3f}  "
+                              f"dir={t['net_direction']}")
             else:
                 reason = []
                 if _ts_disc is None:

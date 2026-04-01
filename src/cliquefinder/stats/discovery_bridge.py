@@ -52,6 +52,7 @@ class DiscoveryBridge:
         self._indra_source = None
         self._hgnc_client = None
         self._target_cache: dict[str, list[str]] = {}
+        self._edge_metadata_cache: dict[str, list[dict]] = {}  # intermediary → [{sources, evidence_count, regulation_type}]
 
     def _ensure_indra(self):
         if self._indra_source is None:
@@ -81,15 +82,26 @@ class DiscoveryBridge:
         )
 
         fids = set()
+        edge_meta = []
         for e in edges:
             if not self._hgnc_client.get_current_hgnc_id(e.target):
                 continue
             fid = self.sym_to_feat.get(e.target)
             if fid and fid in self.engine.gene_to_idx:
                 fids.add(fid)
+                meta = e.metadata or {}
+                edge_meta.append({
+                    "target_fid": fid,
+                    "target_symbol": e.target,
+                    "regulation_type": meta.get("regulation_type", "unknown"),
+                    "sources": list(e.sources),
+                    "evidence_count": e.evidence_count,
+                    "source_counts": meta.get("source_counts", {}),
+                })
 
         result = sorted(fids)
         self._target_cache[intermediary] = result
+        self._edge_metadata_cache[intermediary] = edge_meta
         return result
 
     def test_gene_set(self, gene_ids: list[str], set_id: str) -> float:
@@ -113,6 +125,7 @@ class DiscoveryBridge:
             self._indra_source.close()
             self._indra_source = None
         self._target_cache.clear()
+        self._edge_metadata_cache.clear()
 
     def __enter__(self):
         return self
