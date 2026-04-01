@@ -1701,10 +1701,31 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                             disc_effects[fid] = abs(float(row['t_statistic']))
                             disc_directions[fid] = 'down' if float(row['t_statistic']) < 0 else 'up'
 
+                # Build seed null pool from all genes measurable in the
+                # expression data that are NOT the seed's direct neighbors.
+                # These genes can be queried via INDRA for their own targets.
+                _seed_neighbors = set(_ts_disc.edge_metadata.keys())
+                _seed_null_pool = sorted(
+                    sym for sym, fid in symbol_to_feature.items()
+                    if sym != args.network_query
+                    and sym not in _seed_neighbors
+                    and fid in eng.gene_to_idx
+                )
+                print(f"  Seed null pool: {len(_seed_null_pool)} candidate genes "
+                      f"(excluding {len(_seed_neighbors)} seed neighbors)")
+
+                # Pass the same rotation count as the main pipeline
+                from cliquefinder.stats.rotation import RotationTestConfig, SetStatistic
+                _disc_roast_config = RotationTestConfig(
+                    statistics=[SetStatistic.MSQ],
+                    n_rotations=args.n_rotations,
+                    seed=42,
+                )
                 with DiscoveryBridge(
                     eng, symbol_to_feature,
                     env_file=args.indra_env_file,
                     min_evidence=args.min_evidence,
+                    roast_config=_disc_roast_config,
                 ) as bridge:
                     disc_result = run_discovery(
                         seed=args.network_query,
@@ -1719,6 +1740,15 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         effect_threshold=1.5,
                         get_targets=bridge.get_targets,
                         verbose=True,
+                        # Phase 2: Three-layer inferential boundary
+                        hierarchical_fdr=True,
+                        seed_null_stop=True,
+                        seed_null_b=100,
+                        seed_null_threshold=0.1,
+                        seed_null_pool=_seed_null_pool,
+                        seed_null_rng=np.random.default_rng(42),
+                        knockoff_filter=True,
+                        knockoff_rng=np.random.default_rng(42),
                     )
 
                     # --- Soft posterior propagation ---
