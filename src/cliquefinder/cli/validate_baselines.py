@@ -1724,7 +1724,9 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 with DiscoveryBridge(
                     eng, symbol_to_feature,
                     env_file=args.indra_env_file,
-                    min_evidence=args.min_evidence,
+                    min_evidence=1,     # query broadly from INDRA
+                    min_belief=0.0,     # no hard belief cutoff
+                    min_sources=1,      # at least 1 source API
                     roast_config=_disc_roast_config,
                 ) as bridge:
                     disc_result = run_discovery(

@@ -33,13 +33,17 @@ class DiscoveryBridge:
         engine,  # RotationTestEngine — already fitted
         sym_to_feat: dict[str, str],
         env_file: Path | str | None = None,
-        min_evidence: int = 2,  # matches pipeline default (indra_source.py:60)
+        min_evidence: int = 1,  # query broadly, filter by belief
+        min_belief: float = 0.0,  # per-edge belief threshold (0 = no filter)
+        min_sources: int = 1,  # minimum unique source APIs per edge
         roast_config=None,
     ):
         self.engine = engine
         self.sym_to_feat = sym_to_feat
         self.env_file = str(env_file) if env_file else None
         self.min_evidence = min_evidence
+        self.min_belief = min_belief
+        self.min_sources = min_sources
 
         if roast_config is None:
             from cliquefinder.stats.rotation import RotationTestConfig, SetStatistic
@@ -88,15 +92,38 @@ class DiscoveryBridge:
                 continue
             fid = self.sym_to_feat.get(e.target)
             if fid and fid in self.engine.gene_to_idx:
-                fids.add(fid)
+                # Compute per-edge belief from source diversity
                 meta = e.metadata or {}
+                _src_counts = meta.get("source_counts", {})
+                if _src_counts:
+                    _sources = []
+                    _total_ev = 0
+                    for src_name, cnt in _src_counts.items():
+                        _sources.extend([src_name] * cnt)
+                        _total_ev += cnt
+                else:
+                    _sources = list(e.sources)
+                    _total_ev = e.evidence_count
+
+                from causal_path_scoring.core.belief import compute_belief
+                edge_belief = compute_belief(_sources, _total_ev)
+
+                n_unique_sources = len(set(s.lower() for s in _sources))
+                if edge_belief < self.min_belief:
+                    continue
+                if n_unique_sources < self.min_sources:
+                    continue
+
+                fids.add(fid)
                 edge_meta.append({
                     "target_fid": fid,
                     "target_symbol": e.target,
                     "regulation_type": meta.get("regulation_type", "unknown"),
                     "sources": list(e.sources),
                     "evidence_count": e.evidence_count,
-                    "source_counts": meta.get("source_counts", {}),
+                    "source_counts": _src_counts,
+                    "belief": edge_belief,
+                    "n_unique_sources": n_unique_sources,
                 })
 
         result = sorted(fids)
