@@ -1744,7 +1744,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         verbose=True,
                         # Phase 2: Three-layer inferential boundary
                         hierarchical_fdr=True,
-                        seed_null_stop=True,
+                        seed_null_stop=False,  # expensive at deep hops; enable for production
                         seed_null_b=100,
                         seed_null_threshold=0.1,
                         seed_null_pool=_seed_null_pool,
