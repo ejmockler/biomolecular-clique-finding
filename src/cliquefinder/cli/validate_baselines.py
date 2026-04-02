@@ -1734,7 +1734,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         target_to_effect=disc_effects,
                         target_to_direction=disc_directions,
                         measurable_genes=set(),  # empty: get_targets callback handles filtering
-                        max_hops=3,
+                        max_hops=6,
                         min_targets_per_arm=5,
                         fdr_threshold=args.alpha,
                         effect_threshold=1.5,
