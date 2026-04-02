@@ -1660,7 +1660,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         try:
             from causal_path_scoring.core.reliability import Edge as CPSEdge
             from causal_path_scoring.core.discovery import run_discovery
-            from causal_path_scoring.core.belief import compute_belief_with_contradiction
+            from causal_path_scoring.core.edge_reliability import compute_edge_reliability_with_contradiction
             from cliquefinder.stats.discovery_bridge import DiscoveryBridge
 
             # Build adjacency from TargetSet edge metadata
@@ -1677,13 +1677,13 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                 from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols as _map_syms
                 symbol_to_feature = _map_syms(feature_ids, verbose=False)
 
-                # Build adjacency for graph structure with computed beliefs
+                # Build adjacency for graph structure with computed reliability scores
                 disc_adjacency = {args.network_query: []}
                 for sym, edges in _ts_disc.edge_metadata.items():
-                    belief, direction, contradictory = compute_belief_with_contradiction(edges)
+                    reliability, direction, contradictory = compute_edge_reliability_with_contradiction(edges)
                     disc_adjacency[args.network_query].append(CPSEdge(
                         source=args.network_query, target=sym,
-                        belief=belief,
+                        reliability=reliability,
                         edge_type=direction,
                     ))
 
@@ -1725,7 +1725,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     eng, symbol_to_feature,
                     env_file=args.indra_env_file,
                     min_evidence=1,     # query broadly from INDRA
-                    min_belief=0.0,     # no hard belief cutoff
+                    min_reliability=0.0,     # no hard reliability cutoff
                     min_sources=1,      # at least 1 source API
                     roast_config=_disc_roast_config,
                 ) as bridge:
@@ -1773,8 +1773,8 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         if intermediary not in _full_adj:
                             _full_adj[intermediary] = []
                         for em in edge_metas:
-                            # Compute per-edge belief from INDRA noise model
-                            from causal_path_scoring.core.belief import compute_belief as _cb
+                            # Compute per-edge reliability from INDRA noise model
+                            from causal_path_scoring.core.edge_reliability import compute_edge_reliability as _cb
                             _src_counts = em.get("source_counts", {})
                             if _src_counts:
                                 _sources = []
@@ -1782,12 +1782,12 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                                 for src_name, cnt in _src_counts.items():
                                     _sources.extend([src_name] * cnt)
                                     _total_ev += cnt
-                                _edge_belief = _cb(_sources, _total_ev)
+                                _edge_reliability = _cb(_sources, _total_ev)
                             else:
-                                _edge_belief = _cb(em.get("sources", []), em.get("evidence_count", 1))
+                                _edge_reliability = _cb(em.get("sources", []), em.get("evidence_count", 1))
                             _full_adj[intermediary].append(CPSEdge(
                                 source=intermediary, target=em["target_fid"],
-                                belief=_edge_belief,
+                                reliability=_edge_reliability,
                                 edge_type=em.get("regulation_type", "unknown"),
                             ))
 
@@ -1806,7 +1806,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                         {
                             "target": ts.target,
                             "posterior": round(ts.posterior, 4),
-                            "belief_only": round(ts.belief_only, 4),
+                            "reliability_only": round(ts.reliability_only, 4),
                             "n_paths": ts.n_paths,
                             "net_direction": ts.net_direction,
                         }
@@ -1829,9 +1829,9 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     print(f"\n  Posterior target scores: {len(_pts_list)} targets")
                     print(f"  Top 10 by posterior:")
                     for t in _pts_list[:10]:
-                        delta = t["posterior"] - t["belief_only"]
+                        delta = t["posterior"] - t["reliability_only"]
                         print(f"    {t['target']:12s}  post={t['posterior']:.3f}  "
-                              f"belief={t['belief_only']:.3f}  Δ={delta:+.3f}  "
+                              f"reliability={t['reliability_only']:.3f}  Δ={delta:+.3f}  "
                               f"dir={t['net_direction']}")
             else:
                 reason = []

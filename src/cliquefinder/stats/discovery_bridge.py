@@ -33,8 +33,8 @@ class DiscoveryBridge:
         engine,  # RotationTestEngine — already fitted
         sym_to_feat: dict[str, str],
         env_file: Path | str | None = None,
-        min_evidence: int = 1,  # query broadly, filter by belief
-        min_belief: float = 0.0,  # per-edge belief threshold (0 = no filter)
+        min_evidence: int = 1,  # query broadly, filter by reliability
+        min_reliability: float = 0.0,  # per-edge reliability threshold (0 = no filter)
         min_sources: int = 1,  # minimum unique source APIs per edge
         roast_config=None,
     ):
@@ -42,7 +42,7 @@ class DiscoveryBridge:
         self.sym_to_feat = sym_to_feat
         self.env_file = str(env_file) if env_file else None
         self.min_evidence = min_evidence
-        self.min_belief = min_belief
+        self.min_reliability = min_reliability
         self.min_sources = min_sources
 
         if roast_config is None:
@@ -92,12 +92,24 @@ class DiscoveryBridge:
                 continue
             fid = self.sym_to_feat.get(e.target)
             if fid and fid in self.engine.gene_to_idx:
+                # Compute per-edge reliability from source diversity
                 meta = e.metadata or {}
-                # Use INDRA's pre-computed belief score (from CoGEx r.belief)
-                edge_belief = meta.get("belief", e.confidence if hasattr(e, 'confidence') else 1.0)
-                n_unique_sources = len(set(s.lower() for s in e.sources))
+                _src_counts = meta.get("source_counts", {})
+                if _src_counts:
+                    _sources = []
+                    _total_ev = 0
+                    for src_name, cnt in _src_counts.items():
+                        _sources.extend([src_name] * cnt)
+                        _total_ev += cnt
+                else:
+                    _sources = list(e.sources)
+                    _total_ev = e.evidence_count
 
-                if edge_belief < self.min_belief:
+                from causal_path_scoring.core.edge_reliability import compute_edge_reliability
+                edge_reliability = compute_edge_reliability(_sources, _total_ev)
+
+                n_unique_sources = len(set(s.lower() for s in _sources))
+                if edge_reliability < self.min_reliability:
                     continue
                 if n_unique_sources < self.min_sources:
                     continue
@@ -109,8 +121,8 @@ class DiscoveryBridge:
                     "regulation_type": meta.get("regulation_type", "unknown"),
                     "sources": list(e.sources),
                     "evidence_count": e.evidence_count,
-                    "source_counts": meta.get("source_counts", {}),
-                    "belief": edge_belief,
+                    "source_counts": _src_counts,
+                    "reliability": edge_reliability,
                     "n_unique_sources": n_unique_sources,
                 })
 
