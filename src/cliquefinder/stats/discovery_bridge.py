@@ -92,23 +92,11 @@ class DiscoveryBridge:
                 continue
             fid = self.sym_to_feat.get(e.target)
             if fid and fid in self.engine.gene_to_idx:
-                # Compute per-edge belief from source diversity
                 meta = e.metadata or {}
-                _src_counts = meta.get("source_counts", {})
-                if _src_counts:
-                    _sources = []
-                    _total_ev = 0
-                    for src_name, cnt in _src_counts.items():
-                        _sources.extend([src_name] * cnt)
-                        _total_ev += cnt
-                else:
-                    _sources = list(e.sources)
-                    _total_ev = e.evidence_count
+                # Use INDRA's pre-computed belief score (from CoGEx r.belief)
+                edge_belief = meta.get("belief", e.confidence if hasattr(e, 'confidence') else 1.0)
+                n_unique_sources = len(set(s.lower() for s in e.sources))
 
-                from causal_path_scoring.core.belief import compute_belief
-                edge_belief = compute_belief(_sources, _total_ev)
-
-                n_unique_sources = len(set(s.lower() for s in _sources))
                 if edge_belief < self.min_belief:
                     continue
                 if n_unique_sources < self.min_sources:
@@ -121,7 +109,7 @@ class DiscoveryBridge:
                     "regulation_type": meta.get("regulation_type", "unknown"),
                     "sources": list(e.sources),
                     "evidence_count": e.evidence_count,
-                    "source_counts": _src_counts,
+                    "source_counts": meta.get("source_counts", {}),
                     "belief": edge_belief,
                     "n_unique_sources": n_unique_sources,
                 })

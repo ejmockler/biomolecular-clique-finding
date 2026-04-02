@@ -342,6 +342,7 @@ class INDRAEdge:
     evidence_count: int
     stmt_hash: int
     source_counts: str  # JSON string
+    belief: float = 1.0  # INDRA pre-computed belief score
 
     @property
     def source_counts_dict(self) -> Dict[str, int]:
@@ -730,7 +731,8 @@ class CoGExClient:
             RETURN reg.id as regulator_id, reg.name as regulator_name,
                    target.id as target_id, target.name as target_name,
                    r.stmt_type as stmt_type, r.evidence_count as evidence_count,
-                   r.stmt_hash as stmt_hash, r.source_counts as source_counts
+                   r.stmt_hash as stmt_hash, r.source_counts as source_counts,
+                   r.belief as belief
             LIMIT $max_results
         """
 
@@ -793,7 +795,8 @@ class CoGExClient:
                     regulation_type=reg_type,
                     evidence_count=row[5],  # evidence_count
                     stmt_hash=row[6],  # stmt_hash
-                    source_counts=row[7] if row[7] else "{}"  # source_counts
+                    source_counts=row[7] if row[7] else "{}",  # source_counts
+                    belief=float(row[8]) if row[8] is not None else 1.0,  # INDRA belief
                 )
                 edges.append(edge)
 
@@ -925,7 +928,8 @@ class CoGExClient:
             RETURN reg.id as regulator_id, reg.name as regulator_name,
                    target.id as target_id, target.name as target_name,
                    r.stmt_type as stmt_type, r.evidence_count as evidence_count,
-                   r.stmt_hash as stmt_hash, r.source_counts as source_counts
+                   r.stmt_hash as stmt_hash, r.source_counts as source_counts,
+                   r.belief as belief
             LIMIT $chunk_limit
         """
 
@@ -1011,7 +1015,8 @@ class CoGExClient:
                     regulation_type=reg_type,
                     evidence_count=row[5],  # evidence_count
                     stmt_hash=row[6],  # stmt_hash
-                    source_counts=row[7] if row[7] else "{}"
+                    source_counts=row[7] if row[7] else "{}",
+                    belief=float(row[8]) if row[8] is not None else 1.0,
                 )
 
                 if regulator_name not in regulator_edges:
