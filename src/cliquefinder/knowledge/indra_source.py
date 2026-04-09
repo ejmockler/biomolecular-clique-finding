@@ -86,13 +86,12 @@ class INDRAKnowledgeSource(KnowledgeSource):
                 target=indra_edge.target_name,
                 relationship=rel_type,
                 evidence_count=indra_edge.evidence_count,
-                confidence=indra_edge.belief,  # INDRA pre-computed belief
+                confidence=1.0,
                 sources=list(indra_edge.source_counts_dict.keys()),
                 metadata={
                     'stmt_hash': indra_edge.stmt_hash,
                     'regulation_type': indra_edge.regulation_type,
                     'source_counts': dict(indra_edge.source_counts_dict),
-                    'belief': indra_edge.belief,
                 },
             ))
 
@@ -157,12 +156,9 @@ class INDRAKnowledgeSource(KnowledgeSource):
                     target=indra_edge.target_name,
                     relationship=rel_type,
                     evidence_count=indra_edge.evidence_count,
-                    confidence=indra_edge.belief,  # INDRA pre-computed belief
+                    confidence=1.0,
                     sources=list(indra_edge.source_counts_dict.keys()),
-                    metadata={
-                        'stmt_hash': indra_edge.stmt_hash,
-                        'belief': indra_edge.belief,
-                    },
+                    metadata={'stmt_hash': indra_edge.stmt_hash}
                 ))
 
             targets = {e.target for e in edges}
