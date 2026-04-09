@@ -73,5 +73,9 @@ figures/
 .symbol_cache/
 .claude/
 .playwright-mcp/
+.gemini/
 node_modules/
 presentations/
+
+# Local benchmark data (large: ~450MB corpus)
+data/benchmark/
