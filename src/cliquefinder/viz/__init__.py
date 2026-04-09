@@ -34,6 +34,7 @@ from cliquefinder.viz.styles import Palette, PALETTES, configure_style
 from cliquefinder.viz.qc import QCVisualizer
 from cliquefinder.viz.cliques import CliqueVisualizer
 from cliquefinder.viz.differential import DifferentialCliqueVisualizer
+from cliquefinder.viz.validation import ValidationVisualizer, load_validation_data
 from cliquefinder.viz.id_mapper import get_gene_symbol, map_ids, format_feature_label
 
 __all__ = [
@@ -48,6 +49,8 @@ __all__ = [
     "QCVisualizer",
     "CliqueVisualizer",
     "DifferentialCliqueVisualizer",
+    "ValidationVisualizer",
+    "load_validation_data",
     # ID mapping
     "get_gene_symbol",
     "map_ids",

@@ -24,14 +24,16 @@ def register_parser(subparsers):
 Generate visualizations for QC, networks, and analysis reports.
 
 Modes:
-  qc       Quality control plots (outliers, imputation, sex classification)
-  network  Correlation network visualization (static or interactive)
-  report   Full HTML report with embedded figures
+  qc          Quality control plots (outliers, imputation, sex classification)
+  network     Correlation network visualization (static or interactive)
+  report      Full HTML report with embedded figures
+  validation  Validation pipeline result visualizations
 
 Examples:
   cliquefinder viz qc --input results/imputed --output figures/qc
   cliquefinder viz network --edges results/network.csv --output network.html
   cliquefinder viz report --input results/ --output analysis_report.html
+  cliquefinder viz validation --input output/validation/c9orf72_network --output figures/val
         """
     )
 
@@ -121,12 +123,40 @@ Examples:
     )
     report_parser.set_defaults(func=run_report)
 
+    # Validation mode
+    val_parser = subsubparsers.add_parser("validation", help="Validation result visualizations")
+    val_parser.add_argument(
+        "--input", "-i", type=Path, required=True,
+        help="Validation output directory",
+    )
+    val_parser.add_argument(
+        "--output", "-o", type=Path, required=True,
+        help="Output directory for figures",
+    )
+    val_parser.add_argument(
+        "--format", "-f", choices=["png", "pdf", "svg"], default="png",
+        help="Figure format (default: png)",
+    )
+    val_parser.add_argument(
+        "--dpi", type=int, default=300,
+        help="DPI for raster formats (default: 300)",
+    )
+    val_parser.add_argument(
+        "--style", choices=["paper", "presentation", "notebook"], default="paper",
+        help="Visual style (default: paper)",
+    )
+    val_parser.add_argument(
+        "--skip-differential", action="store_true",
+        help="Skip volcano plot (large CSV)",
+    )
+    val_parser.set_defaults(func=run_validation)
+
     parser.set_defaults(func=run_viz_help)
 
 
 def run_viz_help(args):
     """Show viz help if no mode specified."""
-    print("Error: must specify viz mode (qc, network, or report)")
+    print("Error: must specify viz mode (qc, network, report, or validation)")
     print("Run 'cliquefinder viz --help' for options")
     return 1
 
@@ -580,4 +610,47 @@ def run_report(args):
     print(f"\n✓ Report saved to {args.output}")
     collection.close_all()
 
+    return 0
+
+
+def run_validation(args):
+    """Generate validation result visualizations."""
+    from cliquefinder.viz.validation import ValidationVisualizer, load_validation_data
+    from cliquefinder.viz.core import FigureCollection
+
+    print(f"Loading validation data from {args.input}")
+    data = load_validation_data(args.input)
+
+    if data.get("report") is None:
+        print("Error: validation_report.json not found in input directory")
+        return 1
+
+    report = data["report"]
+    verdict = report.get("verdict", "unknown")
+    print(f"  Verdict: {verdict}")
+    print(f"  Phases: {len(report.get('phases', {}))}")
+
+    viz = ValidationVisualizer(style=args.style)
+    collection = viz.generate_report(
+        data, skip_differential=args.skip_differential,
+    )
+
+    print(f"\nSaving {len(collection)} figures to {args.output}")
+    args.output.mkdir(parents=True, exist_ok=True)
+    saved = collection.save_all(args.output, format=args.format, dpi=args.dpi)
+
+    for path in saved:
+        print(f"  - {path.name}")
+
+    # Generate HTML report
+    report_path = args.output / "validation_report.html"
+    collection.to_html_report(
+        report_path,
+        title="Validation Report",
+        description=f"Verdict: {verdict}. {report.get('summary', '')}",
+    )
+    print(f"  - validation_report.html")
+
+    collection.close_all()
+    print(f"\n✓ Done. {len(saved)} figures + HTML report.")
     return 0
