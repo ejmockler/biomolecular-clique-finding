@@ -240,8 +240,16 @@ class TestRunLabelPermutationNull:
 
         assert isinstance(result, LabelPermutationResult)
 
-    def test_covariate_design_passed_through(self, null_data):
-        """covariate_design is passed to every run_protein_differential call."""
+    def test_covariate_design_only_for_observed(self, null_data):
+        """covariate_design is passed only for the observed call, not permutations.
+
+        The covariate_design contains a frozen X matrix built from original
+        labels. Passing it to permuted iterations causes
+        precompute_ols_matrices() to ignore the permuted sample_condition,
+        producing identical t-statistics for every permutation (null_std=0).
+        Only the observed (first) call should receive the covariate_design;
+        permuted calls receive covariates_df only.
+        """
         from unittest.mock import patch, MagicMock
         from cliquefinder.stats.design_matrix import CovariateDesign
 
@@ -313,12 +321,16 @@ class TestRunLabelPermutationNull:
         assert isinstance(result, LabelPermutationResult)
         # 1 observed + 5 permutations = 6 calls
         assert len(received_designs) == 6
-        for cd in received_designs:
-            assert cd is design, (
-                "covariate_design should be the same object passed to "
-                "run_label_permutation_null"
+        # First call (observed) uses the covariate_design
+        assert received_designs[0] is design, (
+            "Observed call should use covariate_design for NaN mask consistency"
+        )
+        # Permuted calls must NOT use covariate_design (it freezes the X matrix)
+        for i, cd in enumerate(received_designs[1:], 1):
+            assert cd is None, (
+                f"Permuted call {i} should NOT receive covariate_design — "
+                f"its frozen X matrix ignores permuted labels"
             )
-            assert int(cd.sample_mask.sum()) == n_valid
 
     def test_covariate_design_not_passed_when_none(self, null_data):
         """Without covariate_design, None is passed to run_protein_differential."""

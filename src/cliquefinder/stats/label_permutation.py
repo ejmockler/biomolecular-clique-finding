@@ -242,6 +242,12 @@ def run_label_permutation_null(
                 f"stratify_by length ({len(stratify_by)}) != "
                 f"sample_condition length ({len(sample_condition)})"
             )
+        # Replace NaN/None with sentinel so np.unique can sort mixed-type arrays.
+        # NaN samples form their own stratum (permuted among themselves).
+        nan_mask = pd.isna(stratify_by)
+        if nan_mask.any():
+            stratify_by = stratify_by.copy()
+            stratify_by[nan_mask] = "__NA__"
 
     rng = np.random.default_rng(seed)
 
@@ -292,7 +298,15 @@ def run_label_permutation_null(
         else:
             perm_labels = generate_free_permutation(sample_condition, rng)
 
-        # Run protein differential with permuted labels, extract z directly
+        # Run protein differential with permuted labels, extract z directly.
+        # CRITICAL: Do NOT pass covariate_design here. The covariate_design
+        # contains a frozen X matrix built from the *original* condition
+        # labels. Passing it causes precompute_ols_matrices() to ignore
+        # the permuted sample_condition entirely, producing identical
+        # t-statistics for every permutation (null_std = 0, p = 1.0).
+        # Instead, pass only covariates_df so the design matrix is rebuilt
+        # from the permuted labels each iteration. The NaN mask is stable
+        # because covariates don't change across label permutations.
         try:
             perm_results = run_protein_differential(
                 data=data,
@@ -303,7 +317,6 @@ def run_label_permutation_null(
                 target_gene_ids=target_genes_list,
                 verbose=False,
                 covariates_df=covariates_df,
-                covariate_design=covariate_design,
             )
 
             null_z_scores[i] = _extract_enrichment_z(perm_results)
