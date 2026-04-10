@@ -49,12 +49,6 @@ The main codebase is organized in `src/cliquefinder/` with the following modules
 - **viz** - Visualization utilities
 - **knowledge** - Knowledge graph integration
 
-## Archived Documentation
-
-Older documentation and historical design documents.
-
-- [**archive/**](archive/) - Previous versions of documentation and deprecated specs
-
 ## Recent Additions
 
 - Control baseline validation framework (6 phases + orchestrator) with hierarchical verdict logic
