@@ -353,8 +353,8 @@ def main():
     print(f"  {len(rwr_only)} candidates not reached by discrete discovery")
     for c in rwr_only[:20]:
         t_stat = abs_t_stats.get(c.gene, 0.0)
-        print(f"    {c.gene:>12s}  rwr={c.rwr_combined:.4f}  "
-              f"signed={c.rwr_signed:+.2f}  rank={c.rwr_rank:4d}  "
+        print(f"    {c.gene:>12s}  score={c.ranking_score:.4f} ({c.score_type})  "
+              f"signed={c.rwr_signed:+.2f}  rank={c.ranking_rank:4d}  "
               f"|t|={t_stat:.2f}")
 
     # -------------------------------------------------------------------------
@@ -376,7 +376,8 @@ def main():
         "hybrid_only_arms": sorted(hybrid_only),
         "n_rwr_only_candidates": len(rwr_only),
         "rwr_only_top10": [
-            {"gene": c.gene, "rwr": c.rwr_combined, "signed": c.rwr_signed, "rank": c.rwr_rank}
+            {"gene": c.gene, "score": c.ranking_score, "score_type": c.score_type,
+             "signed": c.rwr_signed, "rank": c.ranking_rank}
             for c in rwr_only[:10]
         ],
         "discovery_gain_per_hop": hybrid_result.discovery_gain_per_hop,

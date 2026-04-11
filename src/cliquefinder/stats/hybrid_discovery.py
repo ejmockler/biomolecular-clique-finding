@@ -38,9 +38,10 @@ class RWRCandidate:
     """A gene identified by RWR but not reached by discrete discovery."""
 
     gene: str
-    rwr_combined: float
-    rwr_signed: float
-    rwr_rank: int  # 1-indexed rank by combined score
+    ranking_score: float   # RDPN z-score if available, else raw RWR combined
+    rwr_signed: float      # z-normalized act - rep (net direction)
+    ranking_rank: int      # 1-indexed rank by ranking_score
+    score_type: str = ""   # "rdpn_zscore" or "rwr_combined"
 
 
 @dataclass
@@ -84,8 +85,8 @@ class HybridDiscoveryResult:
         lines.append(f"RWR-only candidates: {len(self.rwr_only_candidates)}")
         for c in self.rwr_only_candidates[:10]:
             lines.append(
-                f"  {c.gene:>12s}  rwr={c.rwr_combined:.4f}  "
-                f"signed={c.rwr_signed:.2f}  rank={c.rwr_rank}"
+                f"  {c.gene:>12s}  score={c.ranking_score:.4f} ({c.score_type})  "
+                f"signed={c.rwr_signed:.2f}  rank={c.ranking_rank}"
             )
         return "\n".join(lines)
 
@@ -168,9 +169,11 @@ def run_hybrid_discovery(
     # Use RDPN z-scores if available (controls for hub bias), otherwise raw RWR.
     if rdpn_zscores is not None:
         ranking_scores = rdpn_zscores
+        score_type = "rdpn_zscore"
         logger.info("Ranking RWR-only candidates by RDPN z-scores (hub-deconfounded)")
     else:
         ranking_scores = signed_rwr.combined_scores
+        score_type = "rwr_combined"
         logger.warning("No RDPN z-scores — ranking by raw RWR (hub-biased)")
     ranked = sorted(
         ranking_scores.items(),
@@ -187,9 +190,10 @@ def run_hybrid_discovery(
             continue
         rwr_only.append(RWRCandidate(
             gene=gene,
-            rwr_combined=score,
+            ranking_score=score,
             rwr_signed=signed_rwr.signed_scores.get(gene, 0.0),
-            rwr_rank=rank,
+            ranking_rank=rank,
+            score_type=score_type,
         ))
         if len(rwr_only) >= top_k_candidates:
             break
