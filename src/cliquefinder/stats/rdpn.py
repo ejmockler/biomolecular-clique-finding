@@ -212,3 +212,73 @@ def compute_rdpn_zscores(
         / null.std_scores[nonzero_std]
     )
     return z
+
+
+# ---------------------------------------------------------------------------
+# Analytical degree correction (O(1) — no rewiring needed)
+# ---------------------------------------------------------------------------
+
+
+def compute_degree_corrected_zscores(
+    rwr_scores: NDArray[np.float64],
+    adjacency: sp.csr_matrix,
+    seed_index: int,
+    restart_prob: float = 0.15,
+) -> NDArray[np.float64]:
+    """Analytical degree-deconfounded z-scores — no rewiring required.
+
+    Under the configuration model null, the expected RWR score for node j
+    is proportional to its weighted in-degree (the probability that a
+    random walk lands on j). This first-order correction removes hub bias
+    without the O(n_rewirings × n_swaps) cost of empirical RDPN.
+
+    Parameters
+    ----------
+    rwr_scores
+        Observed RWR scores from ``compute_rwr_scores()``, shape (n_nodes,).
+    adjacency
+        Sparse adjacency matrix (same one used for RWR).
+    seed_index
+        Index of the seed node.
+    restart_prob
+        RWR restart probability (same as used for observed scores).
+
+    Returns
+    -------
+    z-scores, shape (n_nodes,). Higher = more surprising proximity to seed
+    given the node's degree. The seed node gets z=0 (its score is fully
+    explained by restart probability).
+    """
+    n = adjacency.shape[0]
+    alpha = restart_prob
+
+    # Expected score under configuration model:
+    # E[rwr_j] ≈ α·δ(j,seed) + (1-α)·d_in(j) / Σ_k d_in(k)
+    # This is the stationary distribution of a random graph with the same
+    # degree sequence — probability of landing on j is proportional to in-degree.
+    in_degree = np.array(adjacency.sum(axis=0)).ravel().astype(np.float64)
+    total_in = in_degree.sum()
+
+    if total_in < 1:
+        return np.zeros(n, dtype=np.float64)
+
+    expected = (1 - alpha) * (in_degree / total_in)
+    expected[seed_index] += alpha  # seed gets restart mass
+
+    # Residual: how much the observed deviates from degree-expected
+    residual = rwr_scores - expected
+
+    # Variance estimate: use residual MAD (robust to heavy tails)
+    # Exclude seed (its residual is by definition ~0 after correction)
+    mask = np.ones(n, dtype=bool)
+    mask[seed_index] = False
+    res_no_seed = residual[mask]
+    mad = np.median(np.abs(res_no_seed - np.median(res_no_seed)))
+    sigma = 1.4826 * mad  # MAD → std conversion for normal distribution
+
+    if sigma < 1e-15:
+        return np.zeros(n, dtype=np.float64)
+
+    z = residual / sigma
+    z[seed_index] = 0.0  # seed is not a discovery candidate
+    return z

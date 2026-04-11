@@ -31,88 +31,187 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description="Hybrid vs discrete discovery comparison")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--data", type=Path, required=True,
+                        help="Expression/proteomics data matrix CSV")
+    parser.add_argument("--metadata", type=Path, required=True,
+                        help="Sample metadata CSV")
     parser.add_argument("--indra-env-file", type=str, default=".env")
     parser.add_argument("--network-query", type=str, default="C9orf72")
     parser.add_argument("--max-hops", type=int, default=3)
     parser.add_argument("--n-rotations", type=int, default=999)
     parser.add_argument("--rwr-hops", type=int, default=2,
                         help="Hops for INDRA subgraph extraction (for RWR)")
+    parser.add_argument("--rwr-min-evidence", type=int, default=1,
+                        help="Min evidence count for RWR subgraph edges")
     parser.add_argument("--rdpn-rewirings", type=int, default=100,
                         help="Number of RDPN rewirings (100=fast, 500=production)")
     parser.add_argument("--validation-dir", type=Path, default=None,
-                        help="Path to existing validation output (protein_differential_results.csv, indra_targets.json)")
+                        help="Path to existing validation output (indra_targets.json)")
+    parser.add_argument("--cohort-config", type=Path, default=None,
+                        help="Cohort YAML config (defines contrast and covariates)")
+    parser.add_argument("--contrast", nargs=2, default=None,
+                        help="Contrast pair, e.g. C9ORF72 SPORADIC")
+    parser.add_argument("--condition-col", type=str, default="condition")
+    parser.add_argument("--covariates", nargs="*", default=None)
     parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------------------------------
-    # Step 1: Load existing validation data
+    # Step 1: Load expression data and metadata
     # -------------------------------------------------------------------------
-    val_dir = args.validation_dir
-    if val_dir is None:
-        # Try common locations
-        for candidate in [
-            Path("results/validation"),
-            Path("data/validation"),
-            Path("results"),
-        ]:
-            if (candidate / "protein_differential_results.csv").exists():
-                val_dir = candidate
-                break
-    if val_dir is None:
-        logger.error("Cannot find validation data. Pass --validation-dir")
-        sys.exit(1)
-
-    print(f"Loading data from {val_dir}")
-
-    protein_csv = val_dir / "protein_differential_results.csv"
-    targets_json = val_dir / "indra_targets.json"
-
-    if not protein_csv.exists():
-        logger.error(f"Missing {protein_csv}")
-        sys.exit(1)
-
-    protein_df = pd.read_csv(protein_csv)
-    print(f"  {len(protein_df)} proteins loaded")
-
-    # Build effect maps
-    disc_effects = {}
-    disc_directions = {}
-    abs_t_stats = {}
-    for _, row in protein_df.iterrows():
-        if pd.notna(row.get('t_statistic')):
-            fid = row['feature_id']
-            t = float(row['t_statistic'])
-            disc_effects[fid] = abs(t)
-            disc_directions[fid] = 'down' if t < 0 else 'up'
-            # For RWR correlation, map by symbol if available
-            sym = row.get('gene_symbol') or row.get('symbol') or ''
-            if sym:
-                abs_t_stats[sym] = abs(t)
-
-    # -------------------------------------------------------------------------
-    # Step 2: Set up ROAST engine
-    # -------------------------------------------------------------------------
-    print("\nSetting up ROAST engine...")
-    from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
-    from cliquefinder.stats.rotation import RotationTestConfig, SetStatistic
-
-    # We need the fitted engine — load from validation checkpoint if possible
-    engine_ckpt = val_dir / "rotation_engine.pkl"
-    if engine_ckpt.exists():
-        import pickle
-        with open(engine_ckpt, 'rb') as f:
-            eng = pickle.load(f)
-        print(f"  Engine loaded from checkpoint")
+    print(f"Loading data: {args.data}")
+    # Support both CSV (load_csv_matrix) and TSV (raw proteomics) formats
+    data_path = args.data
+    if data_path.suffix == '.txt' or data_path.suffix == '.tsv':
+        raw_df = pd.read_csv(data_path, sep='\t', index_col=0)
+        # Parse UniProt accessions from "1/sp|A0AVT1|UBA6_HUMAN" format
+        parsed_ids = []
+        for fid in raw_df.index:
+            fid_str = str(fid)
+            if '|' in fid_str:
+                parts = fid_str.split('|')
+                parsed_ids.append(parts[1] if len(parts) > 1 else fid_str)
+            else:
+                parsed_ids.append(fid_str.split('/')[-1] if '/' in fid_str else fid_str)
+        raw_df.index = parsed_ids
+        feature_ids = list(raw_df.index)
+        sample_ids = list(raw_df.columns)
+        data_matrix = raw_df.values.astype(np.float64)
+        print(f"  {len(feature_ids)} features x {len(sample_ids)} samples (TSV, parsed UniProt IDs)")
     else:
-        logger.error("No rotation engine checkpoint found. Run validate_baselines.py first.")
+        from cliquefinder.io.loaders import load_csv_matrix
+        matrix = load_csv_matrix(data_path)
+        feature_ids = matrix.feature_ids
+        sample_ids = matrix.sample_ids
+        data_matrix = matrix.data
+        print(f"  {len(feature_ids)} features x {len(sample_ids)} samples")
+
+    print(f"Loading metadata: {args.metadata}")
+    metadata = pd.read_csv(args.metadata, index_col=0)
+
+    # Handle cohort config
+    condition_col = args.condition_col
+    covariates = args.covariates
+    contrast_pair = tuple(args.contrast) if args.contrast else None
+
+    if args.cohort_config and args.cohort_config.exists():
+        import yaml
+        with open(args.cohort_config) as f:
+            cohort = yaml.safe_load(f)
+        if "contrast" in cohort:
+            contrast_pair = tuple(cohort["contrast"])
+        if "condition_column" in cohort:
+            condition_col = cohort["condition_column"]
+        if "covariates" in cohort and covariates is None:
+            covariates = cohort["covariates"]
+
+        # Apply cohort group assignment from YAML groups definition
+        if "groups" in cohort:
+            metadata["condition"] = np.nan
+            for group in cohort["groups"]:
+                label = group["label"]
+                logic = group.get("logic", "all")
+                masks = []
+                for crit in group["criteria"]:
+                    col = crit["column"]
+                    if col not in metadata.columns:
+                        masks.append(pd.Series(False, index=metadata.index))
+                        continue
+                    if "eq" in crit:
+                        masks.append(metadata[col].astype(str) == str(crit["eq"]))
+                    elif "gte" in crit:
+                        masks.append(pd.to_numeric(metadata[col], errors='coerce') >= crit["gte"])
+                    elif "lt" in crit:
+                        m = pd.to_numeric(metadata[col], errors='coerce') < crit["lt"]
+                        if crit.get("allow_na"):
+                            m = m | metadata[col].isna()
+                        masks.append(m)
+                    elif "not_in" in crit:
+                        m = ~metadata[col].astype(str).isin([str(x) for x in crit["not_in"]])
+                        if crit.get("allow_na"):
+                            m = m | metadata[col].isna()
+                        masks.append(m)
+                if masks:
+                    combined = masks[0]
+                    for m in masks[1:]:
+                        combined = combined & m if logic == "all" else combined | m
+                    metadata.loc[combined, "condition"] = label
+            condition_col = "condition"
+            print(f"  Cohort groups: {metadata['condition'].value_counts().to_dict()}")
+
+    if contrast_pair is None:
+        logger.error("Must provide --contrast or --cohort-config with contrast defined")
         sys.exit(1)
 
-    feature_ids = list(eng.gene_to_idx.keys())
+    # Align data and metadata
+    common_samples = sorted(set(sample_ids) & set(metadata.index))
+    metadata = metadata.loc[common_samples]
+    col_indices = [sample_ids.index(s) for s in common_samples]
+    data = data_matrix[:, col_indices]
+    print(f"  {len(common_samples)} samples after alignment")
+
+    # Filter to samples in the contrast groups
+    in_contrast = metadata[condition_col].isin(contrast_pair)
+    metadata = metadata[in_contrast]
+    common_samples = list(metadata.index)
+    col_indices = [sample_ids.index(s) for s in common_samples if s in sample_ids]
+    data = data_matrix[:, col_indices]
+    metadata = metadata.loc[[sample_ids[i] for i in col_indices]]
+    print(f"  {len(metadata)} samples in contrast {contrast_pair}")
+
+    # -------------------------------------------------------------------------
+    # Step 2: Fit ROAST engine
+    # -------------------------------------------------------------------------
+    print("\nFitting ROAST engine...")
+    from cliquefinder.stats.rotation import RotationTestEngine, RotationTestConfig, SetStatistic
+    from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
+
+    eng = RotationTestEngine(data, feature_ids, metadata)
+    eng.fit(
+        conditions=list(contrast_pair),
+        contrast=contrast_pair,
+        condition_column=condition_col,
+        covariates=covariates,
+    )
+    print(f"  Engine fitted: {len(feature_ids)} features, contrast={contrast_pair}")
+
     symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
     feature_to_symbol = {v: k for k, v in symbol_to_feature.items()}
     print(f"  {len(symbol_to_feature)} genes mapped")
+
+    # Build effect maps from existing protein results CSV (faster than re-computing)
+    disc_effects = {}
+    disc_directions = {}
+    abs_t_stats = {}
+
+    val_dir = args.validation_dir
+    protein_csv = None
+    if val_dir and (val_dir / "protein_differential_results.csv").exists():
+        protein_csv = val_dir / "protein_differential_results.csv"
+    else:
+        for candidate in [
+            Path("output/validation/c9orf72_final/protein_differential_results.csv"),
+        ]:
+            if candidate.exists():
+                protein_csv = candidate
+                break
+
+    if protein_csv is not None:
+        protein_df = pd.read_csv(protein_csv)
+        for _, row in protein_df.iterrows():
+            if pd.notna(row.get('t_statistic')):
+                fid = row['feature_id']
+                t = float(row['t_statistic'])
+                disc_effects[fid] = abs(t)
+                disc_directions[fid] = 'down' if t < 0 else 'up'
+                sym = row.get('gene_symbol') or ''
+                if sym:
+                    abs_t_stats[sym] = abs(t)
+        print(f"  {len(disc_effects)} genes with t-statistics from {protein_csv}")
+    else:
+        logger.warning("No protein_differential_results.csv found — effects will be empty")
 
     roast_config = RotationTestConfig(
         statistics=[SetStatistic.MSQ],
@@ -129,7 +228,21 @@ def main():
 
     disc_adjacency = {args.network_query: []}
 
-    if targets_json.exists():
+    # Find indra_targets.json
+    targets_json = None
+    if val_dir and (val_dir / "indra_targets.json").exists():
+        targets_json = val_dir / "indra_targets.json"
+    else:
+        # Search common locations
+        for candidate in [
+            Path("output/validation/c9orf72_final/indra_targets.json"),
+            Path("output/c9orf72_network/indra_targets.json"),
+        ]:
+            if candidate.exists():
+                targets_json = candidate
+                break
+
+    if targets_json is not None:
         from cliquefinder.stats.target_set import TargetSet
         ts = TargetSet.load(targets_json)
         for sym, edges in ts.edge_metadata.items():
@@ -138,9 +251,9 @@ def main():
                 source=args.network_query, target=sym,
                 reliability=reliability, edge_type=direction,
             ))
-        print(f"  {len(disc_adjacency[args.network_query])} edges from target set")
+        print(f"  {len(disc_adjacency[args.network_query])} edges from {targets_json}")
     else:
-        logger.error(f"Missing {targets_json}")
+        logger.error("No indra_targets.json found. Pass --validation-dir")
         sys.exit(1)
 
     # -------------------------------------------------------------------------
@@ -161,7 +274,7 @@ def main():
             cogex_client=cogex,
             seed_gene_name=args.network_query,
             max_hops=args.rwr_hops,
-            min_evidence=1,
+            min_evidence=args.rwr_min_evidence,
         )
         print(f"  {len(rwr_edges)} edges extracted")
     finally:
@@ -215,13 +328,13 @@ def main():
         bridge._target_cache.clear()
         bridge._edge_metadata_cache.clear()
 
-        # --- RDPN null model (hub deconfounding) ---
+        # --- Degree-corrected z-scores (hub deconfounding) ---
         print(f"\n{'='*60}")
-        print(f"RDPN NULL MODEL ({args.rdpn_rewirings} rewirings)")
+        print("DEGREE-CORRECTED Z-SCORES (analytical, O(1))")
         print(f"{'='*60}")
-        from cliquefinder.stats.rdpn import compute_rdpn_null, compute_rdpn_zscores
+        from cliquefinder.stats.rdpn import compute_degree_corrected_zscores
 
-        # Build unweighted adjacency for RDPN (same nodes as signed RWR)
+        # Build unweighted adjacency for degree correction (same nodes as signed RWR)
         node_list = list(signed_rwr.node_names)
         node_to_idx = {n: i for i, n in enumerate(node_list)}
         n_nodes = len(node_list)
@@ -237,19 +350,16 @@ def main():
         )
         seed_idx = node_to_idx[args.network_query]
 
-        # Compute unweighted observed RWR for fair RDPN comparison
+        # Compute unweighted observed RWR for degree correction
         from cliquefinder.stats.network_proximity import compute_rwr_scores
         observed_unweighted, _, _ = compute_rwr_scores(rdpn_adj, seed_idx)
 
-        rdpn_null = compute_rdpn_null(
-            rdpn_adj, seed_idx,
-            n_rewirings=args.rdpn_rewirings,
-            rng=np.random.default_rng(42),
+        rdpn_z_arr = compute_degree_corrected_zscores(
+            observed_unweighted, rdpn_adj, seed_idx,
         )
-        rdpn_z_arr = compute_rdpn_zscores(observed_unweighted, rdpn_null)
         rdpn_zscores = {node_list[i]: float(rdpn_z_arr[i]) for i in range(n_nodes)}
-        print(f"  RDPN: {rdpn_null.n_successful}/{rdpn_null.n_rewirings} converged")
         print(f"  Z-scores: mean={rdpn_z_arr.mean():.2f}, std={rdpn_z_arr.std():.2f}")
+        print(f"  Top-5 z-scores: {sorted(rdpn_zscores.items(), key=lambda x: -x[1])[:5]}")
 
         # --- Hybrid (RWR-weighted) ---
         print(f"\n{'='*60}")
