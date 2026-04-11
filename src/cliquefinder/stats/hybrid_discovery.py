@@ -100,6 +100,8 @@ def run_hybrid_discovery(
     measurable_genes: set[str] | None = None,
     top_k_candidates: int = 50,
     rdpn_zscores: dict[str, float] | None = None,
+    target_to_effect: dict[str, float] | None = None,
+    target_to_direction: dict[str, str] | None = None,
     **discovery_kwargs: Any,
 ) -> HybridDiscoveryResult:
     """Run discrete discovery with RWR annotations.
@@ -126,11 +128,14 @@ def run_hybrid_discovery(
     """
     from causal_path_scoring.core.discovery import run_discovery
 
-    # Run discrete discovery unchanged
+    # Run discrete discovery unchanged — forward all required args explicitly
     disc_result = run_discovery(
         seed=seed,
         adjacency=adjacency,
         test_gene_set=test_gene_set,
+        target_to_effect=target_to_effect or {},
+        target_to_direction=target_to_direction or {},
+        measurable_genes=measurable_genes or set(),
         get_targets=get_targets,
         **discovery_kwargs,
     )
