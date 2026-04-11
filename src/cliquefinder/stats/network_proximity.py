@@ -789,6 +789,12 @@ def compute_signed_rwr_scores(
         Contains per-gene activation, repression, combined, and signed scores.
     """
     act_edges, rep_edges = partition_signed_edges(edges)
+    n_dropped = len(edges) - len(act_edges) - len(rep_edges)
+    if n_dropped > 0:
+        logger.info(
+            "Signed RWR: %d/%d edges excluded (not activation or repression type)",
+            n_dropped, len(edges),
+        )
 
     # Build graphs and collect the union of all nodes
     all_nodes: set[str] = {seed_gene}
@@ -836,14 +842,18 @@ def compute_signed_rwr_scores(
     # Signed score: z-normalize within each subgraph before subtracting.
     # Raw act - rep is invalid because the two subgraphs have different
     # densities, so raw probabilities are not on a comparable scale.
-    def _zscore(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+    def _zscore(arr: NDArray[np.float64], label: str) -> NDArray[np.float64]:
         std = arr.std()
         if std < 1e-12:
+            logger.warning(
+                "Signed RWR: %s subgraph is degenerate (std < 1e-12). "
+                "Signed scores for this subgraph will be zero.", label,
+            )
             return np.zeros_like(arr)
         return (arr - arr.mean()) / std
 
-    act_z = _zscore(act_scores_arr)
-    rep_z = _zscore(rep_scores_arr)
+    act_z = _zscore(act_scores_arr, "activation")
+    rep_z = _zscore(rep_scores_arr, "repression")
     signed = {node_list[i]: float(act_z[i] - rep_z[i]) for i in range(n)}
 
     return SignedRWRResult(

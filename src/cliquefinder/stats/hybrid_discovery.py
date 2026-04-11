@@ -98,6 +98,7 @@ def run_hybrid_discovery(
     get_targets: Callable[[str], list[str]],
     measurable_genes: set[str] | None = None,
     top_k_candidates: int = 50,
+    rdpn_zscores: dict[str, float] | None = None,
     **discovery_kwargs: Any,
 ) -> HybridDiscoveryResult:
     """Run discrete discovery with RWR annotations.
@@ -113,6 +114,10 @@ def run_hybrid_discovery(
         Used to filter RWR-only candidates to actionable genes.
     top_k_candidates
         Number of beyond-hop RWR candidates to report.
+    rdpn_zscores
+        If provided, RDPN degree-deconfounded z-scores per gene.
+        Used to rank RWR-only candidates (controls for hub bias).
+        Without this, candidates are ranked by raw RWR combined score.
 
     Returns
     -------
@@ -159,10 +164,16 @@ def run_hybrid_discovery(
             gain = float("nan")
         discovery_gain_per_hop.append(gain)
 
-    # Find RWR-only candidates: high RWR score but not tested by discrete pipeline
-    # Sort all genes by combined RWR score, exclude those already tested
+    # Find RWR-only candidates: high RWR score but not tested by discrete pipeline.
+    # Use RDPN z-scores if available (controls for hub bias), otherwise raw RWR.
+    if rdpn_zscores is not None:
+        ranking_scores = rdpn_zscores
+        logger.info("Ranking RWR-only candidates by RDPN z-scores (hub-deconfounded)")
+    else:
+        ranking_scores = signed_rwr.combined_scores
+        logger.warning("No RDPN z-scores — ranking by raw RWR (hub-biased)")
     ranked = sorted(
-        signed_rwr.combined_scores.items(),
+        ranking_scores.items(),
         key=lambda x: -x[1],
     )
 

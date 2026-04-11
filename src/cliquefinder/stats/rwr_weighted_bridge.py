@@ -93,14 +93,26 @@ class RWRWeightedBridge:
         if len(fids) < 2:
             return 1.0
 
-        # Build per-gene weights from RWR scores
-        weights = np.ones(len(fids), dtype=np.float64)
+        # Build per-gene weights from rank-normalized RWR scores.
+        # Raw RWR probabilities have ~10,000:1 dynamic range across a 25K-node
+        # graph, which would collapse ROAST into a single-gene test dominated
+        # by the 1-2 highest-RWR genes. Rank normalization compresses to [0,1]
+        # while preserving ordering.
+        raw_scores = np.zeros(len(fids), dtype=np.float64)
+        reliabilities = np.ones(len(fids), dtype=np.float64)
         for i, fid in enumerate(fids):
             sym = self.feat_to_sym.get(fid, "")
-            rwr_score = self._scores.get(sym, 0.0)
-            # Multiply by edge reliability if available from inner bridge
-            reliability = self._get_reliability(set_id, fid)
-            weights[i] = max(rwr_score * reliability, 1e-6)
+            raw_scores[i] = self._scores.get(sym, 0.0)
+            reliabilities[i] = self._get_reliability(set_id, fid)
+
+        # Rank-normalize within the gene set: rank / n maps to [1/n, 1]
+        n = len(fids)
+        order = np.argsort(raw_scores)
+        ranks = np.empty(n, dtype=np.float64)
+        ranks[order] = np.arange(1, n + 1, dtype=np.float64)
+        weights = (ranks / n) * reliabilities
+        # Floor to avoid zero weights
+        weights = np.maximum(weights, 1.0 / (2 * n))
 
         result = self.engine.test_gene_set(
             gene_set=fids,
@@ -111,12 +123,24 @@ class RWRWeightedBridge:
         return result.p_values.get("msq", {}).get("mixed", 1.0)
 
     def _get_reliability(self, intermediary: str, target_fid: str) -> float:
-        """Look up edge reliability from inner bridge's metadata cache."""
-        edge_meta = self.inner._edge_metadata_cache.get(intermediary, [])
-        for meta in edge_meta:
-            if meta.get("target_fid") == target_fid:
-                return meta.get("reliability", 1.0)
-        return 1.0
+        """Look up edge reliability from inner bridge's metadata cache.
+
+        Precondition: get_targets(intermediary) must have been called first
+        to populate the cache. This is guaranteed by run_discovery()'s
+        calling convention (get_targets before test_gene_set per intermediary).
+        """
+        # Lazy-build O(1) lookup index from the inner bridge's list-based cache
+        if not hasattr(self, '_reliability_index'):
+            self._reliability_index: dict[str, dict[str, float]] = {}
+
+        if intermediary not in self._reliability_index:
+            edge_meta = self.inner._edge_metadata_cache.get(intermediary, [])
+            self._reliability_index[intermediary] = {
+                m.get("target_fid", ""): m.get("reliability", 1.0)
+                for m in edge_meta
+            }
+
+        return self._reliability_index.get(intermediary, {}).get(target_fid, 1.0)
 
     def close(self):
         """Delegate cleanup to inner bridge."""

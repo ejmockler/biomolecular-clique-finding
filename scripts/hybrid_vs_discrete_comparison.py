@@ -179,13 +179,12 @@ def main():
     print(f"  Rep convergence: delta={signed_rwr.rep_convergence[0]:.2e}, iters={signed_rwr.rep_convergence[1]}")
 
     # -------------------------------------------------------------------------
-    # Step 5: Run discrete-only discovery
+    # Step 5+6: Run both pipelines with SHARED bridge (same INDRA cache)
     # -------------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("DISCRETE-ONLY DISCOVERY")
-    print(f"{'='*60}")
     from causal_path_scoring.core.discovery import run_discovery
     from cliquefinder.stats.discovery_bridge import DiscoveryBridge
+    from cliquefinder.stats.rwr_weighted_bridge import RWRWeightedBridge
+    from cliquefinder.stats.hybrid_discovery import run_hybrid_discovery
 
     with DiscoveryBridge(
         eng, symbol_to_feature,
@@ -193,6 +192,10 @@ def main():
         min_evidence=1, min_reliability=0.0, min_sources=1,
         roast_config=roast_config,
     ) as bridge:
+        # --- Discrete-only ---
+        print(f"\n{'='*60}")
+        print("DISCRETE-ONLY DISCOVERY")
+        print(f"{'='*60}")
         disc_result = run_discovery(
             seed=args.network_query,
             adjacency=disc_adjacency,
@@ -206,24 +209,52 @@ def main():
             get_targets=bridge.get_targets,
             verbose=True,
         )
+        print(disc_result.summary())
 
-    print(disc_result.summary())
+        # Clear target cache so hybrid run re-queries (same bridge, fresh cache)
+        bridge._target_cache.clear()
+        bridge._edge_metadata_cache.clear()
 
-    # -------------------------------------------------------------------------
-    # Step 6: Run hybrid discovery (RWR-weighted ROAST)
-    # -------------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("HYBRID DISCOVERY (RWR-weighted ROAST)")
-    print(f"{'='*60}")
-    from cliquefinder.stats.rwr_weighted_bridge import RWRWeightedBridge
-    from cliquefinder.stats.hybrid_discovery import run_hybrid_discovery
+        # --- RDPN null model (hub deconfounding) ---
+        print(f"\n{'='*60}")
+        print(f"RDPN NULL MODEL ({args.rdpn_rewirings} rewirings)")
+        print(f"{'='*60}")
+        from cliquefinder.stats.rdpn import compute_rdpn_null, compute_rdpn_zscores
 
-    with DiscoveryBridge(
-        eng, symbol_to_feature,
-        env_file=args.indra_env_file,
-        min_evidence=1, min_reliability=0.0, min_sources=1,
-        roast_config=roast_config,
-    ) as bridge:
+        # Build unweighted adjacency for RDPN (same nodes as signed RWR)
+        node_list = list(signed_rwr.node_names)
+        node_to_idx = {n: i for i, n in enumerate(node_list)}
+        n_nodes = len(node_list)
+        _r, _c = [], []
+        for src, tgt, _ in rwr_edges:
+            if src in node_to_idx and tgt in node_to_idx:
+                _r.append(node_to_idx[src])
+                _c.append(node_to_idx[tgt])
+        import scipy.sparse as sp_sparse
+        rdpn_adj = sp_sparse.csr_matrix(
+            (np.ones(len(_r), dtype=np.float64), (np.array(_r), np.array(_c))),
+            shape=(n_nodes, n_nodes),
+        )
+        seed_idx = node_to_idx[args.network_query]
+
+        # Compute unweighted observed RWR for fair RDPN comparison
+        from cliquefinder.stats.network_proximity import compute_rwr_scores
+        observed_unweighted, _, _ = compute_rwr_scores(rdpn_adj, seed_idx)
+
+        rdpn_null = compute_rdpn_null(
+            rdpn_adj, seed_idx,
+            n_rewirings=args.rdpn_rewirings,
+            rng=np.random.default_rng(42),
+        )
+        rdpn_z_arr = compute_rdpn_zscores(observed_unweighted, rdpn_null)
+        rdpn_zscores = {node_list[i]: float(rdpn_z_arr[i]) for i in range(n_nodes)}
+        print(f"  RDPN: {rdpn_null.n_successful}/{rdpn_null.n_rewirings} converged")
+        print(f"  Z-scores: mean={rdpn_z_arr.mean():.2f}, std={rdpn_z_arr.std():.2f}")
+
+        # --- Hybrid (RWR-weighted) ---
+        print(f"\n{'='*60}")
+        print("HYBRID DISCOVERY (RWR-weighted ROAST)")
+        print(f"{'='*60}")
         rwr_bridge = RWRWeightedBridge(
             inner_bridge=bridge,
             signed_rwr=signed_rwr,
@@ -244,10 +275,10 @@ def main():
             min_targets_per_arm=5,
             fdr_threshold=args.alpha,
             top_k_candidates=50,
+            rdpn_zscores=rdpn_zscores,
             verbose=True,
         )
-
-    print(hybrid_result.summary())
+        print(hybrid_result.summary())
 
     # -------------------------------------------------------------------------
     # Step 7: Concordance analysis
