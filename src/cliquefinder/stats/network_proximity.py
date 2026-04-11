@@ -153,6 +153,39 @@ class RWRCorrelationResult:
 
 
 @dataclass(frozen=True)
+class SignedRWRResult:
+    """Result of signed RWR propagation on INDRA directed graph.
+
+    Runs RWR separately on activation and repression subgraphs to preserve
+    edge semantics. Combined score = act + rep (total influence from seed).
+    Signed score = act - rep (net activation direction).
+    """
+
+    seed_gene: str
+    node_names: tuple[str, ...]
+    act_scores: dict[str, float]       # Activation subgraph RWR
+    rep_scores: dict[str, float]       # Repression subgraph RWR
+    combined_scores: dict[str, float]  # act + rep (genome-wide ranking)
+    signed_scores: dict[str, float]    # act - rep (net direction)
+    n_act_edges: int
+    n_rep_edges: int
+    act_convergence: tuple[float, int]  # (delta, n_iter)
+    rep_convergence: tuple[float, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seed_gene": self.seed_gene,
+            "n_nodes": len(self.node_names),
+            "n_act_edges": self.n_act_edges,
+            "n_rep_edges": self.n_rep_edges,
+            "act_convergence_delta": self.act_convergence[0],
+            "act_n_iterations": self.act_convergence[1],
+            "rep_convergence_delta": self.rep_convergence[0],
+            "rep_n_iterations": self.rep_convergence[1],
+        }
+
+
+@dataclass(frozen=True)
 class NetworkProximityReport:
     """Combined report for all three network proximity tests.
 
@@ -571,7 +604,8 @@ def compute_rwr_scores(
     # T[i,j] = A[i,j] / out_degree(i) gives transition probabilities.
     # RWR operates on T^T: p = (1-alpha) * T^T * p + alpha * e_seed.
     row_sums = np.array(adjacency.sum(axis=1)).ravel()
-    row_sums[row_sums == 0] = 1.0  # Sinks: self-loop (absorb probability)
+    dangling = row_sums == 0  # Sink nodes (no outgoing edges)
+    row_sums[dangling] = 1.0  # Avoid division by zero
     T = adjacency.multiply(1.0 / row_sums[:, np.newaxis])
     W = T.T.tocsr()  # Transpose for left-multiplication
 
@@ -579,11 +613,18 @@ def compute_rwr_scores(
     e_seed = np.zeros(n, dtype=np.float64)
     e_seed[seed_index] = 1.0
 
-    # Power iteration: p(t+1) = (1-alpha) * W * p(t) + alpha * e_seed
+    # Power iteration: p(t+1) = (1-alpha) * (W * p + dangling_mass/n) + alpha * e_seed
+    # Dangling nodes absorb probability; redistribute uniformly (standard PageRank).
     p = e_seed.copy()
     alpha = restart_prob
+    has_dangling = dangling.any()
     for iteration in range(max_iter):
-        p_new = (1 - alpha) * W.dot(p) + alpha * e_seed
+        Wp = W.dot(p)
+        if has_dangling:
+            # Redistribute probability mass from dangling nodes uniformly
+            dangling_mass = p[dangling].sum()
+            Wp += dangling_mass / n
+        p_new = (1 - alpha) * Wp + alpha * e_seed
         delta = np.sum(np.abs(p_new - p))
         p = p_new
         if delta < tol:
@@ -671,6 +712,151 @@ def run_rwr_correlation_test(
         n_graph_edges=n_graph_edges,
         convergence_delta=convergence_delta,
         n_iterations=n_rwr_iterations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Signed RWR — separate propagation on activation/repression subgraphs
+# ---------------------------------------------------------------------------
+
+
+# Edge type sets imported lazily to avoid circular imports
+_ACTIVATION_TYPES: set[str] | None = None
+_REPRESSION_TYPES: set[str] | None = None
+
+
+def _load_edge_types() -> tuple[set[str], set[str]]:
+    global _ACTIVATION_TYPES, _REPRESSION_TYPES
+    if _ACTIVATION_TYPES is None:
+        from cliquefinder.knowledge.cogex import ACTIVATION_TYPES, REPRESSION_TYPES
+        _ACTIVATION_TYPES = ACTIVATION_TYPES
+        _REPRESSION_TYPES = REPRESSION_TYPES
+    return _ACTIVATION_TYPES, _REPRESSION_TYPES
+
+
+def partition_signed_edges(
+    edges: list[tuple[str, str, dict[str, Any]]],
+) -> tuple[list[tuple[str, str, dict]], list[tuple[str, str, dict]]]:
+    """Split edges by regulatory sign using INDRA statement types.
+
+    Parameters
+    ----------
+    edges
+        List of (source, target, attrs) where attrs contains 'stmt_type'.
+
+    Returns
+    -------
+    (activation_edges, repression_edges)
+        Two edge lists. Edges with types not in either set are excluded.
+    """
+    act_types, rep_types = _load_edge_types()
+    act_edges = []
+    rep_edges = []
+    for src, tgt, attrs in edges:
+        st = attrs.get("stmt_type", "")
+        if st in act_types:
+            act_edges.append((src, tgt, attrs))
+        elif st in rep_types:
+            rep_edges.append((src, tgt, attrs))
+    return act_edges, rep_edges
+
+
+def compute_signed_rwr_scores(
+    edges: list[tuple[str, str, dict[str, Any]]],
+    seed_gene: str,
+    restart_prob: float = 0.15,
+    tol: float = 1e-8,
+    max_iter: int = 200,
+) -> SignedRWRResult:
+    """Signed RWR via separate subgraph propagation.
+
+    Splits INDRA edges into activation and repression subgraphs, runs
+    ``compute_rwr_scores()`` on each independently, and returns combined
+    and signed proximity scores.
+
+    Parameters
+    ----------
+    edges
+        List of (source, target, attrs) with 'stmt_type' and 'evidence_count'.
+    seed_gene
+        Gene symbol of the seed node.
+    restart_prob
+        Restart probability (0.15 = damping factor 0.85).
+
+    Returns
+    -------
+    SignedRWRResult
+        Contains per-gene activation, repression, combined, and signed scores.
+    """
+    act_edges, rep_edges = partition_signed_edges(edges)
+
+    # Build graphs and collect the union of all nodes
+    all_nodes: set[str] = {seed_gene}
+    for src, tgt, _ in edges:
+        all_nodes.add(src)
+        all_nodes.add(tgt)
+    node_list = sorted(all_nodes)
+    node_to_idx = {n: i for i, n in enumerate(node_list)}
+    n = len(node_list)
+
+    if seed_gene not in node_to_idx:
+        raise ValueError(f"Seed gene '{seed_gene}' not found in edges.")
+    seed_idx = node_to_idx[seed_gene]
+
+    def _build_adjacency(edge_list: list) -> sp.csr_matrix:
+        rows, cols, data = [], [], []
+        for src, tgt, attrs in edge_list:
+            if src in node_to_idx and tgt in node_to_idx:
+                rows.append(node_to_idx[src])
+                cols.append(node_to_idx[tgt])
+                data.append(float(attrs.get("evidence_count", 1)))
+        if not rows:
+            return sp.csr_matrix((n, n), dtype=np.float64)
+        return sp.csr_matrix(
+            (np.array(data, dtype=np.float64), (np.array(rows), np.array(cols))),
+            shape=(n, n),
+        )
+
+    act_adj = _build_adjacency(act_edges)
+    rep_adj = _build_adjacency(rep_edges)
+
+    # Run RWR on each subgraph
+    act_scores_arr, act_delta, act_iter = compute_rwr_scores(
+        act_adj, seed_idx, restart_prob, tol, max_iter,
+    )
+    rep_scores_arr, rep_delta, rep_iter = compute_rwr_scores(
+        rep_adj, seed_idx, restart_prob, tol, max_iter,
+    )
+
+    # Build per-gene score dicts (raw probabilities)
+    act_scores = {node_list[i]: float(act_scores_arr[i]) for i in range(n)}
+    rep_scores = {node_list[i]: float(rep_scores_arr[i]) for i in range(n)}
+    combined = {g: act_scores[g] + rep_scores[g] for g in node_list}
+
+    # Signed score: z-normalize within each subgraph before subtracting.
+    # Raw act - rep is invalid because the two subgraphs have different
+    # densities, so raw probabilities are not on a comparable scale.
+    def _zscore(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+        std = arr.std()
+        if std < 1e-12:
+            return np.zeros_like(arr)
+        return (arr - arr.mean()) / std
+
+    act_z = _zscore(act_scores_arr)
+    rep_z = _zscore(rep_scores_arr)
+    signed = {node_list[i]: float(act_z[i] - rep_z[i]) for i in range(n)}
+
+    return SignedRWRResult(
+        seed_gene=seed_gene,
+        node_names=tuple(node_list),
+        act_scores=act_scores,
+        rep_scores=rep_scores,
+        combined_scores=combined,
+        signed_scores=signed,
+        n_act_edges=len(act_edges),
+        n_rep_edges=len(rep_edges),
+        act_convergence=(act_delta, act_iter),
+        rep_convergence=(rep_delta, rep_iter),
     )
 
 
