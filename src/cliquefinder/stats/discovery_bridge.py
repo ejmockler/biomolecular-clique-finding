@@ -37,6 +37,7 @@ class DiscoveryBridge:
         min_reliability: float = 0.0,  # per-edge reliability threshold (0 = no filter)
         min_sources: int = 1,  # minimum unique source APIs per edge
         roast_config=None,
+        use_recalibrated_priors: bool = True,  # use benchmark-calibrated priors
     ):
         self.engine = engine
         self.sym_to_feat = sym_to_feat
@@ -44,6 +45,11 @@ class DiscoveryBridge:
         self.min_evidence = min_evidence
         self.min_reliability = min_reliability
         self.min_sources = min_sources
+        if use_recalibrated_priors:
+            from indra_belief.noise_model import RECALIBRATED_PRIORS
+            self._priors = RECALIBRATED_PRIORS
+        else:
+            self._priors = None  # uses INDRA defaults
 
         if roast_config is None:
             from cliquefinder.stats.rotation import RotationTestConfig, SetStatistic
@@ -106,7 +112,9 @@ class DiscoveryBridge:
                     _total_ev = e.evidence_count
 
                 from indra_belief.noise_model import compute_edge_reliability
-                edge_reliability = compute_edge_reliability(_sources, _total_ev)
+                edge_reliability = compute_edge_reliability(
+                    _sources, _total_ev, priors=self._priors,
+                )
 
                 n_unique_sources = len(set(s.lower() for s in _sources))
                 if edge_reliability < self.min_reliability:

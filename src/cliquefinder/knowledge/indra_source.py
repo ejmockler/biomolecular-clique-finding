@@ -81,13 +81,21 @@ class INDRAKnowledgeSource(KnowledgeSource):
             if relationship_types and rel_type not in relationship_types:
                 continue
 
+            # Compute parametric reliability from source metadata
+            from indra_belief.noise_model import compute_edge_reliability, RECALIBRATED_PRIORS
+            _src_list = list(indra_edge.source_counts_dict.keys())
+            _reliability = compute_edge_reliability(
+                _src_list, indra_edge.evidence_count,
+                priors=RECALIBRATED_PRIORS,
+            )
+
             edges.append(KnowledgeEdge(
                 source=source_entity,
                 target=indra_edge.target_name,
                 relationship=rel_type,
                 evidence_count=indra_edge.evidence_count,
-                confidence=1.0,
-                sources=list(indra_edge.source_counts_dict.keys()),
+                confidence=_reliability,
+                sources=_src_list,
                 metadata={
                     'stmt_hash': indra_edge.stmt_hash,
                     'regulation_type': indra_edge.regulation_type,
@@ -151,13 +159,19 @@ class INDRAKnowledgeSource(KnowledgeSource):
                 if relationship_types and rel_type not in relationship_types:
                     continue
 
+                from indra_belief.noise_model import compute_edge_reliability, RECALIBRATED_PRIORS
+                _src_list = list(indra_edge.source_counts_dict.keys())
+                _reliability = compute_edge_reliability(
+                    _src_list, indra_edge.evidence_count,
+                    priors=RECALIBRATED_PRIORS,
+                )
                 edges.append(KnowledgeEdge(
                     source=indra_module.regulator_name,
                     target=indra_edge.target_name,
                     relationship=rel_type,
                     evidence_count=indra_edge.evidence_count,
-                    confidence=1.0,
-                    sources=list(indra_edge.source_counts_dict.keys()),
+                    confidence=_reliability,
+                    sources=_src_list,
                     metadata={'stmt_hash': indra_edge.stmt_hash}
                 ))
 
