@@ -1660,7 +1660,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
         try:
             from causal_path_scoring.core.reliability import Edge as CPSEdge
             from causal_path_scoring.core.discovery import run_discovery
-            from causal_path_scoring.core.edge_reliability import compute_edge_reliability_with_contradiction
+            from indra_belief.noise_model import compute_edge_reliability_with_contradiction
             from cliquefinder.stats.discovery_bridge import DiscoveryBridge
 
             # Build adjacency from TargetSet edge metadata
@@ -1774,7 +1774,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                             _full_adj[intermediary] = []
                         for em in edge_metas:
                             # Compute per-edge reliability from INDRA noise model
-                            from causal_path_scoring.core.edge_reliability import compute_edge_reliability as _cb
+                            from indra_belief.noise_model import compute_edge_reliability as _cb
                             _src_counts = em.get("source_counts", {})
                             if _src_counts:
                                 _sources = []

@@ -67,7 +67,7 @@ def run_discovery_for_contrast(
     from cliquefinder.stats.discovery_bridge import DiscoveryBridge
     from causal_path_scoring.core.reliability import Edge as CPSEdge
     from causal_path_scoring.core.discovery import run_discovery
-    from causal_path_scoring.core.edge_reliability import (
+    from indra_belief.noise_model import (
         compute_edge_reliability_with_contradiction,
         compute_edge_reliability,
     )

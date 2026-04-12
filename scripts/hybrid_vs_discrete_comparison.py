@@ -224,7 +224,7 @@ def main():
     # -------------------------------------------------------------------------
     print("\nBuilding adjacency...")
     from causal_path_scoring.core.reliability import Edge as CPSEdge
-    from causal_path_scoring.core.edge_reliability import compute_edge_reliability_with_contradiction
+    from indra_belief.noise_model import compute_edge_reliability_with_contradiction
 
     disc_adjacency = {args.network_query: []}
 

@@ -105,7 +105,7 @@ class DiscoveryBridge:
                     _sources = list(e.sources)
                     _total_ev = e.evidence_count
 
-                from causal_path_scoring.core.edge_reliability import compute_edge_reliability
+                from indra_belief.noise_model import compute_edge_reliability
                 edge_reliability = compute_edge_reliability(_sources, _total_ev)
 
                 n_unique_sources = len(set(s.lower() for s in _sources))
