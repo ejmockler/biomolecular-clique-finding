@@ -188,6 +188,42 @@ class INDRAKnowledgeSource(KnowledgeSource):
         modules.sort(key=lambda m: -m.n_targets)
         return modules
 
+    def fetch_evidence_text(self, edges: list) -> dict[int, list[dict]]:
+        """Fetch evidence text for KnowledgeEdge list via their stmt_hash metadata.
+
+        Extracts ``stmt_hash`` from each edge's ``metadata`` dict, builds
+        temporary :class:`INDRAEdge` stubs, and delegates to
+        :meth:`CoGExClient.fetch_evidence_for_edges`.
+
+        Args:
+            edges: List of :class:`KnowledgeEdge` objects whose ``metadata``
+                contains a ``'stmt_hash'`` key.
+
+        Returns:
+            ``{stmt_hash: [{text, source_api, pmid}, ...]}`` — see
+            :meth:`CoGExClient.fetch_evidence_for_edges`.
+        """
+        from cliquefinder.knowledge.cogex import INDRAEdge
+
+        indra_edges = []
+        for edge in edges:
+            stmt_hash = edge.metadata.get("stmt_hash")
+            if stmt_hash is None:
+                continue
+            # Build a minimal frozen INDRAEdge stub for the hash lookup
+            indra_edges.append(INDRAEdge(
+                regulator_id=("HGNC", "0"),
+                regulator_name=edge.source,
+                target_id=("HGNC", "0"),
+                target_name=edge.target,
+                regulation_type="activation",
+                evidence_count=edge.evidence_count,
+                stmt_hash=int(stmt_hash),
+                source_counts="{}",
+            ))
+
+        return self.client.fetch_evidence_for_edges(indra_edges)
+
     def _map_relationship(self, indra_rel: str) -> RelationshipType:
         """Map INDRA regulation type to RelationshipType."""
         mapping = {

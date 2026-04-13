@@ -490,6 +490,7 @@ class CoGExClient:
         self._password = password
         self._env_file = env_file
         self._client: Optional[Neo4jClient] = None
+        self._evidence_cache: Dict[int, List[Dict]] = {}
 
     def _load_credentials(self) -> Tuple[str, str, str]:
         """
@@ -1041,6 +1042,85 @@ class CoGExClient:
             sanitized_msg = _sanitize_connection_error(str(e))
             logger.error("Failed to discover regulators: %s", sanitized_msg)
             raise RuntimeError(f"Reverse query failed: {sanitized_msg}") from e
+
+    def fetch_evidence_for_edges(
+        self,
+        edges: List[INDRAEdge],
+        ev_limit: int = 10,
+    ) -> Dict[int, List[Dict]]:
+        """Fetch evidence text for edges by stmt_hash.
+
+        Queries the INDRA DB REST API for full Statement objects, then
+        extracts human-readable evidence records (text, source_api, pmid)
+        for downstream LLM-based scoring.
+
+        Args:
+            edges: INDRA edges whose evidence should be retrieved.
+            ev_limit: Maximum number of evidence items per statement
+                returned by the INDRA DB REST API. Default 10.
+
+        Returns:
+            Mapping of ``{stmt_hash: [{text, source_api, pmid}, ...]}``
+            for every hash that yielded at least one evidence record.
+            Returns an empty dict when *edges* is empty or the INDRA DB
+            REST API is unavailable.
+        """
+        if not edges:
+            return {}
+
+        # Collect unique hashes, skip those already cached
+        all_hashes = {e.stmt_hash for e in edges}
+        uncached = [h for h in all_hashes if h not in self._evidence_cache]
+
+        if uncached:
+            try:
+                from indra.sources.indra_db_rest import get_statements_by_hash
+            except ImportError:
+                logger.warning(
+                    "indra.sources.indra_db_rest not available; "
+                    "cannot fetch evidence text"
+                )
+                return {h: v for h, v in self._evidence_cache.items()
+                        if h in all_hashes}
+
+            # Batch in chunks of 100 to respect API limits
+            chunk_size = 100
+            for start in range(0, len(uncached), chunk_size):
+                chunk = uncached[start:start + chunk_size]
+                try:
+                    processor = get_statements_by_hash(
+                        chunk, ev_limit=ev_limit,
+                    )
+                    stmts = processor.statements if processor else []
+                except Exception:
+                    logger.warning(
+                        "INDRA DB REST query failed for %d hashes "
+                        "(batch %d-%d); skipping",
+                        len(chunk), start, start + len(chunk),
+                        exc_info=True,
+                    )
+                    continue
+
+                # Index returned statements by their hash
+                for stmt in stmts:
+                    h = stmt.get_hash()
+                    evidence_records = []
+                    for ev in stmt.evidence:
+                        evidence_records.append({
+                            "text": ev.text,
+                            "source_api": ev.source_api,
+                            "pmid": ev.pmid,
+                        })
+                    self._evidence_cache[h] = evidence_records
+
+                # Mark hashes with no results so we don't re-fetch them
+                returned_hashes = {s.get_hash() for s in stmts}
+                for h in chunk:
+                    if h not in returned_hashes:
+                        self._evidence_cache[h] = []
+
+        return {h: self._evidence_cache[h] for h in all_hashes
+                if h in self._evidence_cache}
 
     def close(self):
         """Close Neo4j connection."""
