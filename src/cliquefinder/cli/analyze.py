@@ -185,6 +185,11 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
                         dest="filter_low_expression",
                         help="Filter genes with mean expression below threshold (after log transform)")
 
+    # Belief scoring
+    parser.add_argument("--llm-scoring", action="store_true", default=False,
+                        help="Enable composed belief scoring on INDRA edges "
+                             "(requires indra-belief[belief] extra)")
+
     parser.set_defaults(func=run_analyze)
 
 
@@ -212,6 +217,27 @@ def run_analyze(args: argparse.Namespace) -> int:
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
+
+    # Build composed belief scorer if --llm-scoring is enabled
+    composed_scorer = None
+    if getattr(args, "llm_scoring", False):
+        try:
+            from indra_belief.composed_scorer import ComposedBeliefScorer
+            from indra_belief.noise_model import RECALIBRATED_PRIORS
+            composed_scorer = ComposedBeliefScorer(priors=RECALIBRATED_PRIORS)
+            logger.info(
+                "Composed belief scoring enabled (%d source priors loaded)",
+                len(RECALIBRATED_PRIORS),
+            )
+        except ImportError:
+            logger.warning(
+                "indra-belief[belief] extra not installed; "
+                "continuing without composed belief scoring. "
+                "Install with: pip install indra-belief[belief]"
+            )
+
+    # Store on args so downstream code (e.g. validate_baselines) can access it
+    args.composed_scorer = composed_scorer
 
     # Handle log transform flag
     if args.no_log_transform:

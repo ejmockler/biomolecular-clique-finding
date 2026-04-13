@@ -242,7 +242,40 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    # Belief scoring
+    parser.add_argument(
+        "--llm-scoring", action="store_true", default=False,
+        help="Enable composed belief scoring on INDRA edges "
+             "(requires indra-belief[belief] extra)",
+    )
+
     parser.set_defaults(func=run_validate_baselines)
+
+
+def _build_composed_scorer(args: argparse.Namespace):
+    """Build a ComposedBeliefScorer when --llm-scoring is enabled.
+
+    Returns the scorer instance, or None if the flag is off or the
+    indra-belief package is not installed.
+    """
+    if not getattr(args, "llm_scoring", False):
+        return None
+    try:
+        from indra_belief.composed_scorer import ComposedBeliefScorer
+        from indra_belief.noise_model import RECALIBRATED_PRIORS
+        scorer = ComposedBeliefScorer(priors=RECALIBRATED_PRIORS)
+        logger.info(
+            "Composed belief scoring enabled (%d source priors loaded)",
+            len(RECALIBRATED_PRIORS),
+        )
+        return scorer
+    except ImportError:
+        logger.warning(
+            "indra-belief[belief] extra not installed; "
+            "continuing without composed belief scoring. "
+            "Install with: pip install indra-belief[belief]"
+        )
+        return None
 
 
 def _compute_params_fingerprint(args: argparse.Namespace) -> str:
@@ -1728,6 +1761,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
                     min_reliability=0.0,     # no hard reliability cutoff
                     min_sources=1,      # at least 1 source API
                     roast_config=_disc_roast_config,
+                    composed_scorer=_build_composed_scorer(args),
                 ) as bridge:
                     disc_result = run_discovery(
                         seed=args.network_query,
