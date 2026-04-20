@@ -59,6 +59,7 @@ def run_discovery_for_contrast(
     seed_null_b: int = 30,
     covariates: list[str] | None = None,
     compute_overlap: bool = False,
+    use_competitive: bool = False,
 ):
     """Fit engine for a contrast and run recursive discovery."""
     from cliquefinder.stats.rotation import (
@@ -181,6 +182,7 @@ def run_discovery_for_contrast(
         min_reliability=0.0,
         min_sources=1,
         roast_config=roast_config,
+        use_competitive=use_competitive,
     ) as bridge:
         disc_result = run_discovery(
             seed=seed,
@@ -293,6 +295,9 @@ def main():
                         help="Compute gene set overlap statistics per hop using "
                              "Li & Ji (2005) effective independent tests. Adds "
                              "'overlap' field to each hop in the output JSON.")
+    parser.add_argument("--use-competitive", action="store_true", default=False,
+                        help="Use competitive z-score with Camera VIF correction "
+                             "instead of raw ROAST MSQ for extension decisions.")
     args = parser.parse_args()
 
     # Load data
@@ -382,6 +387,7 @@ def main():
             seed_null_b=args.seed_null_b,
             covariates=covariates,
             compute_overlap=args.compute_overlap,
+            use_competitive=args.use_competitive,
         )
         results[cname] = result
 
