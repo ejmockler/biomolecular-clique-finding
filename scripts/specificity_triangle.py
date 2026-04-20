@@ -57,6 +57,8 @@ def run_discovery_for_contrast(
     n_rotations: int = 9999,
     max_hops: int = 6,
     seed_null_b: int = 30,
+    covariates: list[str] | None = None,
+    compute_overlap: bool = False,
 ):
     """Fit engine for a contrast and run recursive discovery."""
     from cliquefinder.stats.rotation import (
@@ -104,14 +106,15 @@ def run_discovery_for_contrast(
     # Fit ROAST engine for this contrast
     print("  Fitting ROAST engine...")
     engine = RotationTestEngine(sub_data, feature_ids, sub_meta)
-    sex_col = "Sex" if "Sex" in sub_meta.columns else ("SEX" if "SEX" in sub_meta.columns else None)
+    # Use caller-specified covariates (already validated for existence)
+    fit_covariates = [c for c in (covariates or []) if c in sub_meta.columns]
     engine.fit(
         conditions=[cond1, cond2],
         contrast=(cond1, cond2),
         condition_column="_condition",
-        covariates=[sex_col] if sex_col else [],
+        covariates=fit_covariates,
     )
-    print(f"  Engine fitted")
+    print(f"  Engine fitted (covariates: {fit_covariates or 'none'})")
 
     # Load target set
     ts = TargetSet.load(target_set_path)
@@ -133,7 +136,7 @@ def run_discovery_for_contrast(
     # Run per-protein EB-moderated differential to get t-statistics
     print("  Computing per-protein differential statistics...")
     from cliquefinder.stats.differential import run_protein_differential
-    cov_df = sub_meta[[sex_col]] if sex_col else None
+    cov_df = sub_meta[fit_covariates] if fit_covariates else None
     protein_df = run_protein_differential(
         data=sub_data,
         feature_ids=feature_ids,
@@ -239,6 +242,12 @@ def main():
                         choices=["C9_vs_SPORADIC", "C9_vs_CTRL", "SPORADIC_vs_CTRL"],
                         default=["C9_vs_SPORADIC", "C9_vs_CTRL", "SPORADIC_vs_CTRL"],
                         help="Which contrasts to run (default: all three)")
+    parser.add_argument("--covariates", nargs="*", metavar="COL", default=["Sex"],
+                        help="Covariate columns from metadata CSV for design matrix "
+                             "adjustment (default: Sex). Pass no arguments to disable.")
+    parser.add_argument("--covariate-report", action="store_true", default=False,
+                        help="Print a covariate confounding assessment table before "
+                             "running the analysis.")
     args = parser.parse_args()
 
     # Load data
@@ -259,11 +268,49 @@ def main():
     if "Sex" not in metadata.columns and "SEX" in metadata.columns:
         metadata["Sex"] = metadata["SEX"]
 
+    # Validate and apply covariates
+    covariates = args.covariates if args.covariates else []
+    if covariates:
+        missing_cols = [c for c in covariates if c not in metadata.columns]
+        if missing_cols:
+            print(f"  WARNING: Covariate columns not found in metadata: {missing_cols}")
+            covariates = [c for c in covariates if c in metadata.columns]
+        if covariates:
+            cov_nan_mask = metadata[covariates].isna().any(axis=1)
+            n_dropped = int(cov_nan_mask.sum())
+            if n_dropped > 0:
+                nan_cols = [c for c in covariates if metadata[c].isna().any()]
+                print(f"  Dropped {n_dropped} samples with missing covariates: {nan_cols}")
+                keep_mask = ~cov_nan_mask
+                metadata = metadata.loc[keep_mask]
+                data = data[:, keep_mask.values]
+
     # Resolve groups
     groups = resolve_groups(metadata)
     print(f"\nCohort breakdown:")
     for name, idx in groups.items():
         print(f"  {name}: n={len(idx)}")
+
+    # Covariate confounding report
+    if args.covariate_report and covariates:
+        from cliquefinder.stats.covariate_diagnostics import assess_covariate_confounding
+        # Build a temporary condition column for the report
+        temp_meta = metadata.copy()
+        temp_meta["_group"] = None
+        for gname, gidx in groups.items():
+            temp_meta.loc[temp_meta.index.isin(gidx), "_group"] = gname
+        temp_meta = temp_meta.dropna(subset=["_group"])
+
+        report = assess_covariate_confounding(
+            metadata=temp_meta,
+            group_column="_group",
+            covariates=covariates,
+            groups=list(groups.keys()),
+        )
+        print(f"\n{report.format_table()}\n")
+        if report.has_confounded():
+            print("  WARNING: Confounded covariates detected (p < 0.05). "
+                  "Interpret results with caution.\n")
 
     # Define contrasts
     contrast_map = {
@@ -288,6 +335,7 @@ def main():
             n_rotations=args.n_rotations,
             max_hops=args.max_hops,
             seed_null_b=args.seed_null_b,
+            covariates=covariates,
         )
         results[cname] = result
 
