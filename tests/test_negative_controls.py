@@ -235,7 +235,7 @@ class TestCompetitiveZIntegration:
         assert result.target_competitive_z is not None
         assert result.control_competitive_z_scores is not None
         assert result.competitive_z_fpr is not None
-        assert result.competitive_z_percentile is not None
+        assert result.competitive_z_tail_pct is not None
         assert result.target_competitive_z > 0  # Targets have higher |t|
 
     def test_competitive_z_without_protein_results(self):
@@ -256,7 +256,7 @@ class TestCompetitiveZIntegration:
         assert result.target_competitive_z is None
         assert result.control_competitive_z_scores is None
         assert result.competitive_z_fpr is None
-        assert result.competitive_z_percentile is None
+        assert result.competitive_z_tail_pct is None
 
     def test_competitive_z_strong_signal(self):
         """Targets with high |t| → low competitive z FPR."""
@@ -281,7 +281,7 @@ class TestCompetitiveZIntegration:
 
         # With strong signal, most random sets should have lower z
         assert result.competitive_z_fpr < 0.2
-        assert result.competitive_z_percentile < 20.0
+        assert result.competitive_z_tail_pct < 20.0
 
     def test_to_dict_includes_competitive_z(self):
         """Serialization includes competitive_z sub-dict when populated."""

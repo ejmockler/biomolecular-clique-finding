@@ -57,7 +57,7 @@ This requires access to the protein-level t-statistics (available from Phase 1's
 Extend `NegativeControlResult` with:
 
 ```python
-competitive_z_percentile: float      # where target competitive z ranks among controls
+competitive_z_tail_pct: float        # tail percentage (fpr * 100) among controls
 competitive_z_fpr: float             # fraction of controls with competitive z > target
 control_competitive_z: NDArray       # competitive z for each control set
 ```

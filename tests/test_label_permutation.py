@@ -393,3 +393,61 @@ class TestRunLabelPermutationNull:
 
         assert isinstance(result, LabelPermutationResult)
         assert result.n_permutations > 0
+
+    def test_frozen_fraction_1_early_exit(self, null_data):
+        """XIII-10: frozen_fraction>=1.0 exits immediately with p=1.0.
+
+        When every stratum is degenerate (only one condition value per
+        stratum), all labels are frozen — every permutation is identical
+        to the observed data. The function should return immediately with
+        p=1.0 and n_permutations=0 without running any permutations.
+        """
+        data, feature_ids, conditions, target_ids = null_data
+
+        # Strata where each stratum has only one condition value:
+        # first 20 samples are "A" in stratum "S1", last 20 are "B" in "S2".
+        strata = np.array(["S1"] * 20 + ["S2"] * 20)
+
+        result = run_label_permutation_null(
+            data=data,
+            feature_ids=feature_ids,
+            sample_condition=conditions,
+            contrast=("A", "B"),
+            target_gene_ids=target_ids,
+            n_permutations=1000,  # Would waste compute without early exit
+            stratify_by=strata,
+            seed=42,
+            verbose=False,
+        )
+
+        assert isinstance(result, LabelPermutationResult)
+        assert result.permutation_pvalue == 1.0
+        assert result.n_permutations == 0
+        assert result.frozen_fraction >= 1.0
+        assert result.stratified is True
+        assert len(result.null_z_scores) == 0
+        assert np.isnan(result.observed_z)
+
+    def test_frozen_fraction_1_to_dict(self, null_data):
+        """Early-exit result serializes to dict with NaN quantiles."""
+        data, feature_ids, conditions, target_ids = null_data
+        strata = np.array(["S1"] * 20 + ["S2"] * 20)
+
+        result = run_label_permutation_null(
+            data=data,
+            feature_ids=feature_ids,
+            sample_condition=conditions,
+            contrast=("A", "B"),
+            target_gene_ids=target_ids,
+            n_permutations=100,
+            stratify_by=strata,
+            seed=42,
+            verbose=False,
+        )
+
+        d = result.to_dict()
+        assert d["permutation_pvalue"] == 1.0
+        assert d["n_permutations"] == 0
+        # Empty null_z_scores → NaN quantiles
+        for key in ["q05", "q25", "q50", "q75", "q95"]:
+            assert np.isnan(d["null_z_quantiles"][key])

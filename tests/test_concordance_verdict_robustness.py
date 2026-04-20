@@ -263,7 +263,7 @@ class TestNegativeControlsDocstring:
     """Verify docstring accurately reflects the computation."""
 
     def test_negative_controls_docstring(self):
-        """competitive_z_percentile docstring says 0 = most enriched."""
+        """competitive_z_tail_pct docstring says 0 = most enriched."""
         from cliquefinder.stats.negative_controls import NegativeControlResult
 
         docstring = NegativeControlResult.__doc__
@@ -271,7 +271,7 @@ class TestNegativeControlsDocstring:
 
         # The corrected docstring should say 0 = most enriched
         assert "0 = most enriched" in docstring, (
-            "Docstring should state '0 = most enriched' for competitive_z_percentile"
+            "Docstring should state '0 = most enriched' for competitive_z_tail_pct"
         )
         # Should NOT say "100 = most enriched" (the old incorrect text)
         assert "100 = most enriched" not in docstring, (

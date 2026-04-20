@@ -405,7 +405,7 @@ class TestNegativeControlResultRhoBar:
             target_competitive_z=3.5,
             control_competitive_z_scores=np.array([1.0, 1.5, 2.0]),
             competitive_z_fpr=0.0,
-            competitive_z_percentile=0.0,
+            competitive_z_tail_pct=0.0,
             target_inter_gene_correlation=0.35,
         )
         d = result.to_dict()
@@ -486,36 +486,38 @@ class TestControlRhoBarSpotCheck:
         assert "estimate_inter_gene_correlation" in source
 
 
-class TestPreAllocateNullArrays:
-    """Pre-allocate null_t/null_log2fc arrays."""
+class TestStreamingPValues:
+    """XIII-8: Streaming p-values replace stored null distribution arrays."""
 
-    def test_preallocated_arrays_in_source(self):
-        """Phase 3 should use np.empty pre-allocation, not list.append."""
+    def test_streaming_counters_in_source(self):
+        """Phase 3 should use streaming counters, not stored arrays."""
         import inspect
         from cliquefinder.stats import permutation_gpu
 
         source = inspect.getsource(permutation_gpu)
-        assert "DF-XIII-D3" in source
-        assert "np.empty(n_permutations)" in source, "Should pre-allocate with np.empty"
-        assert "null_cursors" in source, "Should track write cursors"
+        assert "XIII-8" in source, "Should reference XIII-8 streaming p-values"
+        assert "_exceed_twosided" in source, "Should have two-sided exceedance counter"
+        assert "_n_valid" in source, "Should track valid perm count"
 
-    def test_no_list_append_pattern(self):
-        """Phase 3 scatter loop should NOT use list.append for null values."""
+    def test_no_null_array_storage(self):
+        """Phase 3 scatter loop should NOT store full null distribution arrays."""
         import inspect
         from cliquefinder.stats import permutation_gpu
 
         source = inspect.getsource(permutation_gpu.run_permutation_test_gpu)
-        # The old pattern was null_t[clique_id].append(...)
+        # The old patterns that stored full arrays
+        assert "null_t_arrays" not in source, "Should not store null t arrays"
+        assert "null_log2fc_arrays" not in source, "Should not store null log2fc arrays"
         assert "null_t[clique_id].append" not in source
         assert "null_log2fc[clique_id].append" not in source
 
-    def test_cursor_assertion_present(self):
-        """Should assert all cursors reached n_permutations after Phase 3."""
+    def test_perm_count_assertion_present(self):
+        """Should assert all cliques saw all permutations after Phase 3."""
         import inspect
         from cliquefinder.stats import permutation_gpu
 
         source = inspect.getsource(permutation_gpu.run_permutation_test_gpu)
-        assert "null_cursors[cid] == n_permutations" in source
+        assert "_total_perms_seen[cid] == n_permutations" in source
 
 
 class TestPhase2MemoryBounding:

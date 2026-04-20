@@ -251,6 +251,36 @@ def run_label_permutation_null(
 
     rng = np.random.default_rng(seed)
 
+    # --- XIII-10: Early exit when all labels are frozen ---
+    # When stratified and every stratum is degenerate (only one condition
+    # value), frozen_fraction = 1.0 — every permutation is identical to
+    # the observed data.  P-value is 1.0 by definition.
+    if stratify_by is not None:
+        n_frozen_total = 0
+        for stratum in np.unique(stratify_by):
+            mask = stratify_by == stratum
+            if len(np.unique(sample_condition[mask])) < 2:
+                n_frozen_total += int(mask.sum())
+        if len(sample_condition) > 0 and n_frozen_total >= len(sample_condition):
+            frozen_frac = n_frozen_total / len(sample_condition)
+            if verbose:
+                print(
+                    f"Label permutation: frozen_fraction={frozen_frac:.2f} "
+                    f"(all strata degenerate). Skipping {n_permutations} "
+                    f"permutations — p-value is 1.0 by definition."
+                )
+            return LabelPermutationResult(
+                observed_z=np.nan,
+                null_z_scores=np.empty(0, dtype=np.float64),
+                permutation_pvalue=1.0,
+                n_permutations=0,
+                stratified=True,
+                stratify_column=None,
+                null_mean=np.nan,
+                null_std=np.nan,
+                frozen_fraction=frozen_frac,
+            )
+
     # --- Step 1: Observed enrichment z-score ---
     # Pre-compute target list once (avoid rebuilding per permutation)
     target_genes_list = [fid for fid in feature_ids if fid in target_set]

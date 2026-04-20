@@ -1978,17 +1978,17 @@ class RotationTestEngine:
         # This borrows strength across the genome
         from .permutation_gpu import fit_f_dist
 
-        # Extract gene effects for ALL genes
-        self._effects = extract_gene_effects(
+        # Extract gene effects for ALL genes (expensive matmul: U = Y @ Q2)
+        effects_no_eb = extract_gene_effects(
             self.data,
             self.gene_ids,
             self._precomputed,
         )
 
-        # Fit EB priors
-        valid_var = self._effects.sample_variances[
-            (self._effects.sample_variances > 0) &
-            np.isfinite(self._effects.sample_variances)
+        # Fit EB priors from sample variances
+        valid_var = effects_no_eb.sample_variances[
+            (effects_no_eb.sample_variances > 0) &
+            np.isfinite(effects_no_eb.sample_variances)
         ]
 
         if len(valid_var) > 10:
@@ -1996,13 +1996,22 @@ class RotationTestEngine:
         else:
             eb_d0, eb_s0_sq = np.inf, float(np.median(valid_var))
 
-        # Re-extract with EB priors
-        self._effects = extract_gene_effects(
-            self.data,
-            self.gene_ids,
-            self._precomputed,
-            eb_d0=eb_d0,
-            eb_s0_sq=eb_s0_sq,
+        # Apply EB shrinkage to existing effects (XIV-4: avoid redundant matmul)
+        df = self._precomputed.df_residual
+        if np.isinf(eb_d0):
+            moderated_variances = np.full_like(effects_no_eb.sample_variances, eb_s0_sq)
+            df_total = np.inf
+        else:
+            moderated_variances = (eb_d0 * eb_s0_sq + df * effects_no_eb.sample_variances) / (eb_d0 + df)
+            df_total = eb_d0 + df
+
+        self._effects = GeneEffects(
+            U=effects_no_eb.U,
+            rho_sq=effects_no_eb.rho_sq,
+            gene_ids=list(effects_no_eb.gene_ids),
+            sample_variances=effects_no_eb.sample_variances,
+            moderated_variances=moderated_variances,
+            df_total=df_total,
         )
 
         # Store EB params in precomputed for reference
@@ -2077,17 +2086,17 @@ class RotationTestEngine:
             contrast_name=contrast_name,
         )
 
-        # Extract gene effects for ALL genes
-        self._effects = extract_gene_effects(
+        # Extract gene effects for ALL genes (expensive matmul: U = Y @ Q2)
+        effects_no_eb = extract_gene_effects(
             self.data,
             self.gene_ids,
             self._precomputed,
         )
 
-        # Fit EB priors
-        valid_var = self._effects.sample_variances[
-            (self._effects.sample_variances > 0) &
-            np.isfinite(self._effects.sample_variances)
+        # Fit EB priors from sample variances
+        valid_var = effects_no_eb.sample_variances[
+            (effects_no_eb.sample_variances > 0) &
+            np.isfinite(effects_no_eb.sample_variances)
         ]
 
         if len(valid_var) > 10:
@@ -2095,13 +2104,22 @@ class RotationTestEngine:
         else:
             eb_d0, eb_s0_sq = np.inf, float(np.median(valid_var))
 
-        # Re-extract with EB priors
-        self._effects = extract_gene_effects(
-            self.data,
-            self.gene_ids,
-            self._precomputed,
-            eb_d0=eb_d0,
-            eb_s0_sq=eb_s0_sq,
+        # Apply EB shrinkage to existing effects (XIV-4: avoid redundant matmul)
+        df = self._precomputed.df_residual
+        if np.isinf(eb_d0):
+            moderated_variances = np.full_like(effects_no_eb.sample_variances, eb_s0_sq)
+            df_total = np.inf
+        else:
+            moderated_variances = (eb_d0 * eb_s0_sq + df * effects_no_eb.sample_variances) / (eb_d0 + df)
+            df_total = eb_d0 + df
+
+        self._effects = GeneEffects(
+            U=effects_no_eb.U,
+            rho_sq=effects_no_eb.rho_sq,
+            gene_ids=list(effects_no_eb.gene_ids),
+            sample_variances=effects_no_eb.sample_variances,
+            moderated_variances=moderated_variances,
+            df_total=df_total,
         )
 
         # Update precomputed with EB params

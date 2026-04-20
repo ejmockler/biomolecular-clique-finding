@@ -32,11 +32,12 @@ class DiscoveryBridge:
 
     Optionally accepts a ``composed_scorer``
     (:class:`indra_belief.composed_scorer.ComposedBeliefScorer`) to compute
-    composed belief scores for each INDRA edge.  When provided, parametric
-    belief scores (source-diversity only, no LLM verdicts) are attached to
-    every edge in ``_edge_metadata_cache`` under the key
-    ``"composed_belief"``.  Full LLM-augmented scoring can be triggered
-    later via :meth:`score_edges_with_llm`.
+    composed belief scores for each INDRA edge.
+
+    When use_competitive=True, test_gene_set returns a competitive z-score
+    p-value instead of the raw ROAST MSQ p-value. The competitive z adjusts
+    for inter-gene correlation via the Camera VIF, providing better FPR
+    calibration on anticonservative ROAST datasets.
     """
 
     def __init__(
@@ -50,6 +51,7 @@ class DiscoveryBridge:
         roast_config=None,
         use_recalibrated_priors: bool = True,  # use benchmark-calibrated priors
         composed_scorer: Any | None = None,
+        use_competitive: bool = False,
     ):
         self.engine = engine
         self.sym_to_feat = sym_to_feat
@@ -58,6 +60,7 @@ class DiscoveryBridge:
         self.min_reliability = min_reliability
         self.min_sources = min_sources
         self.composed_scorer = composed_scorer
+        self.use_competitive = use_competitive
         if use_recalibrated_priors:
             from indra_belief.noise_model import RECALIBRATED_PRIORS
             self._priors = RECALIBRATED_PRIORS
@@ -77,6 +80,9 @@ class DiscoveryBridge:
         self._target_cache: dict[str, list[str]] = {}
         self._edge_metadata_cache: dict[str, list[dict]] = {}  # intermediary → [{sources, evidence_count, regulation_type}]
         self._evidence_text_cache: dict[str, dict[int, list[dict]]] = {}  # intermediary → {stmt_hash: [{text, source_api, pmid}]}
+
+        # Cache moderated t-statistics (computed lazily on first competitive test)
+        self._moderated_t: np.ndarray | None = None
 
     def _ensure_indra(self):
         if self._indra_source is None:
@@ -290,20 +296,109 @@ class DiscoveryBridge:
         )
         return {}
 
-    def test_gene_set(self, gene_ids: list[str], set_id: str) -> float:
-        """Run ROAST on a gene set.
+    def _get_moderated_t(self) -> np.ndarray:
+        """Compute moderated t-statistics for all genes from the fitted engine.
+
+        The moderated t for gene g is: t_g = U[g, 0] / sqrt(moderated_var[g])
+        where U[:, 0] contains the contrast effect and moderated_var is the
+        EB-shrunk variance.
+
+        Returns:
+            Array of moderated t-statistics (n_genes,) in engine gene order.
+        """
+        if self._moderated_t is not None:
+            return self._moderated_t
+
+        effects = self.engine._effects
+        if effects is None:
+            raise RuntimeError(
+                "Engine effects not available. Ensure engine.fit() has been called."
+            )
+
+        # Use moderated variances if available, otherwise sample variances
+        if effects.moderated_variances is not None:
+            se = np.sqrt(effects.moderated_variances)
+        else:
+            se = np.sqrt(effects.sample_variances)
+
+        # Avoid division by zero
+        se_safe = np.maximum(se, 1e-10)
+        self._moderated_t = effects.U[:, 0] / se_safe
+        return self._moderated_t
+
+    def test_gene_set(
+        self, gene_ids: list[str], set_id: str, use_competitive: bool | None = None,
+    ) -> float:
+        """Run gene set test and return p-value.
 
         Accepts feature IDs (UniProt) as returned by get_targets().
+
+        When use_competitive is True (or self.use_competitive is True and
+        use_competitive is not explicitly False), uses the competitive z-score
+        with Camera VIF correction instead of the raw ROAST p-value.
+
+        Args:
+            gene_ids: Feature IDs (e.g., UniProt accessions) for the gene set.
+            set_id: Identifier for this gene set.
+            use_competitive: Override the instance-level use_competitive flag.
+                If None, uses self.use_competitive.
+
+        Returns:
+            P-value (competitive z two-sided p-value or ROAST MSQ mixed p-value).
         """
+        competitive = use_competitive if use_competitive is not None else self.use_competitive
+
         fids = [g for g in gene_ids if g in self.engine.gene_to_idx]
 
         if len(fids) < 2:
             return 1.0
 
+        if competitive:
+            return self._test_competitive(fids, set_id)
+
         result = self.engine.test_gene_set(
             gene_set=fids, gene_set_id=set_id, config=self.config,
         )
         return result.p_values.get("msq", {}).get("mixed", 1.0)
+
+    def _test_competitive(self, fids: list[str], set_id: str) -> float:
+        """Compute competitive z-score p-value for a gene set.
+
+        Uses the moderated t-statistics from the fitted ROAST engine and
+        optionally estimates VIF from the inter-gene correlation matrix.
+
+        Args:
+            fids: Filtered feature IDs (already verified in engine).
+            set_id: Gene set identifier (for logging).
+
+        Returns:
+            Two-sided p-value from the competitive z-score.
+        """
+        from .competitive_z import competitive_z_test
+
+        mod_t = self._get_moderated_t()
+        target_indices = np.array(
+            [self.engine.gene_to_idx[g] for g in fids], dtype=np.intp
+        )
+
+        # Estimate inter-gene correlation from expression data if available
+        corr_matrix = None
+        if hasattr(self.engine, 'data') and self.engine.data is not None:
+            k = len(target_indices)
+            if k >= 2:
+                target_data = self.engine.data[target_indices, :]
+                # Only compute if feasible (avoid O(k^2) for very large sets)
+                if k <= 500:
+                    corr_matrix = np.corrcoef(target_data)
+
+        z_score, p_value = competitive_z_test(mod_t, target_indices, corr_matrix)
+
+        logger.debug(
+            "Competitive z for %s: z=%.3f, p=%.4f (k=%d)",
+            set_id, z_score, p_value, len(fids),
+        )
+
+        return p_value
 
     def close(self):
         """Release INDRA connection and clear cache."""

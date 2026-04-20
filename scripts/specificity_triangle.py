@@ -173,6 +173,7 @@ def run_discovery_for_contrast(
     # Run discovery
     print(f"  Running {max_hops}-hop discovery...")
     t0 = time.time()
+    target_cache_snapshot = {}
     with DiscoveryBridge(
         engine, symbol_to_feature,
         env_file=indra_env_file,
@@ -203,6 +204,11 @@ def run_discovery_for_contrast(
             knockoff_filter=True,
             knockoff_rng=np.random.default_rng(42),
         )
+        # Snapshot the target cache before bridge.close() clears it
+        if compute_overlap:
+            target_cache_snapshot = {
+                k: list(v) for k, v in bridge._target_cache.items()
+            }
 
     elapsed = time.time() - t0
     print(f"  Done in {elapsed/60:.1f} min")
@@ -214,6 +220,41 @@ def run_discovery_for_contrast(
     disc_dict["contrast"] = contrast_name
     disc_dict["contrast_groups"] = {cond1: n1, cond2: n2}
     disc_dict["elapsed_seconds"] = round(elapsed, 1)
+
+    # Overlap quantification
+    if compute_overlap and target_cache_snapshot:
+        from cliquefinder.stats.overlap_analysis import (
+            annotate_discovery_with_overlap,
+        )
+        # Build gene_sets_per_hop from the cached targets
+        # Each hop's arms reference intermediaries whose targets are in the cache
+        gene_sets_per_hop = {}
+        for hop_data in disc_dict.get("hops", []):
+            hop_num = hop_data.get("hop")
+            arms = hop_data.get("all_arms", [])
+            hop_sets = {}
+            for arm in arms:
+                intermediary = arm.get("intermediary", "")
+                targets = target_cache_snapshot.get(intermediary, [])
+                if targets:
+                    hop_sets[intermediary] = set(targets)
+            if hop_sets:
+                gene_sets_per_hop[hop_num] = hop_sets
+
+        disc_dict = annotate_discovery_with_overlap(
+            disc_dict, gene_sets_per_hop=gene_sets_per_hop
+        )
+        # Print overlap summary per hop
+        print("  Overlap analysis:")
+        for hop_data in disc_dict.get("hops", []):
+            ov = hop_data.get("overlap", {})
+            if "m_eff" in ov:
+                print(
+                    f"    Hop {hop_data['hop']}: "
+                    f"M_eff={ov['m_eff']:.1f}/{ov['m_nominal']} "
+                    f"(ratio={ov['ratio']:.3f}, "
+                    f"median_J={ov['median_jaccard']:.3f})"
+                )
 
     out_path = output_dir / f"discovery_{contrast_name}.json"
     with open(out_path, "w") as f:
@@ -248,6 +289,10 @@ def main():
     parser.add_argument("--covariate-report", action="store_true", default=False,
                         help="Print a covariate confounding assessment table before "
                              "running the analysis.")
+    parser.add_argument("--compute-overlap", action="store_true", default=False,
+                        help="Compute gene set overlap statistics per hop using "
+                             "Li & Ji (2005) effective independent tests. Adds "
+                             "'overlap' field to each hop in the output JSON.")
     args = parser.parse_args()
 
     # Load data
@@ -336,6 +381,7 @@ def main():
             max_hops=args.max_hops,
             seed_null_b=args.seed_null_b,
             covariates=covariates,
+            compute_overlap=args.compute_overlap,
         )
         results[cname] = result
 

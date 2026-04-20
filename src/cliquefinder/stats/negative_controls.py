@@ -57,9 +57,9 @@ class NegativeControlResult:
             control set. None if protein_results not provided.
         competitive_z_fpr: Fraction of controls with competitive z >=
             target z. None if protein_results not provided.
-        competitive_z_percentile: Percentile rank of target competitive z
-            among controls (0 = most enriched, 100 = least enriched).
-            None if not provided.
+        competitive_z_tail_pct: Tail percentage of target competitive z
+            among controls (fpr * 100; 0 = most enriched, 100 = least
+            enriched). None if not provided.
         target_inter_gene_correlation: Mean pairwise correlation (rho_bar)
             among target genes, used for Camera VIF correction of the
             target z-score. None if not computed (e.g. no protein_results).
@@ -84,7 +84,7 @@ class NegativeControlResult:
     target_competitive_z: float | None = None
     control_competitive_z_scores: NDArray[np.float64] | None = None
     competitive_z_fpr: float | None = None
-    competitive_z_percentile: float | None = None
+    competitive_z_tail_pct: float | None = None
 
     # DF-XII-R6: Camera VIF inter-gene correlation used for target z-score
     target_inter_gene_correlation: float | None = None
@@ -120,7 +120,7 @@ class NegativeControlResult:
                 "target_z": self.target_competitive_z,
                 "target_inter_gene_correlation": self.target_inter_gene_correlation,
                 "fpr": self.competitive_z_fpr,
-                "percentile": self.competitive_z_percentile,
+                "percentile": self.competitive_z_tail_pct,
                 "control_z_quantiles": {
                     "q05": float(np.percentile(self.control_competitive_z_scores, 5)),
                     "q25": float(np.percentile(self.control_competitive_z_scores, 25)),
@@ -300,7 +300,7 @@ def run_negative_control_sets(
     target_comp_z = None
     control_comp_z = None
     comp_z_fpr = None
-    comp_z_percentile = None
+    comp_z_tail_pct = None
 
     if protein_results is not None:
         from .enrichment_z import compute_competitive_z, estimate_inter_gene_correlation
@@ -359,7 +359,7 @@ def run_negative_control_sets(
         if len(valid_comp_z) > 0:
             # Higher z = more enriched, so FPR is fraction >= target
             comp_z_fpr = float(np.sum(valid_comp_z >= target_comp_z)) / len(valid_comp_z)
-            comp_z_percentile = (
+            comp_z_tail_pct = (
                 float(np.sum(valid_comp_z >= target_comp_z)) / len(valid_comp_z) * 100
             )
             control_comp_z = valid_comp_z
@@ -367,7 +367,7 @@ def run_negative_control_sets(
         if verbose:
             print(f"  Target competitive z: {target_comp_z:.3f}")
             print(f"  Competitive z FPR (z >= target): {comp_z_fpr:.3f}")
-            print(f"  Competitive z percentile: {comp_z_percentile:.1f}%")
+            print(f"  Competitive z tail pct: {comp_z_tail_pct:.1f}%")
 
     return NegativeControlResult(
         target_pvalue=target_pvalue,
@@ -385,6 +385,6 @@ def run_negative_control_sets(
         target_competitive_z=target_comp_z,
         control_competitive_z_scores=control_comp_z,
         competitive_z_fpr=comp_z_fpr,
-        competitive_z_percentile=comp_z_percentile,
+        competitive_z_tail_pct=comp_z_tail_pct,
         target_inter_gene_correlation=target_rho if target_comp_z is not None else None,
     )

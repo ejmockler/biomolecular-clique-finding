@@ -1777,15 +1777,28 @@ def run_permutation_test_gpu(
         print(f"PHASE 3: Null Distribution (GPU Batched)")
         print(f"{'=' * 70}")
 
-    # DF-XIII-D3: Pre-allocate numpy arrays instead of list.append().
-    # Each Python float is ~28 bytes vs 8 bytes in numpy — 3.5x memory saving.
-    null_t_arrays: dict[str, NDArray] = {
-        cid: np.empty(n_permutations) for cid in observed_clique_ids
-    }
-    null_log2fc_arrays: dict[str, NDArray] = {
-        cid: np.empty(n_permutations) for cid in observed_clique_ids
-    }
-    null_cursors: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    # XIII-8: Streaming p-values — replace stored null distribution arrays
+    # with running counters. For 2000 cliques × 10k perms this eliminates
+    # ~320MB of null_t/null_log2fc arrays. P-values are computed by counting
+    # exceedances during the permutation loop instead of storing all values.
+    #
+    # Counters per clique:
+    #   _exceed_twosided: count of |null_t| >= |obs_t|
+    #   _exceed_directional: count of null_t >= obs_t (or <=, by sign)
+    #   _below_abs_count: count of |null_t| < |obs_t| (for percentile rank)
+    #   _n_valid: count of finite null_t values (denominator)
+    #   _sum_t, _sum_t_sq: running sums for null t mean/std
+    #   _sum_log2fc, _sum_log2fc_sq, _n_valid_log2fc: for null log2fc stats
+    _exceed_twosided: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    _exceed_directional: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    _below_abs_count: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    _n_valid: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    _sum_t: dict[str, float] = {cid: 0.0 for cid in observed_clique_ids}
+    _sum_t_sq: dict[str, float] = {cid: 0.0 for cid in observed_clique_ids}
+    _sum_log2fc: dict[str, float] = {cid: 0.0 for cid in observed_clique_ids}
+    _sum_log2fc_sq: dict[str, float] = {cid: 0.0 for cid in observed_clique_ids}
+    _n_valid_log2fc: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
+    _total_perms_seen: dict[str, int] = {cid: 0 for cid in observed_clique_ids}
 
     # Group by size for batched processing
     size_to_cliques = {}
@@ -1895,28 +1908,66 @@ def run_permutation_test_gpu(
                     Y_chunk, matrices, use_gpu=use_gpu, return_log2fc=True
                 )
 
-                # Store results back to pre-allocated arrays (D3: vectorized slice)
+                # XIII-8: Stream — compare null values against observed and
+                # increment counters instead of storing full arrays.
                 batch_idx = 0
                 for clique_id in clique_ids_sub:
-                    cursor = null_cursors[clique_id]
-                    null_t_arrays[clique_id][cursor:cursor + chunk_perms] = (
-                        t_chunk[batch_idx:batch_idx + chunk_perms]
+                    t_vals = t_chunk[batch_idx:batch_idx + chunk_perms]
+                    lfc_vals = log2fc_chunk[batch_idx:batch_idx + chunk_perms]
+
+                    # Observed values for this clique
+                    _obs_log2fc, _obs_pval, _obs_tval = observed_t[clique_id]
+
+                    # Finite mask — NaN null values must NOT increment counters
+                    # (same semantic as filtering them out in the array approach)
+                    t_finite = np.isfinite(t_vals)
+                    lfc_finite = np.isfinite(lfc_vals)
+                    t_valid = t_vals[t_finite]
+                    lfc_valid = lfc_vals[lfc_finite]
+
+                    # Two-sided: |null_t| >= |obs_t|
+                    _exceed_twosided[clique_id] += int(
+                        np.sum(np.abs(t_valid) >= np.abs(_obs_tval))
                     )
-                    null_log2fc_arrays[clique_id][cursor:cursor + chunk_perms] = (
-                        log2fc_chunk[batch_idx:batch_idx + chunk_perms]
+                    # One-sided (directional)
+                    if _obs_tval > 0:
+                        _exceed_directional[clique_id] += int(
+                            np.sum(t_valid >= _obs_tval)
+                        )
+                    else:
+                        _exceed_directional[clique_id] += int(
+                            np.sum(t_valid <= _obs_tval)
+                        )
+                    # Percentile: |null_t| < |obs_t|
+                    _below_abs_count[clique_id] += int(
+                        np.sum(np.abs(t_valid) < np.abs(_obs_tval))
                     )
-                    null_cursors[clique_id] += chunk_perms
+
+                    # Running sums for mean/std
+                    n_t = len(t_valid)
+                    _n_valid[clique_id] += n_t
+                    if n_t > 0:
+                        _sum_t[clique_id] += float(np.sum(t_valid))
+                        _sum_t_sq[clique_id] += float(np.sum(t_valid ** 2))
+
+                    n_lfc = len(lfc_valid)
+                    _n_valid_log2fc[clique_id] += n_lfc
+                    if n_lfc > 0:
+                        _sum_log2fc[clique_id] += float(np.sum(lfc_valid))
+                        _sum_log2fc_sq[clique_id] += float(np.sum(lfc_valid ** 2))
+
+                    _total_perms_seen[clique_id] += chunk_perms
                     batch_idx += chunk_perms
 
                 assert batch_idx == batch_size, (
                     f"Scatter batch_idx mismatch: {batch_idx} != {batch_size}"
                 )
 
-    # D3: Verify all cursors reached n_permutations
+    # XIII-8: Verify all cliques saw all permutations
     for cid in observed_clique_ids:
-        assert null_cursors[cid] == n_permutations, (
-            f"Null array cursor mismatch for {cid}: "
-            f"{null_cursors[cid]} != {n_permutations}"
+        assert _total_perms_seen[cid] == n_permutations, (
+            f"Streaming perm count mismatch for {cid}: "
+            f"{_total_perms_seen[cid]} != {n_permutations}"
         )
 
     phase3_elapsed = time.time() - phase3_start
@@ -1924,45 +1975,106 @@ def run_permutation_test_gpu(
     if verbose:
         print(f"  Completed in {phase3_elapsed:.2f}s")
 
-    # PHASE 4: Empirical P-values
+    # PHASE 4: Empirical P-values (from streaming counters)
     if verbose:
         print(f"\n{'=' * 70}")
         print(f"PHASE 4: Empirical P-values")
         print(f"{'=' * 70}")
         start_time = time.time()
 
-    results = compute_empirical_pvalues(
-        observed_t=observed_t,
-        null_t=null_t_arrays,
-        null_log2fc=null_log2fc_arrays,
-        significance_threshold=significance_threshold,
-    )
+    # XIII-8: Compute p-values directly from streaming counters.
+    # Formula: p = (count + 1) / (n_valid + 1), matching compute_empirical_pvalues.
+    from .clique_analysis import PermutationTestResult
+
+    results = []
+    for clique_id, (obs_log2fc, obs_pval, obs_tval) in observed_t.items():
+        n_valid_t = _n_valid[clique_id]
+
+        if n_valid_t < 10:
+            # Too few successful permutations (matches compute_empirical_pvalues)
+            continue
+
+        empirical_pval = (_exceed_twosided[clique_id] + 1) / (n_valid_t + 1)
+        empirical_pval_dir = (_exceed_directional[clique_id] + 1) / (n_valid_t + 1)
+        percentile = 100.0 * _below_abs_count[clique_id] / n_valid_t
+
+        # Null distribution statistics from running sums
+        null_tvalue_mean = _sum_t[clique_id] / n_valid_t
+
+        n_valid_lfc = _n_valid_log2fc[clique_id]
+        if n_valid_lfc > 0:
+            null_log2fc_mean = _sum_log2fc[clique_id] / n_valid_lfc
+        else:
+            null_log2fc_mean = 0.0
+        if n_valid_lfc > 1:
+            # Unbiased variance: (sum_sq - n*mean^2) / (n-1)
+            _var_lfc = (
+                _sum_log2fc_sq[clique_id] - n_valid_lfc * null_log2fc_mean ** 2
+            ) / (n_valid_lfc - 1)
+            null_log2fc_std = float(np.sqrt(max(0.0, _var_lfc)))
+        else:
+            null_log2fc_std = 0.0
+
+        results.append(PermutationTestResult(
+            clique_id=clique_id,
+            observed_log2fc=obs_log2fc,
+            observed_pvalue=obs_pval,
+            observed_tvalue=obs_tval,
+            null_log2fc_mean=null_log2fc_mean,
+            null_log2fc_std=null_log2fc_std,
+            null_tvalue_mean=null_tvalue_mean,
+            empirical_pvalue=empirical_pval,
+            empirical_pvalue_directional=empirical_pval_dir,
+            n_permutations=n_valid_t,
+            percentile_rank=percentile,
+            is_significant=empirical_pval < significance_threshold,
+        ))
 
     if verbose:
         elapsed = time.time() - start_time
         print(f"  Completed in {elapsed:.2f}s")
 
-    # Create null distribution summary
+    # Create null distribution summary from streaming statistics
     null_summary_rows = []
     for clique_id in observed_clique_ids:
-        if clique_id in null_log2fc_arrays and clique_id in null_t_arrays:
-            log2fc_vals = null_log2fc_arrays[clique_id]
-            tval_vals = null_t_arrays[clique_id]
+        n_t = _n_valid[clique_id]
+        n_lfc = _n_valid_log2fc[clique_id]
 
-            # XIII-9: Use nan-aware summary stats — NaN entries from
-            # degenerate median polish batches should not corrupt summaries.
-            null_summary_rows.append({
-                'clique_id': clique_id,
-                'null_log2FC_mean': float(np.nanmean(log2fc_vals)),
-                'null_log2FC_std': float(np.nanstd(log2fc_vals, ddof=1)),
-                'null_log2FC_5pct': float(np.nanpercentile(log2fc_vals, 5)),
-                'null_log2FC_95pct': float(np.nanpercentile(log2fc_vals, 95)),
-                'null_tvalue_mean': float(np.nanmean(tval_vals)),
-                'null_tvalue_std': float(np.nanstd(tval_vals, ddof=1)),
-                'null_tvalue_5pct': float(np.nanpercentile(tval_vals, 5)),
-                'null_tvalue_95pct': float(np.nanpercentile(tval_vals, 95)),
-                'n_permutations': int(np.sum(np.isfinite(tval_vals))),
-            })
+        if n_t == 0:
+            continue
+
+        t_mean = _sum_t[clique_id] / n_t
+        if n_t > 1:
+            _var_t = (_sum_t_sq[clique_id] - n_t * t_mean ** 2) / (n_t - 1)
+            t_std = float(np.sqrt(max(0.0, _var_t)))
+        else:
+            t_std = 0.0
+
+        if n_lfc > 0:
+            lfc_mean = _sum_log2fc[clique_id] / n_lfc
+        else:
+            lfc_mean = 0.0
+        if n_lfc > 1:
+            _var_lfc = (_sum_log2fc_sq[clique_id] - n_lfc * lfc_mean ** 2) / (n_lfc - 1)
+            lfc_std = float(np.sqrt(max(0.0, _var_lfc)))
+        else:
+            lfc_std = 0.0
+
+        # XIII-8: Percentiles approximated from Normal(mean, std).
+        # With 1000+ permutations the null is well-approximated by Normal
+        # (CLT). Exact percentiles would require storing the full array.
+        null_summary_rows.append({
+            'clique_id': clique_id,
+            'null_log2FC_mean': lfc_mean,
+            'null_log2FC_std': lfc_std,
+            'null_log2FC_5pct': lfc_mean - 1.6449 * lfc_std,
+            'null_log2FC_95pct': lfc_mean + 1.6449 * lfc_std,
+            'null_tvalue_mean': t_mean,
+            'null_tvalue_std': t_std,
+            'null_tvalue_5pct': t_mean - 1.6449 * t_std,
+            'null_tvalue_95pct': t_mean + 1.6449 * t_std,
+            'n_permutations': n_t,
+        })
 
     null_df = pd.DataFrame(null_summary_rows)
 
