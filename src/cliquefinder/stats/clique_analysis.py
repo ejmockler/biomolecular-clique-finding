@@ -1140,7 +1140,7 @@ def compare_protein_vs_clique_results(
 
         if len(clique_proteins) == 0 and len(proteins) > 0:
             # ID-space mismatch — proteins from clique not found in protein results
-            logger.debug(
+            logger.warning(
                 "compare_protein_vs_clique_results: clique %s proteins %s not found "
                 "in protein results (possible ID-space mismatch: clique uses %s, "
                 "protein results use %s)",
@@ -1499,7 +1499,7 @@ def run_permutation_clique_test(
             observed_pvalue=obs_pval,
             observed_tvalue=obs_tval,
             null_log2fc_mean=float(np.mean(null_log2fc)),
-            null_log2fc_std=float(np.std(null_log2fc)),
+            null_log2fc_std=float(np.std(null_log2fc, ddof=1)),
             null_tvalue_mean=float(np.mean(null_tvals)),
             empirical_pvalue=empirical_pval,
             empirical_pvalue_directional=empirical_pval_dir,
@@ -1517,11 +1517,11 @@ def run_permutation_clique_test(
             null_summary_rows.append({
                 'clique_id': clique_id,
                 'null_log2FC_mean': np.mean(null_log2fc),
-                'null_log2FC_std': np.std(null_log2fc),
+                'null_log2FC_std': np.std(null_log2fc, ddof=1),
                 'null_log2FC_5pct': np.percentile(null_log2fc, 5),
                 'null_log2FC_95pct': np.percentile(null_log2fc, 95),
                 'null_tvalue_mean': np.mean(null_tvals),
-                'null_tvalue_std': np.std(null_tvals),
+                'null_tvalue_std': np.std(null_tvals, ddof=1),
                 'null_tvalue_5pct': np.percentile(null_tvals, 5),
                 'null_tvalue_95pct': np.percentile(null_tvals, 95),
                 'n_permutations': len(null_stats),

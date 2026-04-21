@@ -366,8 +366,11 @@ def run_negative_control_sets(
 
         if verbose:
             print(f"  Target competitive z: {target_comp_z:.3f}")
-            print(f"  Competitive z FPR (z >= target): {comp_z_fpr:.3f}")
-            print(f"  Competitive z tail pct: {comp_z_tail_pct:.1f}%")
+            if comp_z_tail_pct is not None:
+                print(f"  Competitive z FPR (z >= target): {comp_z_fpr:.3f}")
+                print(f"  Competitive z tail pct: {comp_z_tail_pct:.1f}%")
+            else:
+                print("  Competitive z FPR: N/A (no control genes mapped to features)")
 
     return NegativeControlResult(
         target_pvalue=target_pvalue,

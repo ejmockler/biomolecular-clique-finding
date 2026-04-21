@@ -40,6 +40,7 @@ Examples:
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Any, Optional, Literal, Tuple
 import numpy as np
 import pandas as pd
@@ -53,6 +54,10 @@ from sklearn.neighbors import NearestNeighbors
 from cliquefinder.core.transform import Transform
 from cliquefinder.core.quality import QualityFlag
 from cliquefinder.core.biomatrix import BioMatrix
+
+logger = logging.getLogger(__name__)
+
+_MEDCOUPLE_SUBSAMPLE_THRESHOLD = 10_000
 
 __all__ = [
     'OutlierDetector',
@@ -479,6 +484,16 @@ def compute_medcouple(x: np.ndarray) -> float:
     # Filter NaN/Inf
     x = np.asarray(x).ravel()
     x = x[np.isfinite(x)]
+
+    # Subsample for large arrays — O(n²) kernel becomes prohibitive
+    if len(x) > _MEDCOUPLE_SUBSAMPLE_THRESHOLD:
+        n_original = len(x)
+        rng = np.random.default_rng(42)  # fixed seed for reproducibility
+        x = rng.choice(x, size=_MEDCOUPLE_SUBSAMPLE_THRESHOLD, replace=False)
+        logger.info(
+            f"Subsampling to {_MEDCOUPLE_SUBSAMPLE_THRESHOLD} values for "
+            f"medcouple (n={n_original})"
+        )
 
     n = len(x)
     if n < 3:

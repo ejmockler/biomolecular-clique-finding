@@ -445,17 +445,19 @@ class TestPhase2SeedSequence:
             "Phase 2 does not use seed=_seed_phase2"
 
     def test_phase2_and_graph_seeds_appended_at_end_of_spawn(self):
-        """_ss_p2 and _ss_p5g must be the last elements in the spawn tuple.
+        """_ss_p2, _ss_p5g, and _ss_p6 must be the last elements in the spawn tuple.
 
         This ensures existing seeds for phases 3-5 are not perturbed
-        by the addition of Phase 2 and graph permutation seeds.
+        by the addition of Phase 2, graph permutation, and Phase 6 seeds.
         """
         source = _VALIDATE_BASELINES.read_text()
         # Find the spawn destructuring line
-        match = re.search(r"\(([^)]+)\)\s*=\s*_ss\.spawn\(7\)", source)
-        assert match is not None, "Could not find spawn(7) destructuring"
+        match = re.search(r"\(([^)]+)\)\s*=\s*_ss\.spawn\(8\)", source)
+        assert match is not None, "Could not find spawn(8) destructuring"
         names = [n.strip() for n in match.group(1).split(",")]
-        assert names[-2] == "_ss_p2", \
-            f"_ss_p2 must be second-to-last in spawn tuple, got: {names}"
-        assert names[-1] == "_ss_p5g", \
-            f"_ss_p5g must be last in spawn tuple, got: {names}"
+        assert names[-3] == "_ss_p2", \
+            f"_ss_p2 must be third-to-last in spawn tuple, got: {names}"
+        assert names[-2] == "_ss_p5g", \
+            f"_ss_p5g must be second-to-last in spawn tuple, got: {names}"
+        assert names[-1] == "_ss_p6", \
+            f"_ss_p6 must be last in spawn tuple, got: {names}"

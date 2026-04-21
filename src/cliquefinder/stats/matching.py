@@ -112,6 +112,18 @@ def exact_match_covariates(
         lambda row: tuple(row.values), axis=1
     )
 
+    # Guard: detect continuous variables that would create degenerate strata
+    n_samples = len(working)
+    for var in match_vars:
+        nunique = working[var].nunique()
+        if nunique > 20 and nunique / n_samples > 0.3:
+            raise ValueError(
+                f"Match variable '{var}' appears continuous "
+                f"({nunique} unique values for {n_samples} samples). "
+                f"Bin continuous variables into groups before matching, "
+                f"or use a categorical variable."
+            )
+
     # For each stratum, find min group size and subsample
     matched_indices: list[int] = []
     audit_rows: list[dict] = []

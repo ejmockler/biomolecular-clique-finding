@@ -62,13 +62,23 @@ def inverse_fisher_z(z: float) -> float:
     return np.tanh(z)
 
 
-def fisher_z_standard_error(n: int, method: str = 'pearson') -> float:
+def fisher_z_standard_error(
+    n: int, method: str = 'pearson', r: Optional[float] = None
+) -> float:
     """
     Compute standard error of Fisher Z-transformed correlation.
 
     For Pearson correlation, SE = 1/sqrt(n-3).
-    For Spearman correlation, SE = 1.06/sqrt(n-3) to account for
-    rank transformation variance inflation.
+    For Spearman correlation, the SE is inflated to account for rank
+    transformation variance. When the observed correlation r is available,
+    the Bonett & Wright (2000) exact formula is used:
+        SE = sqrt((1 + r^2/2) / (n - 3))
+    When r is not available, the Fieller et al. (1957) sample-size-only
+    approximation is used:
+        SE = (1 + 6/(n+1)) / sqrt(n - 3)
+    Both converge to 1/sqrt(n-3) at large n (matching Pearson SE, as
+    Spearman's asymptotic efficiency approaches 1). They are substantially
+    more accurate than the old flat 1.06 constant for small samples.
 
     The Fisher Z transformation SE formula requires n >= 4 because it uses
     n-3 degrees of freedom in the denominator. This accounts for the estimation
@@ -78,6 +88,9 @@ def fisher_z_standard_error(n: int, method: str = 'pearson') -> float:
         n: Sample size (must be >= 4)
         method: 'pearson', 'spearman', or 'max'. The 'max' method uses the
             conservative Spearman SE since it selects the stronger correlation.
+        r: Observed correlation coefficient (optional). When provided for
+            Spearman/max methods, enables the exact Bonett & Wright (2000)
+            formula instead of the sample-size-only approximation.
 
     Returns:
         Standard error of Fisher Z
@@ -116,32 +129,25 @@ def fisher_z_standard_error(n: int, method: str = 'pearson') -> float:
             f"correlation standard error estimation."
         )
 
-    base_se = 1.0 / np.sqrt(n - 3)
-
-    if method == 'spearman':
-        # Spearman's rho has inflated variance due to rank transformation
-        # Factor 1.06 is the asymptotic correction factor derived from the
-        # variance inflation of rank-based correlations relative to Pearson.
-        #
-        # The correction (1 + 6/(n+1)) → 1.06 as n → ∞ and is typically
-        # approximated as 1.06 for moderate to large samples (n ≥ 20).
-        #
-        # Reference:
-        #     Bonett, D.G., & Wright, T.A. (2000). Sample size requirements for
-        #     estimating Pearson, Kendall and Spearman correlations.
-        #     Psychometrika, 65(1), 23-28.
-        #
-        #     Fieller, E.C., Hartley, H.O., & Pearson, E.S. (1957). Tests for
-        #     rank correlation coefficients. I. Biometrika, 44(3/4), 470-481.
-        return 1.06 * base_se
-    elif method == 'pearson':
-        return base_se
-    elif method == 'max':
-        # "max" selects the stronger of Pearson or Spearman correlations.
-        # Since we don't know which was selected at this point, use the
-        # conservative Spearman SE (1.06 factor). This is slightly conservative
-        # if Pearson was chosen, but exactly correct if Spearman was chosen.
-        return 1.06 * base_se
+    if method == 'pearson':
+        return 1.0 / np.sqrt(n - 3)
+    elif method in ('spearman', 'max'):
+        # Spearman's rho has inflated variance due to rank transformation.
+        # For 'max' method (selects stronger of Pearson/Spearman), use the
+        # conservative Spearman SE since it's always >= Pearson SE.
+        if r is not None:
+            # Bonett & Wright (2000) exact formula using observed correlation.
+            # SE = sqrt((1 + r^2/2) / (n - 3))
+            # This accounts for the correlation-dependent variance of Fisher Z
+            # for rank correlations and is accurate at all sample sizes.
+            return np.sqrt((1.0 + r**2 / 2.0) / (n - 3))
+        else:
+            # Fieller, Hartley & Pearson (1957) sample-size-only approximation.
+            # SE = (1 + 6/(n+1)) / sqrt(n - 3)
+            # Much more accurate than the flat 1.06 constant at small n:
+            # at n=10, this gives 1.545 vs 1.06 (46% underestimate with constant).
+            # Converges to 1/sqrt(n-3) as n → infinity.
+            return (1.0 + 6.0 / (n + 1)) / np.sqrt(n - 3)
     else:
         raise ValueError(f"Unknown correlation method '{method}'. Use 'pearson', 'spearman', or 'max'")
 
@@ -163,8 +169,8 @@ def correlation_confidence_interval(
         r: Observed correlation
         n: Sample size
         alpha: Significance level (default 0.05 for 95% CI)
-        method: 'pearson', 'spearman', or 'max'. Spearman and max use SE
-            correction factor of 1.06 due to rank transformation variance inflation.
+        method: 'pearson', 'spearman', or 'max'. Spearman and max use the
+            Bonett & Wright (2000) SE correction for rank transformation.
 
     Returns:
         (lower, upper) bounds of CI
@@ -178,7 +184,7 @@ def correlation_confidence_interval(
         correlation coefficients. I. Biometrika, 44(3/4), 470-481.
     """
     z = fisher_z_transform(r)
-    se_z = fisher_z_standard_error(n, method=method)
+    se_z = fisher_z_standard_error(n, method=method, r=r)
     z_crit = stats.norm.ppf(1 - alpha / 2)
 
     z_lower = z - z_crit * se_z
@@ -204,8 +210,8 @@ def test_correlation_difference(
     Args:
         r1, n1: Correlation and sample size for condition 1
         r2, n2: Correlation and sample size for condition 2
-        method: 'pearson', 'spearman', or 'max'. Spearman and max use SE
-            correction factor of 1.06 due to rank transformation variance inflation.
+        method: 'pearson', 'spearman', or 'max'. Spearman and max use the
+            Bonett & Wright (2000) SE correction for rank transformation.
 
     Returns:
         CorrelationTestResult with z-score, p-value, and CIs
@@ -222,8 +228,8 @@ def test_correlation_difference(
     z2 = fisher_z_transform(r2)
 
     # Get SE for each sample, accounting for correlation method
-    se1 = fisher_z_standard_error(n1, method=method)
-    se2 = fisher_z_standard_error(n2, method=method)
+    se1 = fisher_z_standard_error(n1, method=method, r=r1)
+    se2 = fisher_z_standard_error(n2, method=method, r=r2)
 
     # Combined SE for difference of independent Z-transformed correlations
     se = np.sqrt(se1**2 + se2**2)

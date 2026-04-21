@@ -177,6 +177,40 @@ class TestExactMatchCovariates:
             partner = counts.get(("A" if _ == "B" else "B", sex, batch), 0)
             assert count == partner
 
+    def test_continuous_match_var_raises(self):
+        """Continuous match variable raises ValueError (XIII-24)."""
+        rng = np.random.default_rng(0)
+        n = 100
+        metadata = pd.DataFrame({
+            "group": rng.choice(["A", "B"], size=n),
+            "age": rng.normal(65, 10, size=n),  # continuous floats
+        })
+
+        with pytest.raises(ValueError, match="appears continuous"):
+            exact_match_covariates(
+                metadata=metadata,
+                group_col="group",
+                match_vars=["age"],
+                seed=42,
+            )
+
+    def test_low_cardinality_var_passes(self):
+        """Low-cardinality variable does not trigger continuous guard."""
+        n = 100
+        metadata = pd.DataFrame({
+            "group": ["A"] * (n // 2) + ["B"] * (n // 2),
+            "batch": np.tile(["X", "Y", "Z"], n // 3 + 1)[:n],
+        })
+
+        # Should not raise — only 3 unique values
+        result = exact_match_covariates(
+            metadata=metadata,
+            group_col="group",
+            match_vars=["batch"],
+            seed=42,
+        )
+        assert result.n_matched > 0
+
     def test_to_dict(self, imbalanced_metadata):
         """Result serializes to dict."""
         result = exact_match_covariates(

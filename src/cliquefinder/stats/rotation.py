@@ -485,6 +485,40 @@ def _construct_c_matrix(contrast: NDArray[np.float64]) -> NDArray[np.float64]:
     return C
 
 
+def _validate_sample_weights(
+    sample_weights: NDArray[np.float64], n_samples: int
+) -> None:
+    """Validate sample_weights before use in QR decomposition.
+
+    Checks:
+    - Shape matches n_samples
+    - All values are positive (> 0)
+    - No NaN or Inf values
+
+    Raises:
+        ValueError: If any validation check fails.
+    """
+    if sample_weights.ndim != 1 or sample_weights.shape[0] != n_samples:
+        raise ValueError(
+            f"sample_weights shape {sample_weights.shape} does not match "
+            f"n_samples ({n_samples},). Expected a 1-D array of length {n_samples}."
+        )
+    if not np.all(np.isfinite(sample_weights)):
+        n_nan = int(np.sum(np.isnan(sample_weights)))
+        n_inf = int(np.sum(np.isinf(sample_weights)))
+        raise ValueError(
+            f"sample_weights contains non-finite values: "
+            f"{n_nan} NaN, {n_inf} Inf. All weights must be finite and positive."
+        )
+    if not np.all(sample_weights > 0):
+        n_nonpos = int(np.sum(sample_weights <= 0))
+        raise ValueError(
+            f"sample_weights contains {n_nonpos} non-positive value(s). "
+            f"All weights must be strictly positive (> 0). "
+            f"Min weight: {sample_weights.min():.6g}."
+        )
+
+
 def compute_rotation_matrices_general(
     design_matrix: NDArray[np.float64],
     contrast: NDArray[np.float64],
@@ -560,6 +594,7 @@ def compute_rotation_matrices_general(
 
     # Apply weights if provided
     if sample_weights is not None:
+        _validate_sample_weights(sample_weights, n_samples)
         W_sqrt = np.sqrt(np.diag(sample_weights))
         X_reparam = W_sqrt @ X_reparam
 
@@ -719,6 +754,18 @@ def build_interaction_design(
         else:
             raise ValueError(f"Unexpected factor combination: {f1}, {f2}")
 
+    # XIII-25: Check for empty cells — a column of all zeros means one cell
+    # of the factor×factor design has 0 samples, producing rank deficiency.
+    cell_counts = design.sum(axis=0).astype(int)
+    for col_idx, count in enumerate(cell_counts):
+        if count == 0:
+            raise ValueError(
+                f"Empty cell in interaction design: group '{group_names[col_idx]}' "
+                f"has 0 samples. All cells of the {factor1_name}×{factor2_name} "
+                f"design must have at least 1 sample. "
+                f"Cell counts: {dict(zip(group_names, cell_counts))}."
+            )
+
     # Interaction contrast: (A1_B1 - A1_B2) - (A2_B1 - A2_B2)
     # = A1_B1 - A1_B2 - A2_B1 + A2_B2
     interaction_contrast = np.array([1.0, -1.0, -1.0, 1.0])
@@ -840,6 +887,7 @@ def compute_rotation_matrices(
 
     # Apply weights if provided
     if sample_weights is not None:
+        _validate_sample_weights(sample_weights, n_samples)
         W_sqrt = np.sqrt(np.diag(sample_weights[valid_mask]))
         X_weighted = W_sqrt @ X
     else:
