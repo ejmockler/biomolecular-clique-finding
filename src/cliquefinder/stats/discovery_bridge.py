@@ -381,14 +381,25 @@ class DiscoveryBridge:
             [self.engine.gene_to_idx[g] for g in fids], dtype=np.intp
         )
 
-        # Estimate inter-gene correlation from expression data if available
+        # Estimate inter-gene correlation from MODEL RESIDUALS, not raw expression.
+        # Camera (Wu & Smyth 2012) uses residuals to exclude shared treatment signal.
+        # Using raw expression inflates rho_bar when targets are co-regulated,
+        # causing VIF overcorrection. Residuals = data projected into the space
+        # orthogonal to the design matrix (Q2 from the QR decomposition).
         corr_matrix = None
         if hasattr(self.engine, 'data') and self.engine.data is not None:
             k = len(target_indices)
-            if k >= 2:
-                target_data = self.engine.data[target_indices, :]
-                # Only compute if feasible (avoid O(k^2) for very large sets)
-                if k <= 500:
+            if k >= 2 and k <= 500:
+                target_data = self.engine.data[target_indices, :]  # (k, n_samples)
+                # Project into residual space using Q2 from the fitted model
+                if (self.engine._precomputed is not None
+                        and self.engine._precomputed.Q2 is not None):
+                    Q2 = self.engine._precomputed.Q2
+                    # Residuals = Y @ Q2 (project data into residual space)
+                    target_residuals = target_data @ Q2  # (k, df_residual+1)
+                    corr_matrix = np.corrcoef(target_residuals)
+                else:
+                    # Fallback: raw expression (less accurate but functional)
                     corr_matrix = np.corrcoef(target_data)
 
         z_score, p_value = competitive_z_test(mod_t, target_indices, corr_matrix)
