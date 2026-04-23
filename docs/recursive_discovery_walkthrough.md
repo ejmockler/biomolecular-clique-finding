@@ -1,5 +1,25 @@
 # Recursive Regulatory Discovery Through INDRA Knowledge Graphs
 
+> **RETRACTION (April 2026).** The per-arm ROAST results below — including the
+> "46/46 significant at hop 1," the "1,364 of 1,384 at hop 3," the five-hop
+> cascade, the π̂₀-convergence boundary, and the per-arm specificity-triangle
+> counts — are **artifacts of a non-discriminatory test in a broadly perturbed
+> proteome**. A negative-control rerun showed 56.5% of size-matched random
+> gene sets pass the same ROAST gate; the competitive z-score returned p=0.211
+> (no VIF) and p=0.685 (Camera VIF-corrected); matched single-gene reanalysis
+> returned p=0.649. Three independent confirmations of the null.
+>
+> The corrected methodology (gradient-based discovery with degree-preserving
+> permutation null) and honest scope are in
+> [`presentations/recursive-discovery/slides.md`](../presentations/recursive-discovery/slides.md).
+> The surviving signal is a small but robust proximity gradient
+> (Spearman ρ = −0.146, permutation p ≈ 0.001 at 1000-permutation resolution
+> across 938 distance-1 genes). Anything below this banner that depends on
+> per-arm significance, π̂₀-adaptive thresholds, recursive walking, or the
+> hierarchical-FDR cascade should be treated as **a methodological case study
+> in how broadly-perturbed datasets break self-contained gene-set tests**, not
+> as a description of C9orf72 biology.
+
 ## The Question
 
 C9orf72 repeat expansions are the most common genetic cause of ALS. INDRA's
