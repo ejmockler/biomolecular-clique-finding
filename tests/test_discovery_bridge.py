@@ -19,11 +19,17 @@ class TestDiscoveryBridgeTargets:
     @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
     def test_get_targets_filters_to_engine(self, mock_ensure):
         bridge = self._make_bridge()
-        # Mock INDRA edges
+        # Mock INDRA edges with proper metadata
         mock_edge1 = MagicMock()
         mock_edge1.target = "SOD1"
+        mock_edge1.sources = ["reach"]
+        mock_edge1.evidence_count = 1
+        mock_edge1.metadata = {"source_counts": {"reach": 1}, "regulation_type": "activation"}
         mock_edge2 = MagicMock()
         mock_edge2.target = "MISSING"  # not in engine.gene_to_idx
+        mock_edge2.sources = ["reach"]
+        mock_edge2.evidence_count = 1
+        mock_edge2.metadata = {"source_counts": {"reach": 1}}
         mock_edge3 = MagicMock()
         mock_edge3.target = "NONHGNC"  # will fail HGNC check
 
@@ -237,4 +243,155 @@ class TestContextManager:
     def test_default_min_evidence(self):
         engine = MagicMock()
         bridge = DiscoveryBridge(engine, {})
-        assert bridge.min_evidence == 2  # matches pipeline default
+        assert bridge.min_evidence == 1  # query broadly, filter by reliability
+
+
+class TestEdgeQualityClassification:
+    """Test _classify_edge_quality helper."""
+
+    def test_multi_source(self):
+        from cliquefinder.stats.discovery_bridge import _classify_edge_quality
+        assert _classify_edge_quality(2, ["reach", "sparser"]) == "multi_source"
+        assert _classify_edge_quality(3, ["reach", "signor", "trips"]) == "multi_source"
+
+    def test_single_curated(self):
+        from cliquefinder.stats.discovery_bridge import _classify_edge_quality
+        assert _classify_edge_quality(1, ["signor"]) == "single_curated"
+        assert _classify_edge_quality(1, ["reactome"]) == "single_curated"
+
+    def test_single_text_mined(self):
+        from cliquefinder.stats.discovery_bridge import _classify_edge_quality
+        assert _classify_edge_quality(1, ["reach"]) == "single_text_mined"
+        assert _classify_edge_quality(1, ["sparser"]) == "single_text_mined"
+
+
+class TestGradientBridge:
+    """Test gradient-mode methods on DiscoveryBridge."""
+
+    def _make_bridge_with_t(self):
+        """Create a bridge with a mock engine that has moderated t-stats."""
+        import numpy as np
+
+        engine = MagicMock()
+        engine.gene_to_idx = {
+            "P00441": 0, "P35637": 1, "P10636": 2,
+            "P12345": 3, "P67890": 4,
+        }
+        # Mock effects for _get_moderated_t
+        effects = MagicMock()
+        effects.U = np.array([[2.0], [1.5], [1.0], [0.5], [0.3]])
+        effects.moderated_variances = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {
+            "SOD1": "P00441", "FUS": "P35637", "MAPT": "P10636",
+            "APP": "P12345", "GRN": "P67890",
+        }
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+        return bridge
+
+    def test_get_abs_t_stats(self):
+        bridge = self._make_bridge_with_t()
+        t_stats = bridge.get_abs_t_stats()
+        assert t_stats["SOD1"] == pytest.approx(2.0)
+        assert t_stats["FUS"] == pytest.approx(1.5)
+        assert t_stats["GRN"] == pytest.approx(0.3)
+        assert len(t_stats) == 5
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_build_adjacency_populates_leaf_edges(self, mock_ensure):
+        """Leaf shell genes must have outgoing edges recorded so that
+        _compute_graph_degrees returns the correct degree for them.
+        Without this, the degree-preserving null fails for the outermost shell.
+        """
+        bridge = self._make_bridge_with_t()
+
+        # Mock get_targets to return deterministic results per gene.
+        call_log: list[str] = []
+
+        def fake_get_targets(gene: str) -> list[str]:
+            call_log.append(gene)
+            # SEED -> [SOD1]; SOD1 -> [FUS, MAPT]; FUS -> [APP]; MAPT -> [GRN]
+            graph = {
+                "SEED": ["P00441"],  # SOD1
+                "SOD1": ["P35637", "P10636"],  # FUS, MAPT
+                "FUS": ["P12345"],  # APP
+                "MAPT": ["P67890"],  # GRN
+                "APP": [],
+                "GRN": [],
+            }
+            return graph.get(gene, [])
+
+        bridge.get_targets = fake_get_targets  # type: ignore
+        bridge.sym_to_feat["SEED"] = "SEED_FID"
+        # max_hops=2 -> shells = {1: [SOD1], 2: [FUS, MAPT]}
+        # Leaves (FUS, MAPT) must still be queried for their outgoing edges.
+        adj, eq = bridge.build_neighborhood_adjacency("SEED", max_hops=2)
+
+        # Leaves should have non-empty adjacency entries
+        assert "FUS" in adj
+        assert "MAPT" in adj
+        assert adj["FUS"] == ["APP"]
+        assert adj["MAPT"] == ["GRN"]
+        # They were queried in the leaf pass
+        assert "FUS" in call_log
+        assert "MAPT" in call_log
+
+    def test_edge_quality_keeps_best_tier(self):
+        """When a gene is reached through multiple parents, the tier should
+        be updated if a better-quality edge is found on a subsequent visit.
+        """
+        from cliquefinder.stats.discovery_bridge import (
+            _classify_edge_quality,
+            _TIER_RANK,
+        )
+
+        # Verify the helper ranking is correct
+        assert _TIER_RANK[_classify_edge_quality(2, ["reach", "sparser"])] > (
+            _TIER_RANK[_classify_edge_quality(1, ["reach"])]
+        )
+        assert _TIER_RANK[_classify_edge_quality(1, ["signor"])] > (
+            _TIER_RANK[_classify_edge_quality(1, ["reach"])]
+        )
+
+    def test_run_gradient_with_prebuilt_adjacency(self):
+        import numpy as np
+
+        # Build a bridge with enough genes for the gradient test
+        engine = MagicMock()
+        n_genes = 50
+        gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        engine.gene_to_idx = gene_to_idx
+
+        effects = MagicMock()
+        rng = np.random.default_rng(42)
+        # Genes 0-9 (hop 1) elevated, 10-29 (hop 2) moderate, rest background
+        t_vals = np.concatenate([
+            2.0 + rng.normal(0, 0.2, 10),  # hop 1
+            1.0 + rng.normal(0, 0.2, 20),  # hop 2
+            0.5 + rng.normal(0, 0.1, 20),  # background
+        ])
+        effects.U = t_vals.reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+
+        # Pre-built adjacency
+        adj = {"SEED": [f"G{i}" for i in range(10)]}
+        for i in range(10):
+            adj[f"G{i}"] = ["SEED"] + [f"G{j}" for j in range(10, 30)]
+
+        result = bridge.run_gradient(
+            seed="SEED",
+            max_hops=3,
+            n_permutations=99,
+            rng_seed=42,
+            adjacency=adj,
+        )
+        assert result.seed_gene == "SEED"
+        assert result.slope < 0  # decay
+        assert len(result.shells) >= 2

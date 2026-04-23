@@ -16,6 +16,22 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Edge quality tiers (highest to lowest)
+_CURATED_SOURCES = frozenset({
+    "signor", "biogrid", "hprd", "pid", "kegg", "reactome", "pc",
+})
+_TIER_RANK = {"multi_source": 3, "single_curated": 2, "single_text_mined": 1}
+
+
+def _classify_edge_quality(n_unique_sources: int, sources: list[str]) -> str:
+    """Classify an INDRA edge into a quality tier."""
+    if n_unique_sources >= 2:
+        return "multi_source"
+    src_lower = {s.lower() for s in sources}
+    if src_lower & _CURATED_SOURCES:
+        return "single_curated"
+    return "single_text_mined"
+
 
 class DiscoveryBridge:
     """Wraps the pipeline's INDRA + ROAST infrastructure for discovery.
@@ -410,6 +426,170 @@ class DiscoveryBridge:
         )
 
         return p_value
+
+    # ------------------------------------------------------------------
+    # Gradient-based discovery
+    # ------------------------------------------------------------------
+
+    def get_abs_t_stats(self) -> dict[str, float]:
+        """Return ``{gene_symbol: |t|}`` for every measurable gene.
+
+        Uses moderated t-statistics from the fitted ROAST engine.
+        Requires a reverse mapping from feature IDs to symbols,
+        built from ``self.sym_to_feat``.
+        """
+        mod_t = self._get_moderated_t()
+        feat_to_sym = {v: k for k, v in self.sym_to_feat.items()}
+        idx_to_feat = {idx: fid for fid, idx in self.engine.gene_to_idx.items()}
+
+        result: dict[str, float] = {}
+        for idx in range(len(mod_t)):
+            fid = idx_to_feat.get(idx)
+            if fid is None:
+                continue
+            sym = feat_to_sym.get(fid)
+            if sym is None:
+                continue
+            result[sym] = float(abs(mod_t[idx]))
+        return result
+
+    def build_neighborhood_adjacency(
+        self,
+        seed: str,
+        max_hops: int = 3,
+    ) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """Build adjacency by querying INDRA hop-by-hop from seed.
+
+        Queries one extra hop past ``max_hops`` solely to populate
+        leaf-node outgoing edges.  The gradient module still honors
+        ``max_hops`` for shell construction, but the adjacency now
+        contains enough edges to compute true graph degrees for every
+        shell gene (including leaves).  Without this extra pass, leaf
+        shell genes would have zero outgoing edges in the local
+        adjacency and fall into the same degree bin as fully
+        disconnected background genes, breaking the degree-preserving
+        null for the outermost shell.
+
+        Returns
+        -------
+        adjacency
+            ``{gene: [neighbor, ...]}`` suitable for
+            :func:`~perturbation_gradient.compute_hop_shells`.
+        edge_quality
+            ``{gene: tier}`` where tier is one of
+            ``"multi_source"``, ``"single_curated"``, ``"single_text_mined"``.
+            Assigned by the best incoming edge across all visits.
+        """
+        self._ensure_indra()
+
+        # Precompute reverse map once (not per-gene)
+        feat_to_sym = {v: k for k, v in self.sym_to_feat.items()}
+
+        adjacency: dict[str, list[str]] = {}
+        edge_quality: dict[str, str] = {}
+        visited: set[str] = {seed}
+        frontier: set[str] = {seed}
+
+        # Main BFS: query frontier genes, expand shells
+        for hop in range(1, max_hops + 1):
+            next_frontier: set[str] = set()
+            for gene in frontier:
+                targets = self.get_targets(gene)
+                neighbor_syms = []
+                for fid in targets:
+                    sym = feat_to_sym.get(fid)
+                    if sym:
+                        neighbor_syms.append(sym)
+
+                adjacency.setdefault(gene, []).extend(neighbor_syms)
+
+                meta_list = self._edge_metadata_cache.get(gene, [])
+                meta_by_fid = {m["target_fid"]: m for m in meta_list}
+                for fid in targets:
+                    sym = feat_to_sym.get(fid)
+                    if not sym:
+                        continue
+
+                    # Update edge quality on every visit to keep best tier
+                    meta = meta_by_fid.get(fid, {})
+                    n_src = meta.get("n_unique_sources", 1)
+                    sources = meta.get("sources", [])
+                    tier = _classify_edge_quality(n_src, sources)
+                    existing = edge_quality.get(sym)
+                    if (
+                        existing is None
+                        or _TIER_RANK.get(tier, 0) > _TIER_RANK.get(existing, 0)
+                    ):
+                        edge_quality[sym] = tier
+
+                    # Add to frontier only on first visit
+                    if sym not in visited:
+                        next_frontier.add(sym)
+                        visited.add(sym)
+
+            if not next_frontier:
+                break
+            frontier = next_frontier
+            logger.info(
+                "Gradient BFS hop %d: %d new genes (total visited: %d)",
+                hop, len(next_frontier), len(visited),
+            )
+
+        # Extra pass: populate leaf outgoing edges for degree computation.
+        # These edges do NOT extend the shells (compute_hop_shells stops at
+        # max_hops) but allow _compute_graph_degrees to return the true
+        # local degree for leaf nodes.
+        leaf_genes = [g for g in frontier if g not in adjacency]
+        if leaf_genes:
+            logger.info(
+                "Querying %d leaf genes for degree-preservation coverage",
+                len(leaf_genes),
+            )
+            for gene in leaf_genes:
+                targets = self.get_targets(gene)
+                neighbor_syms = [
+                    feat_to_sym[fid] for fid in targets if fid in feat_to_sym
+                ]
+                adjacency[gene] = neighbor_syms
+
+        return adjacency, edge_quality
+
+    def run_gradient(
+        self,
+        seed: str,
+        max_hops: int = 3,
+        n_permutations: int = 1000,
+        rng_seed: int | None = 42,
+        adjacency: dict[str, list[str]] | None = None,
+        edge_quality: dict[str, str] | None = None,
+    ):
+        """Run perturbation gradient test.
+
+        If ``adjacency`` is not provided, builds it by querying INDRA
+        hop-by-hop (expensive for large neighborhoods).
+
+        Returns
+        -------
+        :class:`~perturbation_gradient.GradientResult`
+        """
+        from .perturbation_gradient import run_gradient_test
+
+        abs_t = self.get_abs_t_stats()
+
+        if adjacency is None:
+            adjacency, edge_quality = self.build_neighborhood_adjacency(
+                seed, max_hops=max_hops,
+            )
+
+        return run_gradient_test(
+            adjacency=adjacency,
+            abs_t_stats=abs_t,
+            seed=seed,
+            max_hops=max_hops,
+            n_permutations=n_permutations,
+            rng_seed=rng_seed,
+            edge_quality=edge_quality,
+        )
 
     def close(self):
         """Release INDRA connection and clear cache."""
