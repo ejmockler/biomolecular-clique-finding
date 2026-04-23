@@ -317,6 +317,8 @@ def run_gradient_test(
     rng_seed: int | None = None,
     edge_quality: dict[str, str] | None = None,
     verbose: bool = True,
+    precomputed_shells: dict[int, set[str]] | None = None,
+    graph_degrees: dict[str, int] | None = None,
 ) -> GradientResult:
     """Test whether perturbation decays with graph distance from seed.
 
@@ -329,6 +331,8 @@ def run_gradient_test(
     ----------
     adjacency
         Gene -> list of neighbors.  BFS traverses outward from seed.
+        Used for shell construction (when ``precomputed_shells`` is None)
+        and degree computation (when ``graph_degrees`` is None).
     abs_t_stats
         Gene symbol -> |t-statistic| from differential expression.
     seed
@@ -345,6 +349,17 @@ def run_gradient_test(
         Results are Bonferroni-corrected across tiers (exploratory).
     verbose
         Log progress.
+    precomputed_shells
+        Optional ``{hop: set_of_genes}`` to bypass BFS.  Use when shells
+        are computed externally (e.g. via Neo4j ``shortestPath`` over the
+        full INDRA graph, allowing unmeasured intermediaries).  When
+        provided, ``adjacency`` may be empty.
+    graph_degrees
+        Optional ``{gene: degree}`` to bypass local-adjacency degree
+        counting.  Use when degrees come from the full graph (not the
+        measured-only induced subgraph).  When provided, the
+        degree-preserving null permutes within bins of these degrees
+        instead of locally-derived ones.
 
     Returns
     -------
@@ -352,8 +367,13 @@ def run_gradient_test(
     """
     rng = np.random.default_rng(rng_seed)
 
-    # 1. BFS hop shells
-    shells_sets = compute_hop_shells(adjacency, seed, max_hops)
+    # 1. Hop shells: prefer precomputed; otherwise BFS adjacency.
+    if precomputed_shells is not None:
+        shells_sets = {
+            h: gs for h, gs in precomputed_shells.items() if 1 <= h <= max_hops
+        }
+    else:
+        shells_sets = compute_hop_shells(adjacency, seed, max_hops)
     if not shells_sets:
         raise ValueError(f"No neighbors found for seed '{seed}' in adjacency.")
 
@@ -396,7 +416,11 @@ def run_gradient_test(
     # 4. Build degree bins for degree-preserving permutation
     all_genes = sorted(abs_t_stats.keys())
     all_t_values = np.array([abs_t_stats[g] for g in all_genes])
-    graph_degrees = _compute_graph_degrees(adjacency, all_genes)
+    if graph_degrees is None:
+        graph_degrees = _compute_graph_degrees(adjacency, all_genes)
+    else:
+        # Fill missing degrees with 0 so every measured gene gets binned
+        graph_degrees = {g: graph_degrees.get(g, 0) for g in all_genes}
     degree_bins, gene_to_bin = _build_degree_bins(graph_degrees)
 
     # 5. Permutation null: permute |t| within degree bins

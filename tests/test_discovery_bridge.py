@@ -299,6 +299,39 @@ class TestGradientBridge:
         assert t_stats["GRN"] == pytest.approx(0.3)
         assert len(t_stats) == 5
 
+    def test_get_abs_t_stats_handles_multi_alias_uniprot(self):
+        """Multiple gene symbols mapping to the same UniProt feature must
+        all appear in the result with the same |t|. The reverse-map approach
+        silently dropped aliases and broke shell construction (INDRA target
+        names did not match the chosen symbol per feature).
+        """
+        import numpy as np
+
+        engine = MagicMock()
+        engine.gene_to_idx = {"P00441": 0}
+        effects = MagicMock()
+        effects.U = np.array([[2.5]])
+        effects.moderated_variances = np.array([1.0])
+        effects.sample_variances = None
+        engine._effects = effects
+
+        # Three symbols all alias the same UniProt
+        sym_to_feat = {
+            "SOD1": "P00441",
+            "ALS1": "P00441",          # alias
+            "SOD1_HUMAN": "P00441",    # legacy name
+        }
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+
+        t_stats = bridge.get_abs_t_stats()
+        assert "SOD1" in t_stats
+        assert "ALS1" in t_stats
+        assert "SOD1_HUMAN" in t_stats
+        assert t_stats["SOD1"] == pytest.approx(2.5)
+        assert t_stats["ALS1"] == pytest.approx(2.5)
+        assert t_stats["SOD1_HUMAN"] == pytest.approx(2.5)
+        assert len(t_stats) == 3
+
     @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
     def test_build_adjacency_populates_leaf_edges(self, mock_ensure):
         """Leaf shell genes must have outgoing edges recorded so that
@@ -354,6 +387,141 @@ class TestGradientBridge:
         assert _TIER_RANK[_classify_edge_quality(1, ["signor"])] > (
             _TIER_RANK[_classify_edge_quality(1, ["reach"])]
         )
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_build_adjacency_preserves_aliases(self, mock_ensure):
+        """When sym_to_feat has multiple aliases per UniProt, BFS must
+        propagate ALL aliases into shell membership, not just one. The
+        previous one-to-one feat_to_sym reverse map dropped >80% of
+        measurable genes from the BFS path."""
+        bridge = self._make_bridge_with_t()
+        # Add aliases to sym_to_feat: SOD1, ALS1, IPOA1 all → P00441
+        bridge.sym_to_feat["ALS1"] = "P00441"
+        bridge.sym_to_feat["IPOA1"] = "P00441"
+
+        def fake_get_targets(gene: str) -> list[str]:
+            graph = {
+                "SEED": ["P00441"],
+                "SOD1": [], "ALS1": [], "IPOA1": [],
+            }
+            return graph.get(gene, [])
+
+        bridge.get_targets = fake_get_targets  # type: ignore
+        bridge.sym_to_feat["SEED"] = "SEED_FID"
+
+        adj, eq = bridge.build_neighborhood_adjacency("SEED", max_hops=2)
+
+        # All three aliases of P00441 should appear in the SEED's adjacency
+        assert "SOD1" in adj["SEED"]
+        assert "ALS1" in adj["SEED"]
+        assert "IPOA1" in adj["SEED"]
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_graph_query_cache_invocation(self, mock_ensure):
+        """Repeated calls with same (seed, max_hops, measured_set) reuse the
+        cached distances and degrees instead of re-querying Cypher."""
+        import numpy as np
+
+        # Build a bridge large enough for gradient threshold (≥10 measurable shell genes)
+        engine = MagicMock()
+        n_genes = 50
+        gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        engine.gene_to_idx = gene_to_idx
+        effects = MagicMock()
+        rng = np.random.default_rng(42)
+        t_vals = np.concatenate([
+            2.0 + rng.normal(0, 0.2, 10),
+            1.0 + rng.normal(0, 0.2, 20),
+            0.5 + rng.normal(0, 0.1, 20),
+        ])
+        effects.U = t_vals.reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+        bridge._indra_source = MagicMock()
+        bridge._indra_source.client = MagicMock()
+
+        with patch(
+            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
+        ) as mock_paths, patch(
+            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
+        ) as mock_degrees:
+            mock_paths.return_value = {
+                **{f"G{i}": 1 for i in range(10)},
+                **{f"G{i}": 2 for i in range(10, 30)},
+            }
+            mock_degrees.return_value = {f"G{i}": (10 - i % 5) for i in range(50)}
+
+            # First call: queries fire
+            bridge.run_gradient_via_shortest_paths(
+                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+            )
+            assert mock_paths.call_count == 1
+            assert mock_degrees.call_count == 1
+
+            # Second call with same params: uses cache, no new queries
+            bridge.run_gradient_via_shortest_paths(
+                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+            )
+            assert mock_paths.call_count == 1  # unchanged
+            assert mock_degrees.call_count == 1
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_run_gradient_via_shortest_paths(self, mock_ensure):
+        """Bridge method queries Cypher for shortest paths + degrees,
+        builds shells from distances, and delegates to run_gradient_test
+        with precomputed_shells + graph_degrees.
+        """
+        import numpy as np
+
+        engine = MagicMock()
+        n_genes = 50
+        gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        engine.gene_to_idx = gene_to_idx
+        effects = MagicMock()
+        rng = np.random.default_rng(42)
+        t_vals = np.concatenate([
+            2.0 + rng.normal(0, 0.2, 10),
+            1.0 + rng.normal(0, 0.2, 20),
+            0.5 + rng.normal(0, 0.1, 20),
+        ])
+        effects.U = t_vals.reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+
+        # Mock the indra source's CoGEx client
+        bridge._indra_source = MagicMock()
+        cogex = MagicMock()
+        bridge._indra_source.client = cogex
+
+        # Patch the network_proximity helpers
+        with patch(
+            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
+        ) as mock_paths, patch(
+            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
+        ) as mock_degrees:
+            mock_paths.return_value = {
+                **{f"G{i}": 1 for i in range(10)},
+                **{f"G{i}": 2 for i in range(10, 30)},
+            }
+            mock_degrees.return_value = {f"G{i}": (10 - i % 5) for i in range(50)}
+
+            result = bridge.run_gradient_via_shortest_paths(
+                seed="SEED", max_hops=2, n_permutations=99, rng_seed=42,
+            )
+
+        assert mock_paths.called
+        assert mock_degrees.called
+        assert len(result.shells) == 2
+        assert result.shells[0].n_genes == 10  # hop 1
+        assert result.shells[1].n_genes == 20  # hop 2
+        assert result.slope < 0  # decay
 
     def test_run_gradient_with_prebuilt_adjacency(self):
         import numpy as np

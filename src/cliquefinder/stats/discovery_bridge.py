@@ -96,6 +96,9 @@ class DiscoveryBridge:
         self._target_cache: dict[str, list[str]] = {}
         self._edge_metadata_cache: dict[str, list[dict]] = {}  # intermediary → [{sources, evidence_count, regulation_type}]
         self._evidence_text_cache: dict[str, dict[int, list[dict]]] = {}  # intermediary → {stmt_hash: [{text, source_api, pmid}]}
+        # (seed, max_hops, hash(measured_symbols)) → (distances, degrees)
+        # Caches contrast-invariant graph queries so triangle runs don't repeat them.
+        self._graph_query_cache: dict[tuple, tuple[dict, dict]] = {}
 
         # Cache moderated t-statistics (computed lazily on first competitive test)
         self._moderated_t: np.ndarray | None = None
@@ -435,23 +438,32 @@ class DiscoveryBridge:
         """Return ``{gene_symbol: |t|}`` for every measurable gene.
 
         Uses moderated t-statistics from the fitted ROAST engine.
-        Requires a reverse mapping from feature IDs to symbols,
-        built from ``self.sym_to_feat``.
+
+        The mapping ``self.sym_to_feat`` is many-to-one (multiple gene
+        symbols can map to the same UniProt feature ID — isoforms, gene
+        aliases, ambiguous mappings).  A reverse map ``feat_to_sym`` would
+        collapse this and silently drop >80% of measurable symbols, which
+        breaks downstream shell construction in
+        :func:`run_gradient_test` because INDRA target names may not match
+        the single chosen symbol per feature.
+
+        We instead build ``fid_to_t`` once from the engine, then key the
+        result by *every* symbol that maps to a measured feature.
         """
         mod_t = self._get_moderated_t()
-        feat_to_sym = {v: k for k, v in self.sym_to_feat.items()}
         idx_to_feat = {idx: fid for fid, idx in self.engine.gene_to_idx.items()}
 
-        result: dict[str, float] = {}
+        fid_to_t: dict[str, float] = {}
         for idx in range(len(mod_t)):
             fid = idx_to_feat.get(idx)
-            if fid is None:
-                continue
-            sym = feat_to_sym.get(fid)
-            if sym is None:
-                continue
-            result[sym] = float(abs(mod_t[idx]))
-        return result
+            if fid is not None:
+                fid_to_t[fid] = float(abs(mod_t[idx]))
+
+        return {
+            sym: fid_to_t[fid]
+            for sym, fid in self.sym_to_feat.items()
+            if fid in fid_to_t
+        }
 
     def build_neighborhood_adjacency(
         self,
@@ -482,8 +494,15 @@ class DiscoveryBridge:
         """
         self._ensure_indra()
 
-        # Precompute reverse map once (not per-gene)
-        feat_to_sym = {v: k for k, v in self.sym_to_feat.items()}
+        # Precompute fid -> [all aliases] (NOT a one-to-one collapse).
+        # ``sym_to_feat`` is many-to-one (multiple symbols can map to the
+        # same UniProt feature ID).  Reversing with a dict comprehension
+        # silently drops aliases and breaks shell membership for any
+        # measured gene whose INDRA target name happens not to be the
+        # surviving alias.  We must keep ALL aliases per feature.
+        feat_to_syms: dict[str, list[str]] = {}
+        for sym, fid in self.sym_to_feat.items():
+            feat_to_syms.setdefault(fid, []).append(sym)
 
         adjacency: dict[str, list[str]] = {}
         edge_quality: dict[str, str] = {}
@@ -495,37 +514,38 @@ class DiscoveryBridge:
             next_frontier: set[str] = set()
             for gene in frontier:
                 targets = self.get_targets(gene)
-                neighbor_syms = []
+                neighbor_syms: list[str] = []
                 for fid in targets:
-                    sym = feat_to_sym.get(fid)
-                    if sym:
-                        neighbor_syms.append(sym)
+                    neighbor_syms.extend(feat_to_syms.get(fid, []))
 
                 adjacency.setdefault(gene, []).extend(neighbor_syms)
 
                 meta_list = self._edge_metadata_cache.get(gene, [])
                 meta_by_fid = {m["target_fid"]: m for m in meta_list}
                 for fid in targets:
-                    sym = feat_to_sym.get(fid)
-                    if not sym:
+                    syms = feat_to_syms.get(fid, [])
+                    if not syms:
                         continue
 
-                    # Update edge quality on every visit to keep best tier
+                    # Update edge quality on every visit to keep best tier;
+                    # apply to every alias of this feature so any of them
+                    # appearing in a shell carries the right tier.
                     meta = meta_by_fid.get(fid, {})
                     n_src = meta.get("n_unique_sources", 1)
                     sources = meta.get("sources", [])
                     tier = _classify_edge_quality(n_src, sources)
-                    existing = edge_quality.get(sym)
-                    if (
-                        existing is None
-                        or _TIER_RANK.get(tier, 0) > _TIER_RANK.get(existing, 0)
-                    ):
-                        edge_quality[sym] = tier
+                    for sym in syms:
+                        existing = edge_quality.get(sym)
+                        if (
+                            existing is None
+                            or _TIER_RANK.get(tier, 0) > _TIER_RANK.get(existing, 0)
+                        ):
+                            edge_quality[sym] = tier
 
-                    # Add to frontier only on first visit
-                    if sym not in visited:
-                        next_frontier.add(sym)
-                        visited.add(sym)
+                        # Add to frontier only on first visit (per-symbol)
+                        if sym not in visited:
+                            next_frontier.add(sym)
+                            visited.add(sym)
 
             if not next_frontier:
                 break
@@ -547,10 +567,10 @@ class DiscoveryBridge:
             )
             for gene in leaf_genes:
                 targets = self.get_targets(gene)
-                neighbor_syms = [
-                    feat_to_sym[fid] for fid in targets if fid in feat_to_sym
-                ]
-                adjacency[gene] = neighbor_syms
+                neighbor_syms_leaf: list[str] = []
+                for fid in targets:
+                    neighbor_syms_leaf.extend(feat_to_syms.get(fid, []))
+                adjacency[gene] = neighbor_syms_leaf
 
         return adjacency, edge_quality
 
@@ -563,7 +583,25 @@ class DiscoveryBridge:
         adjacency: dict[str, list[str]] | None = None,
         edge_quality: dict[str, str] | None = None,
     ):
-        """Run perturbation gradient test.
+        """Run perturbation gradient test using directed BFS through measured genes.
+
+        **Semantics: DIRECTED, MEASURED-ONLY.**  The walk follows
+        ``regulator → target`` edges from INDRA (``get_downstream_targets``)
+        and only traverses through proteins present in the proteomics data.
+        This matches the original "causal cascade" framing but can shrink
+        shells dramatically when many INDRA intermediaries are not detected.
+
+        For shells defined over the FULL INDRA graph using **undirected**
+        shortest paths (mirroring the proximity test methodology), use
+        :meth:`run_gradient_via_shortest_paths` instead.
+
+        The two methods compute different graphs and the results are not
+        directly comparable.  Pick the one that matches the biological
+        question:
+        - Directed-measured: "does perturbation cascade downstream from
+          seed through proteins we can see?"
+        - Undirected-full: "is perturbation magnitude correlated with
+          knowledge-graph proximity to seed?"
 
         If ``adjacency`` is not provided, builds it by querying INDRA
         hop-by-hop (expensive for large neighborhoods).
@@ -573,6 +611,12 @@ class DiscoveryBridge:
         :class:`~perturbation_gradient.GradientResult`
         """
         from .perturbation_gradient import run_gradient_test
+
+        logger.info(
+            "Running gradient (mode=DIRECTED-BFS-through-measured) "
+            "from seed=%s with max_hops=%d",
+            seed, max_hops,
+        )
 
         abs_t = self.get_abs_t_stats()
 
@@ -591,14 +635,140 @@ class DiscoveryBridge:
             edge_quality=edge_quality,
         )
 
+    def run_gradient_via_shortest_paths(
+        self,
+        seed: str,
+        max_hops: int = 3,
+        n_permutations: int = 1000,
+        rng_seed: int | None = 42,
+    ):
+        """Run gradient test with shells from full-INDRA shortest paths.
+
+        **Semantics: UNDIRECTED, FULL-GRAPH.**  Neo4j ``shortestPath``
+        queries find paths through the entire INDRA graph from ``seed``
+        to each measured gene without regard to edge direction (the
+        Cypher uses ``-[:indra_rel*..N]-`` with no arrow).  Unmeasured
+        intermediaries participate in path-finding; only the |t|
+        computation is restricted to measured genes.
+
+        Mirrors :func:`network_proximity.run_proximity_decay_test`.
+        Recommended over :meth:`run_gradient` when many INDRA
+        intermediaries may be unmeasured (typical for proteomics).
+
+        **Important caveats:**
+
+        - Undirected traversal counts ``A ← B ← seed`` and
+          ``seed → B → A`` both as distance 2.  This measures graph
+          proximity, not directed regulatory cascade.
+        - Cypher does not filter by ``min_evidence`` /
+          ``min_reliability`` — every ``indra_rel`` edge participates,
+          including low-quality text-mining edges.  This matches the
+          proximity test for comparability.
+        - Edge-quality stratification is not supported in this mode
+          (would require per-path quality bookkeeping); a WARN is
+          logged when this method runs.
+        - Distances and degrees are cached on the bridge instance keyed
+          by (seed, max_hops, measured-symbol-set).  Repeated calls with
+          the same parameters return cached results.
+
+        Parameters
+        ----------
+        seed
+            Seed gene symbol.
+        max_hops
+            Maximum hop distance for shortest-path queries.
+        n_permutations
+            Degree-preserving permutations for the null distribution.
+        rng_seed
+            Random seed.
+
+        Returns
+        -------
+        :class:`~perturbation_gradient.GradientResult`
+        """
+        from .network_proximity import (
+            query_gene_degrees_batched,
+            query_shortest_paths_batched,
+        )
+        from .perturbation_gradient import run_gradient_test
+
+        self._ensure_indra()
+
+        logger.info(
+            "Running gradient (mode=UNDIRECTED-shortest-paths-full-graph) "
+            "from seed=%s with max_hops=%d",
+            seed, max_hops,
+        )
+        logger.warning(
+            "Edge-quality stratification is not supported in shortest-paths mode; "
+            "result.stratified will be None."
+        )
+
+        abs_t = self.get_abs_t_stats()
+        measured_symbols = sorted(abs_t.keys())
+
+        # Cache key: queries are invariant under contrast, only |t| changes
+        cache_key = (seed, max_hops, hash(tuple(measured_symbols)))
+        cached = self._graph_query_cache.get(cache_key)
+        if cached is not None:
+            distances, degrees = cached
+            logger.info(
+                "Using cached shortest paths and degrees (seed=%s, max_hops=%d)",
+                seed, max_hops,
+            )
+        else:
+            cogex = self._indra_source.client
+            logger.info(
+                "Querying server-side shortest paths from %s to %d measured genes",
+                seed, len(measured_symbols),
+            )
+            distances = query_shortest_paths_batched(
+                cogex_client=cogex,
+                seed_gene_name=seed,
+                target_gene_names=measured_symbols,
+                max_hops=max_hops,
+                batch_size=500,
+                verbose=True,
+            )
+
+            logger.info("Querying graph degrees for %d measured genes", len(measured_symbols))
+            degrees = query_gene_degrees_batched(
+                cogex_client=cogex,
+                gene_names=measured_symbols,
+                batch_size=500,
+            )
+            self._graph_query_cache[cache_key] = (distances, degrees)
+
+        shells: dict[int, set[str]] = {}
+        for sym, d in distances.items():
+            if 1 <= d <= max_hops and sym in abs_t:
+                shells.setdefault(d, set()).add(sym)
+
+        if not shells:
+            raise ValueError(
+                f"No measured genes within {max_hops} hops of '{seed}'."
+            )
+
+        return run_gradient_test(
+            adjacency={},  # unused when precomputed_shells is provided
+            abs_t_stats=abs_t,
+            seed=seed,
+            max_hops=max_hops,
+            n_permutations=n_permutations,
+            rng_seed=rng_seed,
+            precomputed_shells=shells,
+            graph_degrees=degrees,
+        )
+
     def close(self):
-        """Release INDRA connection and clear cache."""
+        """Release INDRA connection and clear caches."""
         if self._indra_source is not None:
             self._indra_source.close()
             self._indra_source = None
         self._target_cache.clear()
         self._edge_metadata_cache.clear()
         self._evidence_text_cache.clear()
+        self._graph_query_cache.clear()
 
     def __enter__(self):
         return self

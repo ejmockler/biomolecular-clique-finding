@@ -573,6 +573,45 @@ class TestStratification:
         )
         assert result.stratified is None
 
+    def test_precomputed_shells_bypass_bfs(self, decaying_t_stats):
+        """When precomputed_shells + graph_degrees are provided, the
+        adjacency is unused and shells/degrees come from the caller.
+        Mirrors the run_gradient_via_shortest_paths() integration path.
+        """
+        shells = {
+            1: {"H0", "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9",
+                "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19"},
+            2: {f"L{i}_{j}" for i in range(20) for j in range(5)},
+        }
+        # Real degrees (e.g., from Neo4j) — hubs have high degree
+        degrees = {g: 6 for g in shells[1]}
+        degrees.update({g: 1 for g in shells[2]})
+        # Add background gene degrees so the permutation null has a pool
+        for i in range(150):
+            degrees[f"BG{i}"] = 0
+        for i in range(30):
+            degrees[f"BGH{i}"] = 6
+            for j in range(6):
+                degrees[f"BGH{i}_T{j}"] = 1
+
+        result = run_gradient_test(
+            adjacency={},  # ignored
+            abs_t_stats=decaying_t_stats,
+            seed="SEED",
+            max_hops=3,
+            n_permutations=199,
+            rng_seed=42,
+            precomputed_shells=shells,
+            graph_degrees=degrees,
+            verbose=False,
+        )
+        assert len(result.shells) == 2
+        assert result.shells[0].n_genes == 20
+        assert result.shells[1].n_genes == 100
+        assert result.slope < 0
+        # Real degrees should produce the expected null pattern
+        assert result.slope_pvalue < 0.05
+
     def test_tier_too_small_skipped(self, star_graph, decaying_t_stats):
         eq = {f"H{i}": "main" for i in range(20)}
         for i in range(20):
