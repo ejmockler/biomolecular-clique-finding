@@ -266,6 +266,111 @@ def run_discovery_for_contrast(
     return disc_dict
 
 
+def run_gradient_for_contrast(
+    contrast_name: str,
+    contrast: tuple[str, str],
+    data: np.ndarray,
+    feature_ids: list[str],
+    metadata: pd.DataFrame,
+    groups: dict[str, pd.Index],
+    output_dir: Path,
+    indra_env_file: Path = Path(".env"),
+    covariates: list[str] | None = None,
+    max_hops: int = 2,
+    n_permutations: int = 999,
+    seed: str = "C9orf72",
+):
+    """Fit engine for a contrast and run gradient-based discovery."""
+    from cliquefinder.stats.rotation import RotationTestEngine
+    from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
+    from cliquefinder.stats.discovery_bridge import DiscoveryBridge
+
+    cond1, cond2 = contrast
+    print(f"\n{'=' * 70}")
+    print(f"GRADIENT: {contrast_name}  ({cond1} vs {cond2})")
+    print("=" * 70)
+
+    # Subset and align (same as per-arm)
+    keep_samples = groups[cond1].union(groups[cond2])
+    sub_meta = metadata.loc[metadata.index.intersection(keep_samples)].copy()
+    sub_meta["_condition"] = None
+    sub_meta.loc[sub_meta.index.isin(groups[cond1]), "_condition"] = cond1
+    sub_meta.loc[sub_meta.index.isin(groups[cond2]), "_condition"] = cond2
+    sub_meta = sub_meta.dropna(subset=["_condition"])
+
+    sample_id_to_idx = {s: i for i, s in enumerate(metadata.index)}
+    aligned_indices = [sample_id_to_idx[s] for s in sub_meta.index if s in sample_id_to_idx]
+    sub_meta = sub_meta.loc[[s for s in sub_meta.index if s in sample_id_to_idx]]
+    sub_data = data[:, aligned_indices]
+
+    n1 = (sub_meta["_condition"] == cond1).sum()
+    n2 = (sub_meta["_condition"] == cond2).sum()
+    print(f"  {cond1}: n={n1},  {cond2}: n={n2}")
+    print(f"  {sub_data.shape[0]} proteins")
+
+    # Fit engine
+    engine = RotationTestEngine(sub_data, feature_ids, sub_meta)
+    fit_covariates = [c for c in (covariates or []) if c in sub_meta.columns]
+    engine.fit(
+        conditions=[cond1, cond2],
+        contrast=(cond1, cond2),
+        condition_column="_condition",
+        covariates=fit_covariates,
+    )
+    print(f"  Engine fitted (covariates: {fit_covariates or 'none'})")
+
+    symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
+
+    # Run gradient via bridge
+    print(f"  Building {max_hops}-hop neighborhood via INDRA...")
+    t0 = time.time()
+    with DiscoveryBridge(
+        engine, symbol_to_feature,
+        env_file=indra_env_file,
+        min_evidence=1,
+        min_reliability=0.0,
+        min_sources=1,
+    ) as bridge:
+        result = bridge.run_gradient(
+            seed=seed,
+            max_hops=max_hops,
+            n_permutations=n_permutations,
+            rng_seed=42,
+        )
+
+    elapsed = time.time() - t0
+    print(f"  Done in {elapsed:.1f}s")
+
+    # Print shell summary
+    print(f"\n  Gradient: slope={result.slope:.4f}, p={result.slope_pvalue:.4f}")
+    print(f"  Spearman: rho={result.spearman_rho:.4f}, p={result.spearman_pvalue:.4f}")
+    print(f"  Active horizon: {result.active_horizon}")
+    print(f"  Background mean|t|: {result.background_mean_abs_t:.4f}")
+    print(f"  {'Hop':>4}  {'n_genes':>8}  {'mean|t|':>10}  {'median|t|':>10}")
+    for s in result.shells:
+        print(f"  {s.hop:>4}  {s.n_genes:>8}  {s.mean_abs_t:>10.4f}  {s.median_abs_t:>10.4f}")
+
+    if result.stratified:
+        print("\n  Edge-quality stratification (Bonferroni-corrected):")
+        for tier, tier_r in result.stratified.items():
+            print(f"    {tier}: slope={tier_r.slope:.4f}, p={tier_r.slope_pvalue:.4f}, "
+                  f"n={tier_r.n_genes_total}")
+
+    # Save
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_dict = result.to_dict()
+    out_dict["contrast"] = contrast_name
+    out_dict["contrast_groups"] = {cond1: n1, cond2: n2}
+    out_dict["elapsed_seconds"] = round(elapsed, 1)
+
+    out_path = output_dir / f"gradient_{contrast_name}.json"
+    with open(out_path, "w") as f:
+        json.dump(out_dict, f, indent=2, default=str)
+    print(f"  Saved: {out_path}")
+
+    return out_dict
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path,
@@ -298,7 +403,30 @@ def main():
     parser.add_argument("--use-competitive", action="store_true", default=False,
                         help="Use competitive z-score with Camera VIF correction "
                              "instead of raw ROAST MSQ for extension decisions.")
+    parser.add_argument("--gradient", action="store_true", default=False,
+                        help="Use gradient-based discovery (perturbation decay) "
+                             "instead of per-arm binary gate discovery.")
+    parser.add_argument("--gradient-hops", type=int, default=2,
+                        help="Max BFS depth for gradient mode (default: 2). "
+                             "Each hop requires INDRA queries for frontier genes.")
+    parser.add_argument("--gradient-perms", type=int, default=999,
+                        help="Number of degree-preserving permutations for "
+                             "gradient null distribution (default: 999).")
+    parser.add_argument("--seed", type=str, default="C9orf72",
+                        help="Seed gene symbol for gradient mode (default: C9orf72)")
     args = parser.parse_args()
+
+    # Reject incompatible flag combinations
+    if args.gradient and args.use_competitive:
+        parser.error(
+            "--use-competitive is incompatible with --gradient. "
+            "The gradient path aggregates over shells, not per-set competitive z."
+        )
+    if args.gradient and args.compute_overlap:
+        parser.error(
+            "--compute-overlap is a binary-gate concern (arm overlap at each hop). "
+            "Gradient mode has no arm structure."
+        )
 
     # Load data
     print(f"Loading data: {args.data}")
@@ -372,63 +500,108 @@ def main():
     results = {}
     for cname in args.contrasts:
         contrast = contrast_map[cname]
-        result = run_discovery_for_contrast(
-            contrast_name=cname,
-            contrast=contrast,
-            data=data,
-            feature_ids=feature_ids,
-            metadata=metadata,
-            groups=groups,
-            target_set_path=args.target_set,
-            output_dir=args.output,
-            indra_env_file=args.indra_env_file,
-            n_rotations=args.n_rotations,
-            max_hops=args.max_hops,
-            seed_null_b=args.seed_null_b,
-            covariates=covariates,
-            compute_overlap=args.compute_overlap,
-            use_competitive=args.use_competitive,
-        )
+        if args.gradient:
+            result = run_gradient_for_contrast(
+                contrast_name=cname,
+                contrast=contrast,
+                data=data,
+                feature_ids=feature_ids,
+                metadata=metadata,
+                groups=groups,
+                output_dir=args.output,
+                indra_env_file=args.indra_env_file,
+                covariates=covariates,
+                max_hops=args.gradient_hops,
+                n_permutations=args.gradient_perms,
+                seed=args.seed,
+            )
+        else:
+            result = run_discovery_for_contrast(
+                contrast_name=cname,
+                contrast=contrast,
+                data=data,
+                feature_ids=feature_ids,
+                metadata=metadata,
+                groups=groups,
+                target_set_path=args.target_set,
+                output_dir=args.output,
+                indra_env_file=args.indra_env_file,
+                n_rotations=args.n_rotations,
+                max_hops=args.max_hops,
+                seed_null_b=args.seed_null_b,
+                covariates=covariates,
+                compute_overlap=args.compute_overlap,
+                use_competitive=args.use_competitive,
+            )
         results[cname] = result
 
     # Print comparison summary
     print(f"\n{'=' * 70}")
-    print("SPECIFICITY TRIANGLE SUMMARY")
-    print("=" * 70)
-    print(f"{'Contrast':<20} {'Hop':>4} {'Sig/Total':>12} {'π̂₀':>8} {'Stop':>16}")
-    print("-" * 70)
-    for cname in args.contrasts:
-        r = results[cname]
-        for hop in r.get("hops", []):
-            n_arms = len(hop.get("all_arms", []))
-            n_sig = hop["n_significant"]
-            pi0 = hop.get("pi0", float("nan"))
-            stop = hop.get("stop_reason", "")
-            snp = hop.get("seed_null_pvalue")
-            label = f"{cname}" if hop["hop"] == 1 else ""
-            snp_str = f"  snp={snp:.3f}" if snp else ""
-            print(f"{label:<20} {hop['hop']:>4} {n_sig:>5}/{n_arms:<5} {pi0:>8.3f} {stop:>16}{snp_str}")
-        print()
+    if args.gradient:
+        print("GRADIENT SPECIFICITY SUMMARY")
+        print("=" * 70)
+        print(f"{'Contrast':<20} {'slope':>8} {'slope_p':>8} {'rho':>8} {'rho_p':>8} {'horizon':>8}")
+        print("-" * 70)
+        for cname in args.contrasts:
+            r = results[cname]
+            print(f"{cname:<20} {r['slope']:>8.4f} {r['slope_pvalue']:>8.4f} "
+                  f"{r['spearman_rho']:>8.4f} {r['spearman_pvalue']:>8.4f} "
+                  f"{r['active_horizon']:>8}")
+    else:
+        print("SPECIFICITY TRIANGLE SUMMARY")
+        print("=" * 70)
+        print(f"{'Contrast':<20} {'Hop':>4} {'Sig/Total':>12} {'π̂₀':>8} {'Stop':>16}")
+        print("-" * 70)
+        for cname in args.contrasts:
+            r = results[cname]
+            for hop in r.get("hops", []):
+                n_arms = len(hop.get("all_arms", []))
+                n_sig = hop["n_significant"]
+                pi0 = hop.get("pi0", float("nan"))
+                stop = hop.get("stop_reason", "")
+                snp = hop.get("seed_null_pvalue")
+                label = f"{cname}" if hop["hop"] == 1 else ""
+                snp_str = f"  snp={snp:.3f}" if snp else ""
+                print(f"{label:<20} {hop['hop']:>4} {n_sig:>5}/{n_arms:<5} {pi0:>8.3f} {stop:>16}{snp_str}")
+            print()
 
-    # Save combined summary
-    summary_path = args.output / "specificity_summary.json"
-    summary = {}
-    for cname in args.contrasts:
-        r = results[cname]
-        summary[cname] = {
-            "groups": r.get("contrast_groups", {}),
-            "hops": [
-                {
-                    "hop": h["hop"],
-                    "n_significant": h["n_significant"],
-                    "n_tested": len(h.get("all_arms", [])),
-                    "pi0": h.get("pi0"),
-                    "stop_reason": h.get("stop_reason", ""),
-                    "seed_null_pvalue": h.get("seed_null_pvalue"),
-                }
-                for h in r.get("hops", [])
-            ],
-        }
+    # Save combined summary (mode-specific filename to avoid schema collision)
+    summary_filename = (
+        "gradient_summary.json" if args.gradient else "specificity_summary.json"
+    )
+    summary_path = args.output / summary_filename
+    if args.gradient:
+        summary = {}
+        for cname in args.contrasts:
+            r = results[cname]
+            summary[cname] = {
+                "groups": r.get("contrast_groups", {}),
+                "slope": r["slope"],
+                "slope_pvalue": r["slope_pvalue"],
+                "spearman_rho": r["spearman_rho"],
+                "spearman_pvalue": r["spearman_pvalue"],
+                "active_horizon": r["active_horizon"],
+                "n_genes_total": r["n_genes_total"],
+                "shells": r["shells"],
+            }
+    else:
+        summary = {}
+        for cname in args.contrasts:
+            r = results[cname]
+            summary[cname] = {
+                "groups": r.get("contrast_groups", {}),
+                "hops": [
+                    {
+                        "hop": h["hop"],
+                        "n_significant": h["n_significant"],
+                        "n_tested": len(h.get("all_arms", [])),
+                        "pi0": h.get("pi0"),
+                        "stop_reason": h.get("stop_reason", ""),
+                        "seed_null_pvalue": h.get("seed_null_pvalue"),
+                    }
+                    for h in r.get("hops", [])
+                ],
+            }
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
     print(f"Summary saved: {summary_path}")
