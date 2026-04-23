@@ -279,8 +279,18 @@ def run_gradient_for_contrast(
     max_hops: int = 2,
     n_permutations: int = 999,
     seed: str = "C9orf72",
+    mode: str = "shortest-paths",
 ):
-    """Fit engine for a contrast and run gradient-based discovery."""
+    """Fit engine for a contrast and run gradient-based discovery.
+
+    ``mode`` selects the shell-construction strategy:
+    - ``"shortest-paths"`` (default): use Neo4j ``shortestPath`` over the
+      full INDRA graph, allowing unmeasured intermediaries.  Mirrors the
+      proximity test methodology and recovers the correct shell size.
+    - ``"bfs"``: BFS only through measured proteins.  Faster (one INDRA
+      query per frontier gene rather than batched shortest-paths) but
+      shrinks shells when intermediaries are not detected.
+    """
     from cliquefinder.stats.rotation import RotationTestEngine
     from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
     from cliquefinder.stats.discovery_bridge import DiscoveryBridge
@@ -322,7 +332,7 @@ def run_gradient_for_contrast(
     symbol_to_feature = map_feature_ids_to_symbols(feature_ids, verbose=False)
 
     # Run gradient via bridge
-    print(f"  Building {max_hops}-hop neighborhood via INDRA...")
+    print(f"  Building {max_hops}-hop neighborhood via INDRA (mode={mode})...")
     t0 = time.time()
     with DiscoveryBridge(
         engine, symbol_to_feature,
@@ -331,12 +341,22 @@ def run_gradient_for_contrast(
         min_reliability=0.0,
         min_sources=1,
     ) as bridge:
-        result = bridge.run_gradient(
-            seed=seed,
-            max_hops=max_hops,
-            n_permutations=n_permutations,
-            rng_seed=42,
-        )
+        if mode == "shortest-paths":
+            result = bridge.run_gradient_via_shortest_paths(
+                seed=seed,
+                max_hops=max_hops,
+                n_permutations=n_permutations,
+                rng_seed=42,
+            )
+        elif mode == "bfs":
+            result = bridge.run_gradient(
+                seed=seed,
+                max_hops=max_hops,
+                n_permutations=n_permutations,
+                rng_seed=42,
+            )
+        else:
+            raise ValueError(f"Unknown gradient mode: {mode!r}")
 
     elapsed = time.time() - t0
     print(f"  Done in {elapsed:.1f}s")
@@ -412,6 +432,14 @@ def main():
     parser.add_argument("--gradient-perms", type=int, default=999,
                         help="Number of degree-preserving permutations for "
                              "gradient null distribution (default: 999).")
+    parser.add_argument("--gradient-mode", choices=["shortest-paths", "bfs"],
+                        default="shortest-paths",
+                        help="Shell construction strategy. 'shortest-paths' "
+                             "uses Neo4j over the full INDRA graph (allows "
+                             "unmeasured intermediaries; matches proximity "
+                             "test methodology). 'bfs' walks only through "
+                             "measured proteins (faster but shrinks shells). "
+                             "Default: shortest-paths (recommended).")
     parser.add_argument("--seed", type=str, default="C9orf72",
                         help="Seed gene symbol for gradient mode (default: C9orf72)")
     args = parser.parse_args()
@@ -514,6 +542,7 @@ def main():
                 max_hops=args.gradient_hops,
                 n_permutations=args.gradient_perms,
                 seed=args.seed,
+                mode=args.gradient_mode,
             )
         else:
             result = run_discovery_for_contrast(
