@@ -596,3 +596,417 @@ def _run_stratified(
         )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Edge-rewiring null (Wave 20)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RewiringNullResult:
+    """Result of a degree-preserving edge-rewiring null test.
+
+    Certifies (when p < alpha): the observed gradient slope is not
+    reproducible when the graph is randomly rewired while preserving
+    the degree sequence.
+
+    Does NOT certify seed-uniqueness (matched-seed control is a
+    separate null, Wave 21).
+    """
+
+    # Observed and null
+    observed_slope: float
+    observed_coverage: float  # fraction of in-graph targets reachable from seed within max_hops
+    null_slopes: NDArray[np.float64]  # valid iterations only (no imputed zeros)
+    null_slopes_imputed: NDArray[np.float64]  # failed iters → 0.0 (what the p-value sees)
+    pvalue: float
+
+    # Iteration accounting
+    n_rewires_requested: int
+    n_rewires_ok: int
+    n_rewires_failed: int
+
+    # Graph provenance
+    seed: str
+    subgraph_n_nodes: int
+    subgraph_n_edges: int
+    seed_component_too_small: bool  # component has fewer than 30 nodes
+
+    # Rewiring provenance
+    rng_seed: int
+    max_hops: int
+    target_nswap: int  # nswap used for iter ≥ 1 (from iter-0 plateau)
+    plateau_nswap: int  # nswap at which iter-0 plateau fired (0 if no plateau)
+    iter0_plateau_reached: bool  # False → mixing may be inadequate
+    accepted_fraction_iter0: float
+
+    # Pathology diagnostics
+    bimodality_coefficient: float
+    bimodality_pseudo_pvalue: float
+    disconnection_rate: float
+    bimodality_warning: bool
+    disconnection_warning: bool
+    mixing_warning: bool  # True when iter-0 plateau not reached
+
+    elapsed_seconds: float
+
+    def to_dict(self) -> dict[str, Any]:
+        arr = self.null_slopes
+        # Deciles + full array for audit (floats are cheap, ~8KB at N=999)
+        deciles = (
+            [float(q) for q in np.quantile(arr, np.linspace(0, 1, 11))]
+            if len(arr) else None
+        )
+        return {
+            "observed_slope": float(self.observed_slope),
+            "observed_coverage": float(self.observed_coverage),
+            "null_slopes": [float(s) for s in arr],  # valid iterations
+            "null_slopes_imputed_preview": [
+                float(s) for s in self.null_slopes_imputed[:min(50, len(self.null_slopes_imputed))]
+            ],  # first 50 imputed values for audit
+            "null_slopes_summary": {
+                "min": float(np.min(arr)) if len(arr) else None,
+                "max": float(np.max(arr)) if len(arr) else None,
+                "median": float(np.median(arr)) if len(arr) else None,
+                "mean": float(np.mean(arr)) if len(arr) else None,
+                "std": float(np.std(arr)) if len(arr) > 1 else None,
+                "deciles": deciles,
+            },
+            "pvalue": float(self.pvalue),
+            "pvalue_formula": (
+                "(sum(null_slopes_imputed <= observed_slope) + 1) / "
+                "(n_rewires_requested + 1); failed iterations imputed as 0.0"
+            ),
+            "n_rewires_requested": self.n_rewires_requested,
+            "n_rewires_ok": self.n_rewires_ok,
+            "n_rewires_failed": self.n_rewires_failed,
+            "seed": self.seed,
+            "subgraph_n_nodes": self.subgraph_n_nodes,
+            "subgraph_n_edges": self.subgraph_n_edges,
+            "seed_component_too_small": bool(self.seed_component_too_small),
+            "rng_seed": self.rng_seed,
+            "max_hops": self.max_hops,
+            "target_nswap": self.target_nswap,
+            "plateau_nswap": self.plateau_nswap,
+            "iter0_plateau_reached": bool(self.iter0_plateau_reached),
+            "accepted_fraction_iter0": float(self.accepted_fraction_iter0),
+            "bimodality_coefficient": float(self.bimodality_coefficient),
+            "bimodality_pseudo_pvalue": float(self.bimodality_pseudo_pvalue),
+            "disconnection_rate": float(self.disconnection_rate),
+            "bimodality_warning": bool(self.bimodality_warning),
+            "disconnection_warning": bool(self.disconnection_warning),
+            "mixing_warning": bool(self.mixing_warning),
+            "elapsed_seconds": float(self.elapsed_seconds),
+        }
+
+
+def _slope_and_coverage_from_rewired(
+    rewired_graph,
+    seed: str,
+    abs_t_stats: dict[str, float],
+    max_hops: int,
+) -> tuple[float | None, float]:
+    """Compute the gradient slope on a rewired graph using a single BFS.
+
+    Returns
+    -------
+    (slope, target_coverage)
+        slope is None when the BFS produces fewer than 2 non-empty shells
+        or fewer than 10 total measurable genes.  target_coverage is the
+        fraction of in-graph abs_t_stats keys reachable from seed within
+        max_hops (used for disconnection diagnostics).
+    """
+    from .graph_rewiring import bfs_distances_from
+
+    # Restrict target set to keys that are actually in the graph —
+    # otherwise disconnection rate is a function of how much unrelated
+    # |t| data was loaded, not of graph fragmentation.
+    in_graph_targets = set(abs_t_stats.keys()) & set(rewired_graph.nodes())
+    if not in_graph_targets:
+        return None, 0.0
+
+    distances = bfs_distances_from(
+        rewired_graph, seed, in_graph_targets, max_hops=max_hops,
+    )
+    coverage = len(distances) / len(in_graph_targets) if in_graph_targets else 0.0
+
+    if not distances:
+        return None, coverage
+
+    shells_sets: dict[int, set[str]] = {}
+    for gene, d in distances.items():
+        shells_sets.setdefault(d, set()).add(gene)
+
+    shells = [
+        _compute_shell_stats(shells_sets[h], abs_t_stats, h)
+        for h in sorted(shells_sets)
+    ]
+    non_empty = [s for s in shells if s.n_genes > 0]
+    total_genes = sum(s.n_genes for s in non_empty)
+
+    if len(non_empty) < 2 or total_genes < 10:
+        return None, coverage
+
+    return _gradient_slope(shells), coverage
+
+
+def run_rewiring_null(
+    graph,
+    seed: str,
+    abs_t_stats: dict[str, float],
+    observed_slope: float,
+    observed_coverage: float | None = None,
+    n_rewires: int = 999,
+    max_hops: int = 3,
+    rng_seed: int = 42,
+    max_swaps_iter0: int = 500_000,
+    check_every: int = 5000,
+    swap_multiplier: float = 1.5,
+    verbose: bool = True,
+    n_jobs: int = 1,
+) -> RewiringNullResult:
+    """Run the degree-preserving edge-rewiring null test.
+
+    Iteration 0 runs in diagnostic mode to determine the number of
+    swaps required for mixing.  Iterations 1..N-1 run that fixed
+    swap budget with no diagnostic overhead.
+
+    **Selection-bias handling:** Iterations that produce no valid slope
+    (rewiring disconnected seed from targets, or BFS returned <2 shells)
+    are treated as null_slope=0.  This is conservative under a decay
+    hypothesis (observed slope is negative, so substituting 0 cannot
+    make the p-value smaller than the alternative of excluding the
+    iteration).  Both the raw ``null_slopes`` array and the
+    failure count are reported in the result for auditability.
+
+    **Disconnection rate** uses the observed coverage as baseline:
+    a rewiring is counted as "disconnected" if its coverage drops
+    below 80% of the observed coverage.  This is adaptive to graph
+    scale and observed BFS-reachability.
+
+    Parameters
+    ----------
+    graph
+        networkx undirected Graph — the full connected component
+        containing seed.  Copied per iteration; input not mutated.
+    seed
+        Seed gene symbol (must be present in graph).
+    abs_t_stats
+        Gene symbol -> |t|.
+    observed_slope
+        The gradient slope on the un-rewired graph.
+    observed_coverage
+        Fraction of in-graph abs_t_stats keys reachable from seed within
+        max_hops on the observed graph.  If None, computed here; pass
+        explicitly to avoid recomputing.
+    n_rewires
+        Number of permutations (p-floor = 1/(N+1)).  Default 999.
+    max_hops
+        BFS depth for shell construction per rewiring.
+    rng_seed
+        Base random seed; per-iteration seeds spawn deterministically.
+    max_swaps_iter0
+        Hard ceiling on iter-0 diagnostic mixing swaps.
+    check_every
+        Iter-0 plateau check frequency.
+    swap_multiplier
+        Iter-≥1 target_nswap = multiplier * iter-0 plateau count.
+        Default 1.5 gives a safety margin.
+    verbose
+        Log progress.
+    n_jobs
+        Reserved; currently single-threaded.
+
+    Returns
+    -------
+    RewiringNullResult
+    """
+    import time
+    from .graph_rewiring import (
+        bimodality_coefficient,
+        bfs_distances_from,
+        rewire_maslov_sneppen,
+    )
+
+    if n_jobs != 1:
+        raise NotImplementedError(
+            f"n_jobs={n_jobs} is reserved but not yet implemented; "
+            f"pass n_jobs=1 for now."
+        )
+
+    if seed not in graph:
+        raise ValueError(
+            f"Seed '{seed}' not in graph (|V|={graph.number_of_nodes()}, "
+            f"|E|={graph.number_of_edges()}). Check that the subgraph "
+            f"extraction captured the seed and its component."
+        )
+
+    # Hard-stop for pathologically small graphs — Maslov-Sneppen on <30 nodes
+    # produces a near-identity null and the p-value is meaningless.
+    if graph.number_of_nodes() < 30:
+        raise ValueError(
+            f"Seed component too small ({graph.number_of_nodes()} nodes) for "
+            f"meaningful rewiring null. Raise max_hops or seed a different gene."
+        )
+
+    n_edges = graph.number_of_edges()
+    n_nodes = graph.number_of_nodes()
+    logger.info(
+        "Rewiring null: seed=%s, |V|=%d, |E|=%d, N=%d, max_hops=%d",
+        seed, n_nodes, n_edges, n_rewires, max_hops,
+    )
+
+    # Observed coverage: fraction of in-graph t-stat keys reachable within max_hops
+    in_graph_targets = set(abs_t_stats.keys()) & set(graph.nodes())
+    if observed_coverage is None:
+        observed_distances = bfs_distances_from(
+            graph, seed, in_graph_targets, max_hops=max_hops,
+        )
+        observed_coverage = (
+            len(observed_distances) / len(in_graph_targets) if in_graph_targets else 0.0
+        )
+    coverage_floor = 0.8 * observed_coverage
+    logger.info(
+        "Observed coverage: %.1f%% of %d in-graph targets; "
+        "disconnection threshold: %.1f%%",
+        100 * observed_coverage, len(in_graph_targets),
+        100 * coverage_floor,
+    )
+
+    seed_seq = np.random.SeedSequence(rng_seed)
+    child_seqs = seed_seq.spawn(n_rewires)
+
+    # Iteration 0: diagnostic mode to determine nswap target
+    t0 = time.time()
+    rng_0 = np.random.default_rng(child_seqs[0])
+    rewired_0, diag_0 = rewire_maslov_sneppen(
+        graph, rng_0,
+        target_nswap=None,  # diagnostic mode
+        max_swaps=max_swaps_iter0,
+        check_every=check_every,
+    )
+    plateau_nswap = diag_0.plateau_swaps or max_swaps_iter0
+    target_nswap = int(plateau_nswap * swap_multiplier)
+    logger.info(
+        "Iter 0: plateau at %d swaps; target for iters ≥1 = %d swaps",
+        plateau_nswap, target_nswap,
+    )
+
+    slope_0, coverage_0 = _slope_and_coverage_from_rewired(
+        rewired_0, seed, abs_t_stats, max_hops,
+    )
+    null_slopes_raw: list[float | None] = [slope_0]
+    n_disconnected = 0
+    if coverage_0 < coverage_floor:
+        n_disconnected += 1
+
+    # Iterations 1..N-1: fixed-swap mode, no diagnostic
+    for i in range(1, n_rewires):
+        rng_i = np.random.default_rng(child_seqs[i])
+        rewired, _ = rewire_maslov_sneppen(
+            graph, rng_i,
+            target_nswap=target_nswap,
+        )
+        slope, coverage = _slope_and_coverage_from_rewired(
+            rewired, seed, abs_t_stats, max_hops,
+        )
+        null_slopes_raw.append(slope)
+        if coverage < coverage_floor:
+            n_disconnected += 1
+
+        if verbose and (i + 1) % max(1, n_rewires // 10) == 0:
+            elapsed = time.time() - t0
+            eta = elapsed / (i + 1) * (n_rewires - i - 1)
+            n_ok = sum(1 for s in null_slopes_raw if s is not None)
+            logger.info(
+                "  rewiring null %d/%d (%.0f%%)  elapsed=%.0fs  eta=%.0fs  "
+                "slope_ok=%d  disc=%d",
+                i + 1, n_rewires, 100.0 * (i + 1) / n_rewires,
+                elapsed, eta, n_ok, n_disconnected,
+            )
+
+    elapsed = time.time() - t0
+
+    # Selection-bias handling: treat failed iterations as null_slope=0.
+    # Under the decay hypothesis, observed_slope < 0 so substituting 0
+    # cannot make the p-value smaller than the alternative of exclusion.
+    null_slopes_imputed = np.array(
+        [s if s is not None else 0.0 for s in null_slopes_raw],
+        dtype=np.float64,
+    )
+    null_slopes_valid = np.array(
+        [s for s in null_slopes_raw if s is not None],
+        dtype=np.float64,
+    )
+    n_ok = len(null_slopes_valid)
+    n_failed = n_rewires - n_ok
+
+    # One-sided p-value with conservative failure imputation
+    pvalue = float(
+        (np.sum(null_slopes_imputed <= observed_slope) + 1) / (n_rewires + 1)
+    )
+
+    # Pathology diagnostics on the VALID (non-imputed) null slopes
+    if n_ok >= 4:
+        bc, bc_pseudo_p = bimodality_coefficient(null_slopes_valid)
+    else:
+        bc, bc_pseudo_p = 0.0, 1.0
+    disc_rate = n_disconnected / n_rewires if n_rewires else 0.0
+
+    # Warning thresholds
+    bimodality_warning = bc > 5.0 / 9.0
+    disconnection_warning = disc_rate > 0.05
+
+    if bimodality_warning:
+        logger.warning(
+            "Null-slope distribution shows bimodality (BC=%.3f > 0.555); "
+            "mixing may be inadequate — interpret p=%.3f with caution.",
+            bc, pvalue,
+        )
+    if disconnection_warning:
+        logger.warning(
+            "%.1f%% of rewirings had coverage < 80%% of observed; "
+            "failed iterations imputed as null_slope=0 (conservative).",
+            100 * disc_rate,
+        )
+
+    iter0_plateau_reached = diag_0.plateau_swaps is not None
+    mixing_warning = not iter0_plateau_reached
+    seed_component_too_small = n_nodes < 30
+
+    if mixing_warning:
+        logger.warning(
+            "Iter-0 mixing plateau was NOT reached within %d swaps; "
+            "target_nswap=%d may reflect inadequate mixing. "
+            "Interpret p=%.3f with caution.",
+            max_swaps_iter0, target_nswap, pvalue,
+        )
+
+    return RewiringNullResult(
+        observed_slope=observed_slope,
+        observed_coverage=float(observed_coverage),
+        null_slopes=null_slopes_valid,
+        null_slopes_imputed=null_slopes_imputed,
+        pvalue=pvalue,
+        n_rewires_requested=n_rewires,
+        n_rewires_ok=n_ok,
+        n_rewires_failed=n_failed,
+        seed=seed,
+        subgraph_n_nodes=n_nodes,
+        subgraph_n_edges=n_edges,
+        seed_component_too_small=seed_component_too_small,
+        rng_seed=rng_seed,
+        max_hops=max_hops,
+        target_nswap=target_nswap,
+        plateau_nswap=plateau_nswap,
+        iter0_plateau_reached=iter0_plateau_reached,
+        accepted_fraction_iter0=float(diag_0.accepted_fraction),
+        bimodality_coefficient=float(bc),
+        bimodality_pseudo_pvalue=float(bc_pseudo_p),
+        disconnection_rate=float(disc_rate),
+        bimodality_warning=bimodality_warning,
+        disconnection_warning=disconnection_warning,
+        mixing_warning=mixing_warning,
+        elapsed_seconds=float(elapsed),
+    )

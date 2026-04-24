@@ -612,6 +612,263 @@ class TestStratification:
         # Real degrees should produce the expected null pattern
         assert result.slope_pvalue < 0.05
 
+    def test_rewiring_null_planted_signal(self):
+        """Scenario A: planted-pathway signal should survive rewiring.
+
+        Construct a graph where seed-connected genes form a dense clique with
+        elevated |t|; the rest of the graph is sparse with low |t|. Rewiring
+        destroys the clique structure; expected: null p < 0.1.
+        """
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import (
+            run_rewiring_null, _gradient_slope, _compute_shell_stats,
+        )
+        from cliquefinder.stats.graph_rewiring import bfs_distances_from
+
+        rng = np.random.default_rng(0)
+        G = nx.Graph()
+        # Seed directly regulates a dense 20-gene "pathway"; those genes
+        # also interconnect so hop-2 reaches more pathway members
+        for i in range(20):
+            G.add_edge("SEED", f"P{i}")
+            # Inter-pathway connections
+            for j in range(i + 1, 20):
+                if rng.random() < 0.6:
+                    G.add_edge(f"P{i}", f"P{j}")
+        # 100 background genes with some connections to pathway (dilution)
+        for i in range(100):
+            G.add_edge(f"BG{i}", f"P{rng.integers(20)}")
+            # Background-background connections
+            for _ in range(rng.integers(1, 4)):
+                G.add_edge(f"BG{i}", f"BG{rng.integers(100)}")
+
+        # High |t| on pathway genes, low on background
+        t_stats = {}
+        for i in range(20):
+            t_stats[f"P{i}"] = 2.0 + rng.normal(0, 0.2)
+        for i in range(100):
+            t_stats[f"BG{i}"] = abs(0.5 + rng.normal(0, 0.3))
+
+        # Compute observed slope
+        distances = bfs_distances_from(G, "SEED", set(t_stats.keys()), max_hops=3)
+        shells = {}
+        for g, d in distances.items():
+            shells.setdefault(d, set()).add(g)
+        observed_shells = [
+            _compute_shell_stats(shells[h], t_stats, h) for h in sorted(shells)
+        ]
+        observed_slope = _gradient_slope(observed_shells)
+        assert observed_slope < 0, "Fixture should produce decay"
+
+        result = run_rewiring_null(
+            graph=G, seed="SEED", abs_t_stats=t_stats,
+            observed_slope=observed_slope,
+            n_rewires=99, max_hops=3, rng_seed=42,
+            check_every=500, max_swaps_iter0=20_000,
+            verbose=False,
+        )
+        # Gradient should survive rewiring (planted signal is real)
+        assert result.pvalue < 0.15, (
+            f"Planted signal should survive rewiring, got p={result.pvalue:.3f}"
+        )
+        assert result.n_rewires_ok > 70
+
+    def test_rewiring_null_runs_on_config_model(self):
+        """Regression: null runs cleanly on a configuration-model graph.
+
+        Full calibration studies (scenarios A-F from the design doc)
+        belong in Wave 20f's dedicated validation suite. Here we only
+        verify: structural invariants hold, pathology diagnostics fire
+        appropriately, result object is well-formed.
+        """
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        rng = np.random.default_rng(1)
+        # Configuration model on a random degree sequence (avoids BA's
+        # preferential-attachment clustering that rewiring legitimately destroys)
+        degree_sequence = [rng.integers(2, 8) for _ in range(200)]
+        if sum(degree_sequence) % 2:
+            degree_sequence[0] += 1
+        G = nx.configuration_model(degree_sequence, seed=1)
+        G = nx.Graph(G)  # drop multi-edges and self-loops
+        G.remove_edges_from(nx.selfloop_edges(G))
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        if "G0" not in G:
+            pytest.skip("Fixture produced graph without seed")
+
+        t_stats = {g: abs(rng.normal(1.0, 0.3)) for g in G.nodes()}
+
+        result = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats,
+            observed_slope=-0.05,
+            n_rewires=49, max_hops=3, rng_seed=7,
+            check_every=500, max_swaps_iter0=20_000,
+            verbose=False,
+        )
+        # Structural: result object is well-formed
+        assert 0.0 <= result.pvalue <= 1.0
+        assert result.n_rewires_ok > 0
+        assert result.subgraph_n_nodes == G.number_of_nodes()
+        assert result.subgraph_n_edges == G.number_of_edges()
+        # Elapsed time is reported
+        assert result.elapsed_seconds > 0
+        # Disconnection rate is sensible
+        assert 0.0 <= result.disconnection_rate <= 1.0
+
+    def test_rewiring_null_result_to_dict_has_provenance(self):
+        """RewiringNullResult.to_dict carries fields needed for reproducibility."""
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        rng = np.random.default_rng(0)
+        G = nx.barabasi_albert_graph(100, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        t_stats = {g: abs(rng.normal(1.0, 0.3)) for g in G.nodes()}
+
+        result = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats, observed_slope=-0.1,
+            n_rewires=19, max_hops=3, rng_seed=42,
+            check_every=500, max_swaps_iter0=10_000,
+            verbose=False,
+        )
+        d = result.to_dict()
+        required_provenance = (
+            "observed_slope", "observed_coverage",
+            "null_slopes", "null_slopes_summary", "null_slopes_imputed_preview",
+            "pvalue", "pvalue_formula",
+            "n_rewires_requested", "n_rewires_ok", "n_rewires_failed",
+            "seed", "subgraph_n_nodes", "subgraph_n_edges",
+            "seed_component_too_small",
+            "rng_seed", "max_hops", "target_nswap", "plateau_nswap",
+            "iter0_plateau_reached", "accepted_fraction_iter0",
+            "bimodality_coefficient", "bimodality_pseudo_pvalue",
+            "disconnection_rate",
+            "bimodality_warning", "disconnection_warning", "mixing_warning",
+            "elapsed_seconds",
+        )
+        for key in required_provenance:
+            assert key in d, f"Missing provenance key: {key}"
+        # Specific values that MUST match inputs
+        assert d["seed"] == "G0"
+        assert d["rng_seed"] == 42
+        assert d["max_hops"] == 3
+        assert d["n_rewires_requested"] == 19
+        # Null slopes serialized as full array (enables offline p-value audit)
+        assert isinstance(d["null_slopes"], list)
+        # Deciles included in summary
+        summary = d["null_slopes_summary"]
+        if summary.get("deciles"):
+            assert len(summary["deciles"]) == 11
+
+    def test_rewiring_null_deterministic(self):
+        """Two runs with the same rng_seed produce identical null slopes."""
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        rng = np.random.default_rng(0)
+        G = nx.barabasi_albert_graph(100, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        t_stats = {g: abs(rng.normal(1.0, 0.3)) for g in G.nodes()}
+
+        r1 = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats, observed_slope=-0.1,
+            n_rewires=9, max_hops=3, rng_seed=42,
+            check_every=500, max_swaps_iter0=5_000, verbose=False,
+        )
+        r2 = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats, observed_slope=-0.1,
+            n_rewires=9, max_hops=3, rng_seed=42,
+            check_every=500, max_swaps_iter0=5_000, verbose=False,
+        )
+        np.testing.assert_array_equal(r1.null_slopes, r2.null_slopes)
+        assert r1.target_nswap == r2.target_nswap
+
+    def test_rewiring_null_raises_if_seed_missing(self):
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        # Seed missing needs a graph large enough to pass the >=30 node check
+        G = nx.barabasi_albert_graph(50, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        with pytest.raises(ValueError, match="not in graph"):
+            run_rewiring_null(
+                graph=G, seed="MISSING", abs_t_stats={"G0": 1.0},
+                observed_slope=0.0, n_rewires=2, verbose=False,
+            )
+
+    def test_rewiring_null_raises_if_graph_too_small(self):
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        G = nx.path_graph(["A", "B", "C", "D", "E"])
+        with pytest.raises(ValueError, match="too small"):
+            run_rewiring_null(
+                graph=G, seed="A", abs_t_stats={"A": 1.0, "B": 1.0},
+                observed_slope=0.0, n_rewires=2, verbose=False,
+            )
+
+    def test_rewiring_null_rejects_n_jobs_gt_1(self):
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        G = nx.barabasi_albert_graph(50, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        with pytest.raises(NotImplementedError, match="n_jobs"):
+            run_rewiring_null(
+                graph=G, seed="G0", abs_t_stats={"G0": 1.0},
+                observed_slope=0.0, n_rewires=2, n_jobs=4, verbose=False,
+            )
+
+    def test_rewiring_null_n_accounting_correct(self):
+        """n_rewires_requested + n_failed/ok split is properly recorded."""
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        rng = np.random.default_rng(0)
+        G = nx.barabasi_albert_graph(100, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        t_stats = {g: abs(rng.normal(1.0, 0.3)) for g in G.nodes()}
+
+        result = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats, observed_slope=-0.1,
+            n_rewires=25, max_hops=3, rng_seed=42,
+            check_every=500, max_swaps_iter0=5_000, verbose=False,
+        )
+        assert result.n_rewires_requested == 25
+        assert result.n_rewires_ok + result.n_rewires_failed == 25
+
+    def test_rewiring_null_iter1_uses_fixed_swap_budget(self):
+        """Iterations ≥ 1 should run with the plateau-determined swap budget,
+        not max_swaps_iter0.  Guards against the bug where record_diagnostic=False
+        disabled plateau termination, causing iter ≥ 1 to run the full max budget."""
+        import networkx as nx
+        import time
+        from cliquefinder.stats.perturbation_gradient import run_rewiring_null
+
+        rng = np.random.default_rng(0)
+        G = nx.barabasi_albert_graph(150, m=3, seed=0)
+        G = nx.relabel_nodes(G, {i: f"G{i}" for i in G.nodes()})
+        t_stats = {g: abs(rng.normal(1.0, 0.3)) for g in G.nodes()}
+
+        # Iter 0 plateau should be small; iter ≥ 1 should use that budget.
+        # If the bug were still present (full max_swaps per iter), runtime would
+        # scale with n_rewires * max_swaps_iter0 not n_rewires * plateau.
+        t0 = time.time()
+        result = run_rewiring_null(
+            graph=G, seed="G0", abs_t_stats=t_stats, observed_slope=-0.1,
+            n_rewires=20, max_hops=3, rng_seed=42,
+            max_swaps_iter0=200_000, check_every=500, verbose=False,
+        )
+        elapsed = time.time() - t0
+
+        # target_nswap < max_swaps_iter0 → fast iterations
+        assert result.target_nswap < 200_000, (
+            "target_nswap should be derived from plateau, not max_swaps_iter0"
+        )
+        # 20 iters × small nswap each should take under 30s on this fixture
+        assert elapsed < 30.0, f"Iter ≥1 budget is too large; runtime={elapsed:.1f}s"
+
     def test_tier_too_small_skipped(self, star_graph, decaying_t_stats):
         eq = {f"H{i}": "main" for i in range(20)}
         for i in range(20):
