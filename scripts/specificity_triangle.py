@@ -280,6 +280,8 @@ def run_gradient_for_contrast(
     n_permutations: int = 999,
     seed: str = "C9orf72",
     mode: str = "shortest-paths",
+    rewire_null_n: int = 0,
+    rewire_hops: int | None = None,
 ):
     """Fit engine for a contrast and run gradient-based discovery.
 
@@ -376,12 +378,68 @@ def run_gradient_for_contrast(
             print(f"    {tier}: slope={tier_r.slope:.4f}, p={tier_r.slope_pvalue:.4f}, "
                   f"n={tier_r.n_genes_total}")
 
+    # Optional: degree-preserving edge-rewiring null
+    rewiring_dict = None
+    if rewire_null_n > 0:
+        # Hop unification: null shells MUST use the same depth as the observed
+        # slope. Mismatched shell counts change the WLS regressor design and
+        # invalidate the one-sided test (null slopes become systematically
+        # different from the observed just from the extra shell, not the graph).
+        effective_rewire_hops = max_hops if rewire_hops is None else rewire_hops
+        if effective_rewire_hops != max_hops:
+            raise ValueError(
+                f"--rewire-hops ({effective_rewire_hops}) must equal "
+                f"--gradient-hops ({max_hops}); mismatched shell counts "
+                f"invalidate the rewiring null's one-sided test."
+            )
+        print(f"\n  Running edge-rewiring null (N={rewire_null_n}, hops={effective_rewire_hops})...")
+        t_rewire = time.time()
+        # Re-open bridge for the rewiring query (original bridge is closed)
+        with DiscoveryBridge(
+            engine, symbol_to_feature,
+            env_file=indra_env_file,
+            min_evidence=1, min_reliability=0.0, min_sources=1,
+        ) as rewire_bridge:
+            rewire_result = rewire_bridge.run_rewiring_null(
+                seed=seed,
+                observed_slope=result.slope,
+                n_rewires=rewire_null_n,
+                max_hops=effective_rewire_hops,
+                rng_seed=42,
+            )
+        rewire_elapsed = time.time() - t_rewire
+        rewiring_dict = rewire_result.to_dict()
+        print(f"  Rewiring null done in {rewire_elapsed:.0f}s")
+        print(f"    observed slope = {rewire_result.observed_slope:.4f}")
+        print(f"    rewiring p-value = {rewire_result.pvalue:.4f}  "
+              f"(n_ok={rewire_result.n_rewires_ok}, failed={rewire_result.n_rewires_failed})")
+        print(f"    subgraph: |V|={rewire_result.subgraph_n_nodes}, "
+              f"|E|={rewire_result.subgraph_n_edges}, "
+              f"target_nswap={rewire_result.target_nswap}")
+        if rewire_result.bimodality_warning:
+            print(f"    ⚠ BIMODALITY WARNING (BC={rewire_result.bimodality_coefficient:.3f})")
+        if rewire_result.disconnection_warning:
+            print(f"    ⚠ DISCONNECTION WARNING (rate={rewire_result.disconnection_rate:.1%})")
+
     # Save
     output_dir.mkdir(parents=True, exist_ok=True)
     out_dict = result.to_dict()
     out_dict["contrast"] = contrast_name
     out_dict["contrast_groups"] = {cond1: n1, cond2: n2}
     out_dict["elapsed_seconds"] = round(elapsed, 1)
+    # Methodology provenance so downstream consumers can tell HOW the slope
+    # and null were computed (not derivable from the numbers alone).
+    out_dict["methodology"] = {
+        "gradient_mode": mode,
+        "gradient_max_hops": max_hops,
+        "gradient_n_permutations": n_permutations,
+        "seed_gene": seed,
+        "covariates": list(covariates) if covariates else [],
+    }
+    if rewiring_dict is not None:
+        out_dict["rewiring_null"] = rewiring_dict
+        out_dict["methodology"]["rewire_max_hops"] = rewiring_dict["max_hops"]
+        out_dict["methodology"]["rewire_n_rewires"] = rewiring_dict["n_rewires_requested"]
 
     out_path = output_dir / f"gradient_{contrast_name}.json"
     with open(out_path, "w") as f:
@@ -442,6 +500,18 @@ def main():
                              "Default: shortest-paths (recommended).")
     parser.add_argument("--seed", type=str, default="C9orf72",
                         help="Seed gene symbol for gradient mode (default: C9orf72)")
+    parser.add_argument("--rewire-null-n", type=int, default=0,
+                        help="If > 0, run degree-preserving edge-rewiring null "
+                             "after the gradient on each contrast. 999 gives "
+                             "p-floor 0.001; 9999 gives 0.0001. Opt-in because "
+                             "runtime scales with n (~30-60 min/contrast at 999 "
+                             "for INDRA-scale subgraphs). Default 0 = skip.")
+    parser.add_argument("--rewire-hops", type=int, default=None,
+                        help="BFS depth for gradient shell construction inside "
+                             "each rewiring iteration. If unset (default), "
+                             "MUST equal --gradient-hops — the observed slope "
+                             "and the null slopes must use the same shell "
+                             "count or the one-sided test is invalid.")
     args = parser.parse_args()
 
     # Reject incompatible flag combinations
@@ -543,6 +613,8 @@ def main():
                 n_permutations=args.gradient_perms,
                 seed=args.seed,
                 mode=args.gradient_mode,
+                rewire_null_n=args.rewire_null_n,
+                rewire_hops=args.rewire_hops,
             )
         else:
             result = run_discovery_for_contrast(
@@ -603,7 +675,7 @@ def main():
         summary = {}
         for cname in args.contrasts:
             r = results[cname]
-            summary[cname] = {
+            entry = {
                 "groups": r.get("contrast_groups", {}),
                 "slope": r["slope"],
                 "slope_pvalue": r["slope_pvalue"],
@@ -613,6 +685,25 @@ def main():
                 "n_genes_total": r["n_genes_total"],
                 "shells": r["shells"],
             }
+            # Surface rewiring null results in the combined summary so
+            # consumers reading only this file know whether rewiring was run
+            if "rewiring_null" in r:
+                rw = r["rewiring_null"]
+                entry["rewiring_null"] = {
+                    "pvalue": rw["pvalue"],
+                    "n_rewires_requested": rw["n_rewires_requested"],
+                    "n_rewires_ok": rw["n_rewires_ok"],
+                    "n_rewires_failed": rw["n_rewires_failed"],
+                    "subgraph_n_nodes": rw["subgraph_n_nodes"],
+                    "subgraph_n_edges": rw["subgraph_n_edges"],
+                    "max_hops": rw["max_hops"],
+                    "target_nswap": rw["target_nswap"],
+                    "iter0_plateau_reached": rw["iter0_plateau_reached"],
+                    "bimodality_warning": rw["bimodality_warning"],
+                    "disconnection_warning": rw["disconnection_warning"],
+                    "mixing_warning": rw["mixing_warning"],
+                }
+            summary[cname] = entry
     else:
         summary = {}
         for cname in args.contrasts:
