@@ -801,11 +801,16 @@ class DiscoveryBridge:
             Base random seed for reproducibility.
         subgraph_max_hops
             Hops from seed for Cypher subgraph extraction.  Defaults to
-            ``max_hops + 1`` (one-hop buffer to absorb boundary effects
-            without blowing up the edge count on dense knowledge graphs —
-            on INDRA, ``max_hops + 2`` around C9orf72 pulls ~9M edges and
-            makes per-iter rewiring infeasible at N=999).  For global
-            rewiring guarantees, pass a very large value (e.g. 10).
+            ``max_hops`` (no buffer) because INDRA is sufficiently dense
+            around typical biomedical seeds that any buffer blows up the
+            subgraph — ``max_hops + 1`` around C9orf72 already pulls
+            ~9M edges, making per-iter rewiring infeasible at N=999.
+            The no-buffer choice means rewirings which push targets past
+            ``max_hops`` show up as disconnections (tracked in
+            ``disconnection_rate``) rather than as extended shells; this
+            is a conservative tradeoff that we accept rather than silently
+            running for hours.  For global rewiring guarantees on sparser
+            graphs, pass a larger value explicitly.
         max_swaps_iter0
             Hard ceiling on iter-0 mixing diagnostic.
         verbose
@@ -823,7 +828,7 @@ class DiscoveryBridge:
 
         abs_t = self.get_abs_t_stats()
         if subgraph_max_hops is None:
-            subgraph_max_hops = max_hops + 1
+            subgraph_max_hops = max_hops
 
         cache_key = ("subgraph_edges", seed, subgraph_max_hops)
         cached = self._graph_query_cache.get(cache_key)
