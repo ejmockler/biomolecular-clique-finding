@@ -760,6 +760,128 @@ class DiscoveryBridge:
             graph_degrees=degrees,
         )
 
+    def run_rewiring_null(
+        self,
+        seed: str,
+        observed_slope: float,
+        observed_coverage: float | None = None,
+        n_rewires: int = 999,
+        max_hops: int = 3,
+        rng_seed: int = 42,
+        subgraph_max_hops: int | None = None,
+        max_swaps_iter0: int = 500_000,
+        verbose: bool = True,
+    ):
+        """Run the degree-preserving edge-rewiring null on the seed's component.
+
+        Extracts the INDRA subgraph around ``seed`` via Cypher (cached on the
+        bridge per (seed, subgraph_max_hops)), restricts to the connected
+        component containing the seed, and runs
+        :func:`~perturbation_gradient.run_rewiring_null`.
+
+        **Semantics: UNDIRECTED, FULL-GRAPH within the extracted component.**
+        This mirrors the shortest-paths gradient's methodology.  The rewiring
+        null tests whether the observed gradient is reproducible when the
+        component is randomly rewired while preserving degree sequence.
+
+        Parameters
+        ----------
+        seed
+            Seed gene symbol.
+        observed_slope
+            Slope from the observed (unrewired) gradient.
+        observed_coverage
+            Fraction of in-graph |t|-stat keys reachable from seed within
+            ``max_hops``.  Optional; recomputed if None.
+        n_rewires
+            Number of rewiring permutations.
+        max_hops
+            BFS depth for gradient shell construction INSIDE each rewire.
+        rng_seed
+            Base random seed for reproducibility.
+        subgraph_max_hops
+            Hops from seed for Cypher subgraph extraction.  Defaults to
+            ``max_hops + 2`` (padding to ensure all seed-to-target paths of
+            length ≤ max_hops remain intact after rewiring).  For global
+            rewiring guarantees, pass a very large value (e.g. 10).
+        max_swaps_iter0
+            Hard ceiling on iter-0 mixing diagnostic.
+        verbose
+            Log progress.
+
+        Returns
+        -------
+        :class:`~perturbation_gradient.RewiringNullResult`
+        """
+        from .graph_rewiring import edges_to_undirected_graph, seed_component
+        from .network_proximity import extract_local_subgraph_edges
+        from .perturbation_gradient import run_rewiring_null
+
+        self._ensure_indra()
+
+        abs_t = self.get_abs_t_stats()
+        if subgraph_max_hops is None:
+            subgraph_max_hops = max_hops + 2
+
+        cache_key = ("subgraph_edges", seed, subgraph_max_hops)
+        cached = self._graph_query_cache.get(cache_key)
+        if cached is not None:
+            edge_list = cached[0]  # reuse existing tuple slot
+            logger.info(
+                "Using cached subgraph edges for %s (subgraph_max_hops=%d)",
+                seed, subgraph_max_hops,
+            )
+        else:
+            cogex = self._indra_source.client
+            logger.info(
+                "Extracting INDRA subgraph around %s (max_hops=%d) for rewiring...",
+                seed, subgraph_max_hops,
+            )
+            edge_list = extract_local_subgraph_edges(
+                cogex_client=cogex,
+                seed_gene_name=seed,
+                max_hops=subgraph_max_hops,
+                min_evidence=1,
+            )
+            # Store in the same dict pattern as the shortest-paths cache
+            self._graph_query_cache[cache_key] = (edge_list, None)
+
+        if not edge_list:
+            raise ValueError(
+                f"No edges extracted from INDRA for seed '{seed}' at "
+                f"subgraph_max_hops={subgraph_max_hops}. Check seed name "
+                f"resolution and Neo4j connectivity."
+            )
+
+        G_full = edges_to_undirected_graph(edge_list)
+        G = seed_component(G_full, seed)
+        if seed not in G:
+            raise ValueError(
+                f"Seed '{seed}' is in the extracted subgraph ({G_full.number_of_nodes()} "
+                f"nodes) but not in its largest connected component "
+                f"(|V|={G.number_of_nodes()}). Extraction may have returned only "
+                f"outgoing edges from non-seed nodes; verify Cypher."
+            )
+        if G.number_of_nodes() < 100:
+            logger.warning(
+                "Seed component is small (|V|=%d, |E|=%d); rewiring null may "
+                "have low power and is sensitive to disconnection artifacts.",
+                G.number_of_nodes(), G.number_of_edges(),
+            )
+
+        return run_rewiring_null(
+            graph=G,
+            seed=seed,
+            abs_t_stats=abs_t,
+            observed_slope=observed_slope,
+            observed_coverage=observed_coverage,
+            n_rewires=n_rewires,
+            max_hops=max_hops,
+            rng_seed=rng_seed,
+            max_swaps_iter0=max_swaps_iter0,
+            verbose=verbose,
+        )
+
     def close(self):
         """Release INDRA connection and clear caches."""
         if self._indra_source is not None:

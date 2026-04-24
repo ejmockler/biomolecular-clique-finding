@@ -523,6 +523,68 @@ class TestGradientBridge:
         assert result.shells[1].n_genes == 20  # hop 2
         assert result.slope < 0  # decay
 
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_run_rewiring_null_extracts_subgraph_and_caches(self, mock_ensure):
+        """Bridge method extracts subgraph via Cypher (cached),
+        builds graph, delegates to run_rewiring_null."""
+        import numpy as np
+
+        engine = MagicMock()
+        n_genes = 80
+        gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        engine.gene_to_idx = gene_to_idx
+        effects = MagicMock()
+        rng = np.random.default_rng(0)
+        t_vals = rng.normal(0, 1, n_genes)
+        effects.U = t_vals.reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+        bridge._indra_source = MagicMock()
+        bridge._indra_source.client = MagicMock()
+
+        # Mock edges: seed connected to 20 neighbors; each neighbor to 3 others
+        mock_edges = []
+        for i in range(20):
+            mock_edges.append(("SEED", f"G{i}", {}))
+        for i in range(20, 50):
+            mock_edges.append((f"G{i % 20}", f"G{i}", {}))
+        # Seed itself as a node + measurable
+        bridge.sym_to_feat["SEED"] = "SEED_FID"
+        engine.gene_to_idx["SEED_FID"] = n_genes
+        # Expand effects to include seed
+        new_U = np.vstack([effects.U, [[0.5]]])
+        new_mv = np.concatenate([effects.moderated_variances, [1.0]])
+        effects.U = new_U
+        effects.moderated_variances = new_mv
+
+        with patch(
+            "cliquefinder.stats.network_proximity.extract_local_subgraph_edges"
+        ) as mock_extract:
+            mock_extract.return_value = mock_edges
+
+            # First call: extraction fires
+            bridge._moderated_t = None  # reset cache
+            r1 = bridge.run_rewiring_null(
+                seed="SEED", observed_slope=-0.1,
+                n_rewires=9, max_hops=2, rng_seed=42,
+                max_swaps_iter0=5_000, verbose=False,
+            )
+            assert mock_extract.call_count == 1
+
+            # Second call with same params: uses cache
+            bridge._moderated_t = None
+            r2 = bridge.run_rewiring_null(
+                seed="SEED", observed_slope=-0.1,
+                n_rewires=9, max_hops=2, rng_seed=42,
+                max_swaps_iter0=5_000, verbose=False,
+            )
+            assert mock_extract.call_count == 1  # unchanged
+            # Determinism
+            assert r1.target_nswap == r2.target_nswap
+
     def test_run_gradient_with_prebuilt_adjacency(self):
         import numpy as np
 
