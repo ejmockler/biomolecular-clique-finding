@@ -259,8 +259,22 @@ def rewire_maslov_sneppen(
         )
 
     budget = target_nswap if target_nswap is not None else max_swaps
+    # Hard ceiling on attempts to prevent infinite spin when acceptance
+    # rate decays toward 0 (heavy-tail saturation). 100x budget is generous —
+    # at acceptance ≥1% the chain still completes; at lower rates the null
+    # is degenerate anyway and we'd rather fail fast than hang for hours.
+    attempt_ceiling = 100 * budget
 
     while accepted_total < budget:
+        if attempted_total >= attempt_ceiling:
+            logger.warning(
+                "Maslov-Sneppen aborted: %d attempts produced only %d accepted "
+                "swaps (target %d). Acceptance rate %.4f%% — graph is likely "
+                "saturated. Returning partial rewire.",
+                attempted_total, accepted_total, budget,
+                100.0 * accepted_total / max(attempted_total, 1),
+            )
+            break
         # Pick two distinct edges without replacement
         idx = rng.choice(n_edges, size=2, replace=False)
         i, j = int(idx[0]), int(idx[1])
