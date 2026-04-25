@@ -705,7 +705,10 @@ class DiscoveryBridge:
         )
 
         abs_t = self.get_abs_t_stats()
-        measured_symbols = sorted(abs_t.keys())
+        # Exclude the seed itself — Neo4j's shortestPath refuses paths between
+        # identical start and end nodes (DatabaseError 51N23). Self-distance
+        # would be 0 anyway, which is outside our 1 ≤ d ≤ max_hops shell range.
+        measured_symbols = sorted(s for s in abs_t.keys() if s != seed)
 
         # Cache key: queries are invariant under contrast, only |t| changes
         cache_key = (seed, max_hops, hash(tuple(measured_symbols)))
