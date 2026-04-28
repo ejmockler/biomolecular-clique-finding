@@ -968,11 +968,19 @@ def query_shortest_paths_batched(
     max_hops: int = 8,
     batch_size: int = 500,
     verbose: bool = True,
+    stmt_types: list[str] | None = None,
 ) -> dict[str, int]:
     """Query Neo4j for shortest path distances from seed to target genes.
 
     Uses server-side BFS via ``shortestPath`` — orders of magnitude faster
     than extracting the full subgraph and computing BFS locally.
+
+    Edges are filtered by ``stmt_type`` so that the path-finder only
+    traverses edges with one of the listed types.  This is the regulatory
+    scope: by default the four canonical regulatory statements
+    (Activation, Inhibition, IncreaseAmount, DecreaseAmount).  Pass an
+    explicit ``stmt_types=None`` only for sensitivity analyses where the
+    full unfiltered ``indra_rel`` graph is wanted.
 
     Parameters
     ----------
@@ -986,11 +994,27 @@ def query_shortest_paths_batched(
         Maximum path length.
     batch_size
         Number of target genes per query batch.
+    verbose
+        Log per-batch progress.
+    stmt_types
+        INDRA statement types allowed for path edges.  Default
+        ``ALL_REGULATORY_TYPES`` from
+        :mod:`cliquefinder.knowledge.cogex` (Activation, Inhibition,
+        IncreaseAmount, DecreaseAmount).  Pass ``[]`` or override if you
+        want a different scope (e.g., include Phosphorylation).
 
     Returns
     -------
     Dict of {gene_name: min_distance}. Only reachable genes are included.
+    Reachability is computed under the regulatory-edge subgraph: a gene
+    reachable in INDRA via Complex/co-mention edges but with no
+    regulatory path within ``max_hops`` will not appear.
     """
+    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+
+    if stmt_types is None:
+        stmt_types = list(ALL_REGULATORY_TYPES)
+
     distances: dict[str, int] = {}
     n_batches = (len(target_gene_names) + batch_size - 1) // batch_size
 
@@ -1001,11 +1025,15 @@ def query_shortest_paths_batched(
         MATCH (target:BioEntity)
         WHERE target.name IN $gene_list
         MATCH path = shortestPath((seed)-[:indra_rel*..{max_hops}]-(target))
+        WHERE ALL(rel IN relationships(path) WHERE rel.stmt_type IN $stmt_types)
         WITH target.name AS gene, length(path) AS distance
         RETURN gene, min(distance) AS min_distance
         """
         rows = cogex_client._execute_query(
-            query, seed_name=seed_gene_name, gene_list=batch
+            query,
+            seed_name=seed_gene_name,
+            gene_list=batch,
+            stmt_types=stmt_types,
         )
         for row in rows:
             gene, dist = row[0], int(row[1])
@@ -1026,8 +1054,19 @@ def query_gene_degrees_batched(
     cogex_client: Any,
     gene_names: list[str],
     batch_size: int = 500,
+    stmt_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Query Neo4j for indra_rel degree of each gene (undirected).
+    """Query Neo4j for ``indra_rel`` degree of each gene (undirected).
+
+    The degree counted here drives the degree-binning in the gradient's
+    label-permutation null.  It must be computed under the same edge
+    scope as the path-finding query — otherwise the bins place a
+    "regulatory-isolated" gene next to a "regulatory-hub" gene that
+    happens to have many co-mention edges, breaking the hub-bias
+    control.
+
+    By default, only edges whose ``stmt_type`` is in
+    ``ALL_REGULATORY_TYPES`` are counted.
 
     Parameters
     ----------
@@ -1037,11 +1076,20 @@ def query_gene_degrees_batched(
         Gene symbols to query.
     batch_size
         Genes per batch.
+    stmt_types
+        INDRA statement types to count.  Default
+        ``ALL_REGULATORY_TYPES`` (Activation, Inhibition,
+        IncreaseAmount, DecreaseAmount).
 
     Returns
     -------
-    Dict of {gene_name: degree}.
+    Dict of {gene_name: regulatory_degree}.
     """
+    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+
+    if stmt_types is None:
+        stmt_types = list(ALL_REGULATORY_TYPES)
+
     degrees: dict[str, int] = {}
 
     for i in range(0, len(gene_names), batch_size):
@@ -1050,10 +1098,13 @@ def query_gene_degrees_batched(
         MATCH (g:BioEntity)
         WHERE g.name IN $gene_list
         OPTIONAL MATCH (g)-[r:indra_rel]-()
+        WHERE r.stmt_type IN $stmt_types
         WITH g.name AS gene, count(r) AS degree
         RETURN gene, degree
         """
-        rows = cogex_client._execute_query(query, gene_list=batch)
+        rows = cogex_client._execute_query(
+            query, gene_list=batch, stmt_types=stmt_types,
+        )
         for row in rows:
             gene, deg = row[0], int(row[1])
             degrees[gene] = max(degrees.get(gene, 0), deg)
@@ -1066,12 +1117,19 @@ def extract_local_subgraph_edges(
     seed_gene_name: str,
     max_hops: int = 2,
     min_evidence: int = 1,
+    stmt_types: list[str] | None = None,
 ) -> list[tuple[str, str, dict[str, Any]]]:
-    """Extract a small local subgraph around seed gene for RWR.
+    """Extract a local regulatory subgraph around seed gene.
 
-    Unlike ``extract_indra_subgraph_edges`` (which uses APOC and returns
-    millions of edges at 4-hop), this uses iterative 1-hop expansion and
-    returns a much smaller subgraph suitable for in-memory RWR.
+    The seed's max_hops-radius neighborhood is found via APOC traversal
+    over ``indra_rel`` (which catches every candidate node), then the
+    induced edge set is filtered to ``stmt_types``.  Nodes that are
+    only reachable via non-regulatory edges will become isolated /
+    disconnected in the resulting edge list — downstream code is
+    responsible for restricting to the seed's connected component.
+
+    By default, only edges whose ``stmt_type`` is in
+    ``ALL_REGULATORY_TYPES`` are returned.
 
     Parameters
     ----------
@@ -1080,14 +1138,24 @@ def extract_local_subgraph_edges(
     seed_gene_name
         Gene symbol (name, not CURIE).
     max_hops
-        Maximum hops from seed.
+        Maximum hops from seed for the candidate-node traversal.
     min_evidence
         Minimum evidence count for edges.
+    stmt_types
+        INDRA statement types to keep on the induced edges.  Default
+        ``ALL_REGULATORY_TYPES`` (Activation, Inhibition,
+        IncreaseAmount, DecreaseAmount).
 
     Returns
     -------
-    List of (source_name, target_name, edge_attrs) tuples.
+    List of (source_name, target_name, edge_attrs) tuples.  Each
+    ``edge_attrs`` includes ``evidence_count`` and ``stmt_type``.
     """
+    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+
+    if stmt_types is None:
+        stmt_types = list(ALL_REGULATORY_TYPES)
+
     query = f"""
     MATCH (seed:BioEntity {{name: $seed_name}})
     CALL apoc.path.subgraphNodes(seed, {{
@@ -1099,6 +1167,7 @@ def extract_local_subgraph_edges(
     MATCH (a)-[r:indra_rel]->(b)
     WHERE b IN nodes
       AND r.evidence_count >= $min_evidence
+      AND r.stmt_type IN $stmt_types
     RETURN DISTINCT
       a.name AS source_name,
       b.name AS target_name,
@@ -1106,7 +1175,10 @@ def extract_local_subgraph_edges(
       r.stmt_type AS stmt_type
     """
     rows = cogex_client._execute_query(
-        query, seed_name=seed_gene_name, min_evidence=min_evidence
+        query,
+        seed_name=seed_gene_name,
+        min_evidence=min_evidence,
+        stmt_types=stmt_types,
     )
 
     edges = []

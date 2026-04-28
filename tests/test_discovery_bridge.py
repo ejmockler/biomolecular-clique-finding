@@ -839,3 +839,200 @@ class TestProteinLevelRewiringNull:
         )
         assert slope is not None
         assert slope < 0  # hop-1 mean (2.0) > hop-2 mean (1.0) → decay
+
+
+class TestRegulatoryEdgeScope:
+    """The bridge defaults INDRA queries to ``ALL_REGULATORY_TYPES`` —
+    only the four canonical regulatory statements (Activation,
+    Inhibition, IncreaseAmount, DecreaseAmount).  This is the
+    architectural commitment from Wave 24: graph proximity is computed
+    over edges that propagate perturbation, not over co-mention or
+    binding edges.
+    """
+
+    def test_bridge_defaults_to_regulatory_types(self):
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+
+        engine = MagicMock()
+        engine.gene_to_idx = {"P1": 0}
+        bridge = DiscoveryBridge(engine, {"G1": "P1"}, env_file=None)
+        assert set(bridge.stmt_types) == ALL_REGULATORY_TYPES
+
+    def test_bridge_accepts_explicit_stmt_types(self):
+        engine = MagicMock()
+        engine.gene_to_idx = {"P1": 0}
+        bridge = DiscoveryBridge(
+            engine, {"G1": "P1"}, env_file=None,
+            stmt_types=["Phosphorylation"],
+        )
+        assert bridge.stmt_types == ["Phosphorylation"]
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_shortest_paths_query_filters_by_stmt_types(self, mock_ensure):
+        """Bridge passes its ``stmt_types`` (default regulatory) into
+        every Cypher query — the path-finder must restrict to
+        regulatory edges.
+        """
+        import numpy as np
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+
+        engine = MagicMock()
+        n_genes = 50
+        engine.gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        effects = MagicMock()
+        rng = np.random.default_rng(42)
+        t_vals = np.concatenate([
+            2.0 + rng.normal(0, 0.2, 10),
+            1.0 + rng.normal(0, 0.2, 20),
+            0.5 + rng.normal(0, 0.1, 20),
+        ])
+        effects.U = t_vals.reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+        bridge._indra_source = MagicMock()
+        bridge._indra_source.client = MagicMock()
+
+        with patch(
+            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
+        ) as mock_paths, patch(
+            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
+        ) as mock_degrees:
+            mock_paths.return_value = {
+                **{f"G{i}": 1 for i in range(10)},
+                **{f"G{i}": 2 for i in range(10, 30)},
+            }
+            mock_degrees.return_value = {f"G{i}": (10 - i % 5) for i in range(50)}
+
+            bridge.run_gradient_via_shortest_paths(
+                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+            )
+
+        # Bridge should have passed ALL_REGULATORY_TYPES (as a list) to
+        # both queries.
+        paths_kwargs = mock_paths.call_args.kwargs
+        degrees_kwargs = mock_degrees.call_args.kwargs
+        assert "stmt_types" in paths_kwargs
+        assert "stmt_types" in degrees_kwargs
+        assert set(paths_kwargs["stmt_types"]) == ALL_REGULATORY_TYPES
+        assert set(degrees_kwargs["stmt_types"]) == ALL_REGULATORY_TYPES
+
+    @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
+    def test_explicit_stmt_types_overrides_default(self, mock_ensure):
+        """Constructor stmt_types override the default and propagate
+        to network query calls.
+        """
+        import numpy as np
+
+        engine = MagicMock()
+        n_genes = 50
+        engine.gene_to_idx = {f"P{i:05d}": i for i in range(n_genes)}
+        effects = MagicMock()
+        rng = np.random.default_rng(42)
+        effects.U = (1.0 + rng.normal(0, 0.2, n_genes)).reshape(-1, 1)
+        effects.moderated_variances = np.ones(n_genes)
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
+        custom_types = ["Activation", "Phosphorylation"]
+        bridge = DiscoveryBridge(
+            engine, sym_to_feat, env_file=None, stmt_types=custom_types,
+        )
+        bridge._indra_source = MagicMock()
+        bridge._indra_source.client = MagicMock()
+
+        with patch(
+            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
+        ) as mock_paths, patch(
+            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
+        ) as mock_degrees:
+            mock_paths.return_value = {
+                **{f"G{i}": 1 for i in range(10)},
+                **{f"G{i}": 2 for i in range(10, 30)},
+            }
+            mock_degrees.return_value = {f"G{i}": 5 for i in range(50)}
+
+            bridge.run_gradient_via_shortest_paths(
+                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+            )
+
+        paths_kwargs = mock_paths.call_args.kwargs
+        assert paths_kwargs["stmt_types"] == custom_types
+
+    def test_query_shortest_paths_default_is_regulatory(self):
+        """The standalone network_proximity function defaults to
+        ALL_REGULATORY_TYPES too — so a caller that bypasses the bridge
+        still gets the right scope.
+        """
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            query_shortest_paths_batched,
+        )
+
+        captured = {}
+
+        def fake_execute(query, **params):
+            captured.update(params)
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        query_shortest_paths_batched(
+            cogex_client=client,
+            seed_gene_name="SEED",
+            target_gene_names=["A"],
+            max_hops=2,
+            verbose=False,
+        )
+        assert "stmt_types" in captured
+        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES
+
+    def test_query_gene_degrees_default_is_regulatory(self):
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            query_gene_degrees_batched,
+        )
+
+        captured = {}
+
+        def fake_execute(query, **params):
+            captured.update(params)
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        query_gene_degrees_batched(
+            cogex_client=client,
+            gene_names=["A"],
+        )
+        assert "stmt_types" in captured
+        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES
+
+    def test_extract_local_subgraph_default_is_regulatory(self):
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            extract_local_subgraph_edges,
+        )
+
+        captured = {}
+
+        def fake_execute(query, **params):
+            captured.update(params)
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        extract_local_subgraph_edges(
+            cogex_client=client,
+            seed_gene_name="SEED",
+            max_hops=2,
+        )
+        assert "stmt_types" in captured
+        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES
