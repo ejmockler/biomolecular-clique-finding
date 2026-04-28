@@ -706,37 +706,98 @@ def _slope_and_coverage_from_rewired(
     seed: str,
     abs_t_stats: dict[str, float],
     max_hops: int,
+    aliases: dict[str, list[str]] | None = None,
 ) -> tuple[float | None, float]:
     """Compute the gradient slope on a rewired graph using a single BFS.
 
+    Two modes, distinguished by whether ``aliases`` is provided:
+
+    - **HGNC-keyed (aliases=None)**: ``abs_t_stats`` keyed by graph node
+      identifiers (typically HGNC symbols).  BFS distances directly
+      drive shell membership.  Used by synthetic tests and any flow
+      where the measurement unit and the graph node are the same.
+    - **Protein-keyed (aliases provided)**: ``abs_t_stats`` keyed by
+      UniProt feature_id.  ``aliases[feature_id] = [hgnc, ...]`` maps
+      each protein to its graph-side HGNC aliases.  After BFS gives
+      HGNC distances, we aggregate to per-protein min-distance and
+      build shells keyed by feature_id.  This is the correct
+      semantics when the proteomics measures one |t| per protein and
+      multiple HGNC aliases share that |t|.
+
+    Coverage is computed at the *measurement* level: in HGNC mode it is
+    the fraction of HGNC keys reachable; in protein mode it is the
+    fraction of measured proteins with at least one alias reachable.
+
     Returns
     -------
-    (slope, target_coverage)
-        slope is None when the BFS produces fewer than 2 non-empty shells
-        or fewer than 10 total measurable genes.  target_coverage is the
-        fraction of in-graph abs_t_stats keys reachable from seed within
-        max_hops (used for disconnection diagnostics).
+    (slope, coverage)
+        ``slope`` is None when fewer than 2 non-empty shells or fewer
+        than 10 total measurable units.  ``coverage`` is in [0, 1].
     """
     from .graph_rewiring import bfs_distances_from
 
-    # Restrict target set to keys that are actually in the graph —
-    # otherwise disconnection rate is a function of how much unrelated
-    # |t| data was loaded, not of graph fragmentation.
-    in_graph_targets = set(abs_t_stats.keys()) & set(rewired_graph.nodes())
-    if not in_graph_targets:
-        return None, 0.0
+    rewired_nodes = set(rewired_graph.nodes())
 
-    distances = bfs_distances_from(
-        rewired_graph, seed, in_graph_targets, max_hops=max_hops,
-    )
-    coverage = len(distances) / len(in_graph_targets) if in_graph_targets else 0.0
+    if aliases is None:
+        # HGNC-keyed mode: keys of abs_t_stats are graph nodes
+        in_graph_targets = set(abs_t_stats.keys()) & rewired_nodes
+        if not in_graph_targets:
+            return None, 0.0
 
-    if not distances:
-        return None, coverage
+        distances = bfs_distances_from(
+            rewired_graph, seed, in_graph_targets, max_hops=max_hops,
+        )
+        coverage = len(distances) / len(in_graph_targets) if in_graph_targets else 0.0
 
-    shells_sets: dict[int, set[str]] = {}
-    for gene, d in distances.items():
-        shells_sets.setdefault(d, set()).add(gene)
+        if not distances:
+            return None, coverage
+
+        shells_sets: dict[int, set[str]] = {}
+        for gene, d in distances.items():
+            shells_sets.setdefault(d, set()).add(gene)
+    else:
+        # Protein-keyed mode: keys of abs_t_stats are feature_ids;
+        # aliases maps each feature_id to its HGNC alias list
+        all_alias_targets: set[str] = set()
+        for fid in abs_t_stats:
+            for hgnc in aliases.get(fid, []):
+                if hgnc in rewired_nodes:
+                    all_alias_targets.add(hgnc)
+
+        if not all_alias_targets:
+            return None, 0.0
+
+        hgnc_distances = bfs_distances_from(
+            rewired_graph, seed, all_alias_targets, max_hops=max_hops,
+        )
+        # Aggregate: per-protein min-distance over its aliases
+        prot_distances: dict[str, int] = {}
+        for fid in abs_t_stats:
+            best: int | None = None
+            for hgnc in aliases.get(fid, []):
+                d = hgnc_distances.get(hgnc)
+                if d is not None and (best is None or d < best):
+                    best = d
+            if best is not None:
+                prot_distances[fid] = best
+
+        # Coverage at measurement level: fraction of measured proteins
+        # whose alias set has any reachable HGNC node
+        n_proteins_with_aliases = sum(
+            1 for fid in abs_t_stats
+            if any(h in rewired_nodes for h in aliases.get(fid, []))
+        )
+        coverage = (
+            len(prot_distances) / n_proteins_with_aliases
+            if n_proteins_with_aliases else 0.0
+        )
+
+        if not prot_distances:
+            return None, coverage
+
+        shells_sets = {}
+        for fid, d in prot_distances.items():
+            shells_sets.setdefault(d, set()).add(fid)
 
     shells = [
         _compute_shell_stats(shells_sets[h], abs_t_stats, h)
@@ -765,6 +826,7 @@ def run_rewiring_null(
     swap_multiplier: float = 1.5,
     verbose: bool = True,
     n_jobs: int = 1,
+    aliases: dict[str, list[str]] | None = None,
 ) -> RewiringNullResult:
     """Run the degree-preserving edge-rewiring null test.
 
@@ -785,6 +847,15 @@ def run_rewiring_null(
     below 80% of the observed coverage.  This is adaptive to graph
     scale and observed BFS-reachability.
 
+    **Protein-level vs HGNC-level keys.**  When ``aliases`` is None,
+    ``abs_t_stats`` is keyed by graph-node identifiers (typical for
+    synthetic tests).  When ``aliases`` is provided, ``abs_t_stats`` is
+    keyed by UniProt feature_id and ``aliases[fid] = [hgnc, ...]``
+    maps each protein to its graph-side aliases.  Per-rewire BFS gives
+    HGNC distances; we aggregate min-over-aliases to get protein
+    distances before computing shell stats — so each protein
+    measurement contributes one observation regardless of alias count.
+
     Parameters
     ----------
     graph
@@ -793,13 +864,13 @@ def run_rewiring_null(
     seed
         Seed gene symbol (must be present in graph).
     abs_t_stats
-        Gene symbol -> |t|.
+        Measurement-keyed |t|.  Keys are graph nodes when ``aliases`` is
+        None; UniProt feature ids when ``aliases`` is provided.
     observed_slope
         The gradient slope on the un-rewired graph.
     observed_coverage
-        Fraction of in-graph abs_t_stats keys reachable from seed within
-        max_hops on the observed graph.  If None, computed here; pass
-        explicitly to avoid recomputing.
+        Fraction of measured units reachable from seed within max_hops
+        on the observed graph.  If None, computed here.
     n_rewires
         Number of permutations (p-floor = 1/(N+1)).  Default 999.
     max_hops
@@ -817,6 +888,13 @@ def run_rewiring_null(
         Log progress.
     n_jobs
         Reserved; currently single-threaded.
+    aliases
+        Optional ``{feature_id: [hgnc_alias, ...]}`` map.  When
+        provided, ``abs_t_stats`` is interpreted as protein-level and
+        per-iteration BFS distances are aggregated min-over-aliases
+        before shell construction.  When None, the function operates
+        on graph-node-keyed ``abs_t_stats`` directly (legacy / synthetic
+        path).
 
     Returns
     -------
@@ -857,20 +935,47 @@ def run_rewiring_null(
         seed, n_nodes, n_edges, n_rewires, max_hops,
     )
 
-    # Observed coverage: fraction of in-graph t-stat keys reachable within max_hops
-    in_graph_targets = set(abs_t_stats.keys()) & set(graph.nodes())
-    if observed_coverage is None:
-        observed_distances = bfs_distances_from(
-            graph, seed, in_graph_targets, max_hops=max_hops,
-        )
-        observed_coverage = (
-            len(observed_distances) / len(in_graph_targets) if in_graph_targets else 0.0
-        )
+    # Observed coverage: fraction of measured units reachable within max_hops.
+    # In HGNC mode, "unit" = HGNC symbol; in protein mode, "unit" = UniProt
+    # feature_id whose alias set contains at least one reachable HGNC node.
+    graph_nodes = set(graph.nodes())
+    if aliases is None:
+        in_graph_units = set(abs_t_stats.keys()) & graph_nodes
+        n_in_graph_units = len(in_graph_units)
+        if observed_coverage is None:
+            observed_distances = bfs_distances_from(
+                graph, seed, in_graph_units, max_hops=max_hops,
+            )
+            observed_coverage = (
+                len(observed_distances) / n_in_graph_units if n_in_graph_units else 0.0
+            )
+    else:
+        # Protein mode: union of all aliases as BFS targets, then aggregate
+        all_alias_targets: set[str] = set()
+        proteins_with_aliases: set[str] = set()
+        for fid in abs_t_stats:
+            alias_in_graph = [h for h in aliases.get(fid, []) if h in graph_nodes]
+            if alias_in_graph:
+                proteins_with_aliases.add(fid)
+                all_alias_targets.update(alias_in_graph)
+        n_in_graph_units = len(proteins_with_aliases)
+        if observed_coverage is None:
+            hgnc_dists = bfs_distances_from(
+                graph, seed, all_alias_targets, max_hops=max_hops,
+            )
+            n_reachable = sum(
+                1 for fid in proteins_with_aliases
+                if any(h in hgnc_dists for h in aliases.get(fid, []))
+            )
+            observed_coverage = (
+                n_reachable / n_in_graph_units if n_in_graph_units else 0.0
+            )
     coverage_floor = 0.8 * observed_coverage
     logger.info(
-        "Observed coverage: %.1f%% of %d in-graph targets; "
+        "Observed coverage: %.1f%% of %d in-graph %s; "
         "disconnection threshold: %.1f%%",
-        100 * observed_coverage, len(in_graph_targets),
+        100 * observed_coverage, n_in_graph_units,
+        "proteins" if aliases is not None else "targets",
         100 * coverage_floor,
     )
 
@@ -894,7 +999,7 @@ def run_rewiring_null(
     )
 
     slope_0, coverage_0 = _slope_and_coverage_from_rewired(
-        rewired_0, seed, abs_t_stats, max_hops,
+        rewired_0, seed, abs_t_stats, max_hops, aliases=aliases,
     )
     null_slopes_raw: list[float | None] = [slope_0]
     n_disconnected = 0
@@ -909,7 +1014,7 @@ def run_rewiring_null(
             target_nswap=target_nswap,
         )
         slope, coverage = _slope_and_coverage_from_rewired(
-            rewired, seed, abs_t_stats, max_hops,
+            rewired, seed, abs_t_stats, max_hops, aliases=aliases,
         )
         null_slopes_raw.append(slope)
         if coverage < coverage_floor:

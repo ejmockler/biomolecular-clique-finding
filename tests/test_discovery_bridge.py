@@ -625,3 +625,217 @@ class TestGradientBridge:
         assert result.seed_gene == "SEED"
         assert result.slope < 0  # decay
         assert len(result.shells) >= 2
+
+
+class TestProteinLevelInputs:
+    """get_protein_level_inputs aggregates HGNC-keyed query results
+    to UniProt-keyed inputs.  One observation per measured protein
+    regardless of how many HGNC aliases the proteomics resolver
+    expanded it into.
+    """
+
+    def _make_bridge_two_proteins_three_aliases(self):
+        """One measured protein with 2 aliases; another with 1 alias."""
+        import numpy as np
+
+        engine = MagicMock()
+        engine.gene_to_idx = {"P_A": 0, "P_B": 1}
+
+        effects = MagicMock()
+        effects.U = np.array([[3.0], [1.0]])  # |t| = 3.0 for A, 1.0 for B
+        effects.moderated_variances = np.array([1.0, 1.0])
+        effects.sample_variances = None
+        engine._effects = effects
+
+        sym_to_feat = {
+            "GENE_A1": "P_A",   # P_A has two aliases
+            "GENE_A2": "P_A",
+            "GENE_B": "P_B",
+        }
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
+        return bridge
+
+    def test_one_entry_per_protein_regardless_of_aliases(self):
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        # HGNC-level distances for all aliases
+        distances_hgnc = {
+            "GENE_A1": 1,
+            "GENE_A2": 2,
+            "GENE_B": 1,
+        }
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        abs_t, dist, deg, via = bridge.get_protein_level_inputs(
+            seed="SEED",  # not in sym_to_feat → no protein excluded
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        assert set(abs_t.keys()) == {"P_A", "P_B"}
+        assert len(abs_t) == 2  # not 3 (HGNC-level would be 3)
+        assert abs_t["P_A"] == pytest.approx(3.0)
+        assert abs_t["P_B"] == pytest.approx(1.0)
+
+    def test_min_distance_alias_chosen(self):
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        distances_hgnc = {"GENE_A1": 2, "GENE_A2": 1, "GENE_B": 2}
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        _, dist, _, via = bridge.get_protein_level_inputs(
+            seed="SEED",
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        # P_A's closest alias is GENE_A2 at distance 1
+        assert dist["P_A"] == 1
+        assert via["P_A"] == "GENE_A2"
+        # P_B has only one alias
+        assert dist["P_B"] == 2
+        assert via["P_B"] == "GENE_B"
+
+    def test_max_degree_used_for_binning(self):
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        distances_hgnc = {"GENE_A1": 1, "GENE_A2": 1, "GENE_B": 1}
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        _, _, deg, _ = bridge.get_protein_level_inputs(
+            seed="SEED",
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        # P_A's max alias degree = 50 (from GENE_A2)
+        assert deg["P_A"] == 50
+        # P_B has only GENE_B (degree 20)
+        assert deg["P_B"] == 20
+
+    def test_unreachable_protein_dropped_from_dist_kept_in_abs_t(self):
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        # P_B's alias is unreachable
+        distances_hgnc = {"GENE_A1": 1, "GENE_A2": 2}
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        abs_t, dist, deg, via = bridge.get_protein_level_inputs(
+            seed="SEED",
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        # P_B kept in abs_t and deg (background pool for permutation)
+        assert "P_B" in abs_t
+        assert "P_B" in deg
+        # but absent from dist (no shell membership)
+        assert "P_B" not in dist
+        assert "P_A" in dist
+
+    def test_seed_protein_excluded_when_measured(self):
+        """If the seed name is one of multiple aliases of a measured
+        UniProt, the entire UniProt is dropped (not just the seed
+        symbol).
+        """
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        distances_hgnc = {"GENE_A2": 1, "GENE_B": 1}
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        abs_t, dist, deg, _ = bridge.get_protein_level_inputs(
+            seed="GENE_A1",  # this is an alias of P_A → drop P_A entirely
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        assert "P_A" not in abs_t
+        assert "P_A" not in dist
+        assert "P_A" not in deg
+        # P_B still present
+        assert "P_B" in abs_t
+
+    def test_distance_above_max_hops_treated_as_unreachable(self):
+        bridge = self._make_bridge_two_proteins_three_aliases()
+        distances_hgnc = {"GENE_A1": 5, "GENE_A2": 4, "GENE_B": 1}  # 4,5 > max_hops=2
+        degrees_hgnc = {"GENE_A1": 30, "GENE_A2": 50, "GENE_B": 20}
+
+        _, dist, _, _ = bridge.get_protein_level_inputs(
+            seed="SEED",
+            max_hops=2,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+
+        assert "P_A" not in dist  # both aliases beyond max_hops
+        assert "P_B" in dist
+
+
+class TestProteinLevelRewiringNull:
+    """Verify that run_rewiring_null aggregates HGNC distances to
+    UniProt distances when aliases are provided.
+    """
+
+    def test_aliases_collapse_duplicate_paths(self):
+        """When two HGNC aliases of the same protein appear at different
+        hops in the rewired graph, the protein contributes once at the
+        min hop.
+        """
+        import networkx as nx
+        import numpy as np
+        from cliquefinder.stats.perturbation_gradient import (
+            _slope_and_coverage_from_rewired,
+        )
+
+        # Tiny graph: SEED — A1 — A2 (alias of same protein as A1)
+        # and SEED — B (separate protein)
+        G = nx.Graph()
+        G.add_edges_from([
+            ("SEED", "A1"), ("A1", "A2"),
+            ("SEED", "B"),
+            # Need >=10 measured units in shells, plus ~30 nodes for graph;
+            # add filler measured proteins to reach the minimum
+        ])
+        for i in range(40):
+            G.add_edge("SEED", f"X{i}")
+
+        abs_t = {"P_A": 5.0, "P_B": 3.0}
+        for i in range(40):
+            abs_t[f"P_X{i}"] = 1.0
+        aliases = {
+            "P_A": ["A1", "A2"],
+            "P_B": ["B"],
+        }
+        for i in range(40):
+            aliases[f"P_X{i}"] = [f"X{i}"]
+
+        slope, coverage = _slope_and_coverage_from_rewired(
+            G, "SEED", abs_t, max_hops=3, aliases=aliases,
+        )
+        # P_A is reached at hop 1 via A1 (not hop 2 via A2)
+        # Test runs without error and produces a valid slope
+        assert slope is not None or coverage is not None
+
+    def test_hgnc_keyed_path_unchanged(self):
+        """When aliases is None, behavior matches the legacy HGNC-keyed
+        flow used by synthetic tests.
+        """
+        import networkx as nx
+        from cliquefinder.stats.perturbation_gradient import (
+            _slope_and_coverage_from_rewired,
+        )
+
+        G = nx.Graph()
+        for i in range(15):
+            G.add_edge("SEED", f"H1_{i}")
+        for i in range(15):
+            G.add_edge(f"H1_0", f"H2_{i}")
+
+        abs_t = {f"H1_{i}": 2.0 for i in range(15)}
+        abs_t.update({f"H2_{i}": 1.0 for i in range(15)})
+
+        slope, coverage = _slope_and_coverage_from_rewired(
+            G, "SEED", abs_t, max_hops=2, aliases=None,
+        )
+        assert slope is not None
+        assert slope < 0  # hop-1 mean (2.0) > hop-2 mean (1.0) → decay

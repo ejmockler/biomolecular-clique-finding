@@ -443,12 +443,18 @@ class DiscoveryBridge:
         symbols can map to the same UniProt feature ID — isoforms, gene
         aliases, ambiguous mappings).  A reverse map ``feat_to_sym`` would
         collapse this and silently drop >80% of measurable symbols, which
-        breaks downstream shell construction in
-        :func:`run_gradient_test` because INDRA target names may not match
-        the single chosen symbol per feature.
+        breaks INDRA-side lookups for adjacency/path queries that need
+        every alias to resolve.
 
         We instead build ``fid_to_t`` once from the engine, then key the
         result by *every* symbol that maps to a measured feature.
+
+        **Note for downstream gradient/null users:** this output is
+        gene-symbol-keyed and inflates each protein measurement across
+        its aliases.  For protein-level analysis (the correct unit, since
+        the proteomics measures one value per UniProt), use
+        :meth:`get_abs_t_per_feature` and
+        :meth:`get_protein_level_inputs` instead.
         """
         mod_t = self._get_moderated_t()
         idx_to_feat = {idx: fid for fid, idx in self.engine.gene_to_idx.items()}
@@ -464,6 +470,141 @@ class DiscoveryBridge:
             for sym, fid in self.sym_to_feat.items()
             if fid in fid_to_t
         }
+
+    def get_abs_t_per_feature(self) -> dict[str, float]:
+        """Return ``{feature_id: |t|}`` — one entry per measured protein.
+
+        Unlike :meth:`get_abs_t_stats`, this does NOT expand across HGNC
+        aliases.  The proteomics measures one |t| per UniProt accession;
+        this method returns exactly that, keyed by the engine's feature
+        ID.  Used by protein-level gradient analyses.
+        """
+        mod_t = self._get_moderated_t()
+        idx_to_feat = {idx: fid for fid, idx in self.engine.gene_to_idx.items()}
+
+        fid_to_t: dict[str, float] = {}
+        for idx in range(len(mod_t)):
+            fid = idx_to_feat.get(idx)
+            if fid is not None:
+                fid_to_t[fid] = float(abs(mod_t[idx]))
+        return fid_to_t
+
+    def _build_feat_to_syms(self) -> dict[str, list[str]]:
+        """Reverse ``sym_to_feat``: ``{feature_id: [hgnc_symbol, ...]}``."""
+        feat_to_syms: dict[str, list[str]] = {}
+        for sym, fid in self.sym_to_feat.items():
+            feat_to_syms.setdefault(fid, []).append(sym)
+        return feat_to_syms
+
+    def get_protein_level_inputs(
+        self,
+        seed: str,
+        max_hops: int,
+        distances_hgnc: dict[str, int],
+        degrees_hgnc: dict[str, int],
+    ) -> tuple[
+        dict[str, float],
+        dict[str, int],
+        dict[str, int],
+        dict[str, str],
+    ]:
+        """Aggregate HGNC-keyed INDRA query results to UniProt-level.
+
+        The proteomics measures one |t| per UniProt accession (~3,264 in
+        the AnswerALS data).  UniProt → HGNC is many-to-many; the naive
+        HGNC-keyed gradient treats each alias as an independent
+        observation, which (a) inflates shell n by ~5×, (b) creates
+        within-shell correlation in the observed graph that the null
+        decorrelates by shuffling aliases independently, biasing toward
+        rejection.
+
+        This method aggregates aliases so each protein contributes once.
+        For each measured UniProt:
+
+        - ``|t|`` is the engine's protein-level statistic (no alias
+          duplication).
+        - **Distance** to seed = min over aliases that have a finite
+          distance entry within ``max_hops``.  Proteins with no
+          reachable alias are dropped from ``dist_prot`` but kept in
+          ``abs_t_prot`` / ``deg_prot`` so they participate in
+          degree-binned permutation as background.
+        - **Degree** (for binning) = max over all aliases.  Captures
+          the protein's hub-status ceiling — the relevant confound is
+          "hubs are well-studied / well-curated", and the most-connected
+          alias is what makes a protein hub-like in INDRA.
+
+        The seed's UniProt (if the seed is itself measured) is excluded
+        from all outputs.  Looking up via ``self.sym_to_feat[seed]``
+        handles the case where the seed name is one of multiple aliases
+        of a single measured protein (e.g., VCL → P18206; we drop
+        P18206 and any other aliases of P18206).
+
+        Parameters
+        ----------
+        seed
+            Seed gene symbol (HGNC).  May or may not be in
+            ``sym_to_feat``; if absent, no protein is excluded.
+        max_hops
+            Distances strictly greater than this are treated as
+            unreachable (clipped, not used for shell membership).
+        distances_hgnc
+            ``{hgnc_symbol: distance}`` from
+            :func:`query_shortest_paths_batched`.  Only contains
+            reachable symbols (within max_hops on the query side).
+        degrees_hgnc
+            ``{hgnc_symbol: degree}`` from
+            :func:`query_gene_degrees_batched`.  Should cover every
+            HGNC alias used as a target.
+
+        Returns
+        -------
+        abs_t_prot : dict[feature_id, float]
+            UniProt-keyed |t| for every measured protein except seed's.
+        dist_prot : dict[feature_id, int]
+            UniProt-keyed min-distance via best alias.  Subset of
+            ``abs_t_prot`` keys: only reachable proteins.
+        deg_prot : dict[feature_id, int]
+            UniProt-keyed max-degree across aliases.  Same key set as
+            ``abs_t_prot``.
+        via_alias : dict[feature_id, str]
+            UniProt → HGNC alias used for the min-distance assignment.
+            Diagnostic only; subset of ``dist_prot`` keys.
+        """
+        feat_to_syms = self._build_feat_to_syms()
+        fid_to_t = self.get_abs_t_per_feature()
+
+        # Seed protein: if seed is measured, drop its UniProt entirely
+        seed_fid = self.sym_to_feat.get(seed)
+
+        abs_t_prot: dict[str, float] = {}
+        dist_prot: dict[str, int] = {}
+        deg_prot: dict[str, int] = {}
+        via_alias: dict[str, str] = {}
+
+        for fid, aliases in feat_to_syms.items():
+            if seed_fid is not None and fid == seed_fid:
+                continue
+            if fid not in fid_to_t:
+                continue  # protein not in the engine (no t-stat)
+
+            abs_t_prot[fid] = fid_to_t[fid]
+
+            # Degree: max across aliases (missing alias → 0)
+            alias_degs = [degrees_hgnc.get(a, 0) for a in aliases]
+            deg_prot[fid] = max(alias_degs) if alias_degs else 0
+
+            # Distance: min over reachable aliases within max_hops
+            reachable = [
+                (a, distances_hgnc[a])
+                for a in aliases
+                if a in distances_hgnc and 1 <= distances_hgnc[a] <= max_hops
+            ]
+            if reachable:
+                best_alias, best_dist = min(reachable, key=lambda ad: ad[1])
+                dist_prot[fid] = best_dist
+                via_alias[fid] = best_alias
+
+        return abs_t_prot, dist_prot, deg_prot, via_alias
 
     def build_neighborhood_adjacency(
         self,
@@ -704,17 +845,41 @@ class DiscoveryBridge:
             "result.stratified will be None."
         )
 
-        abs_t = self.get_abs_t_stats()
-        # Exclude the seed itself — Neo4j's shortestPath refuses paths between
-        # identical start and end nodes (DatabaseError 51N23). Self-distance
-        # would be 0 anyway, which is outside our 1 ≤ d ≤ max_hops shell range.
-        measured_symbols = sorted(s for s in abs_t.keys() if s != seed)
+        # We query INDRA at HGNC-symbol level (the graph's native
+        # vertex identity) but aggregate to UniProt-level for the
+        # gradient itself.  Aliases of the same protein are NOT
+        # independent observations.
+        all_hgnc = sorted(self.sym_to_feat.keys())
+        # Exclude the seed gene from the target list — Neo4j's
+        # shortestPath refuses paths between identical start and end
+        # nodes (DatabaseError 51N23), and self-distance is 0 anyway
+        # (outside our 1 ≤ d ≤ max_hops shell range).  We also exclude
+        # any other HGNC alias of the seed's UniProt: if the seed is
+        # measured (e.g., VCL → P18206), other aliases of P18206 would
+        # both have valid Neo4j distances but would all be the seed
+        # protein, which we drop from the analysis entirely.
+        seed_fid = self.sym_to_feat.get(seed)
+        if seed_fid is not None:
+            seed_aliases = {
+                s for s, fid in self.sym_to_feat.items() if fid == seed_fid
+            }
+        else:
+            seed_aliases = {seed}
+        measured_symbols = [s for s in all_hgnc if s not in seed_aliases]
 
-        # Cache key: queries are invariant under contrast, only |t| changes
-        cache_key = (seed, max_hops, hash(tuple(measured_symbols)))
+        # Cache key: HGNC-level queries are invariant under contrast and
+        # under the protein-level aggregation (which is deterministic
+        # given the alias map).  Cache holds raw HGNC-keyed distances
+        # and degrees; aggregation runs each call.
+        cache_key = (
+            "hgnc_dist_deg",
+            seed_fid or seed,
+            max_hops,
+            hash(tuple(measured_symbols)),
+        )
         cached = self._graph_query_cache.get(cache_key)
         if cached is not None:
-            distances, degrees = cached
+            distances_hgnc, degrees_hgnc = cached
             logger.info(
                 "Using cached shortest paths and degrees (seed=%s, max_hops=%d)",
                 seed, max_hops,
@@ -722,10 +887,11 @@ class DiscoveryBridge:
         else:
             cogex = self._indra_source.client
             logger.info(
-                "Querying server-side shortest paths from %s to %d measured genes",
+                "Querying server-side shortest paths from %s to %d HGNC aliases "
+                "(measured proteins, alias-expanded)",
                 seed, len(measured_symbols),
             )
-            distances = query_shortest_paths_batched(
+            distances_hgnc = query_shortest_paths_batched(
                 cogex_client=cogex,
                 seed_gene_name=seed,
                 target_gene_names=measured_symbols,
@@ -734,33 +900,48 @@ class DiscoveryBridge:
                 verbose=True,
             )
 
-            logger.info("Querying graph degrees for %d measured genes", len(measured_symbols))
-            degrees = query_gene_degrees_batched(
+            logger.info("Querying graph degrees for %d HGNC aliases", len(measured_symbols))
+            degrees_hgnc = query_gene_degrees_batched(
                 cogex_client=cogex,
                 gene_names=measured_symbols,
                 batch_size=500,
             )
-            self._graph_query_cache[cache_key] = (distances, degrees)
+            self._graph_query_cache[cache_key] = (distances_hgnc, degrees_hgnc)
 
+        # Aggregate HGNC-keyed query results to UniProt-keyed inputs.
+        # One observation per protein measurement.
+        abs_t_prot, dist_prot, deg_prot, via_alias = self.get_protein_level_inputs(
+            seed=seed,
+            max_hops=max_hops,
+            distances_hgnc=distances_hgnc,
+            degrees_hgnc=degrees_hgnc,
+        )
+        n_proteins_measured = len(abs_t_prot)
+        n_proteins_reachable = len(dist_prot)
+        logger.info(
+            "Protein-level inputs: %d measured proteins (%d reachable within %d hops)",
+            n_proteins_measured, n_proteins_reachable, max_hops,
+        )
+
+        # Build shells keyed by UniProt feature_id
         shells: dict[int, set[str]] = {}
-        for sym, d in distances.items():
-            if 1 <= d <= max_hops and sym in abs_t:
-                shells.setdefault(d, set()).add(sym)
+        for fid, d in dist_prot.items():
+            shells.setdefault(d, set()).add(fid)
 
         if not shells:
             raise ValueError(
-                f"No measured genes within {max_hops} hops of '{seed}'."
+                f"No measured proteins within {max_hops} hops of '{seed}'."
             )
 
         return run_gradient_test(
             adjacency={},  # unused when precomputed_shells is provided
-            abs_t_stats=abs_t,
+            abs_t_stats=abs_t_prot,
             seed=seed,
             max_hops=max_hops,
             n_permutations=n_permutations,
             rng_seed=rng_seed,
             precomputed_shells=shells,
-            graph_degrees=degrees,
+            graph_degrees=deg_prot,
         )
 
     def run_rewiring_null(
@@ -829,7 +1010,24 @@ class DiscoveryBridge:
 
         self._ensure_indra()
 
-        abs_t = self.get_abs_t_stats()
+        # Protein-level inputs: |t| keyed by UniProt feature_id (no
+        # alias inflation), with an aliases map so the per-iter BFS in
+        # the inner loop can aggregate HGNC distances back to UniProts.
+        abs_t_prot = self.get_abs_t_per_feature()
+        feat_to_syms = self._build_feat_to_syms()
+        # Drop the seed protein (if measured) — same logic as the
+        # gradient path: VCL → P18206 means we exclude P18206 entirely.
+        seed_fid = self.sym_to_feat.get(seed)
+        if seed_fid is not None:
+            abs_t_prot = {fid: t for fid, t in abs_t_prot.items() if fid != seed_fid}
+            feat_to_syms = {
+                fid: aliases for fid, aliases in feat_to_syms.items()
+                if fid != seed_fid
+            }
+        # The aliases map is restricted to measured proteins so the
+        # rewiring null only ever does BFS on units we can score.
+        aliases = {fid: feat_to_syms.get(fid, []) for fid in abs_t_prot}
+
         if subgraph_max_hops is None:
             subgraph_max_hops = max_hops
 
@@ -882,7 +1080,7 @@ class DiscoveryBridge:
         return run_rewiring_null(
             graph=G,
             seed=seed,
-            abs_t_stats=abs_t,
+            abs_t_stats=abs_t_prot,
             observed_slope=observed_slope,
             observed_coverage=observed_coverage,
             n_rewires=n_rewires,
@@ -890,6 +1088,7 @@ class DiscoveryBridge:
             rng_seed=rng_seed,
             max_swaps_iter0=max_swaps_iter0,
             verbose=verbose,
+            aliases=aliases,
         )
 
     def close(self):
