@@ -146,13 +146,13 @@ Examples:
 """
 
 # Statement type mappings
-ACTIVATION_TYPES = {"IncreaseAmount", "Activation"}
+ACTIVATION_TYPES: frozenset[str] = frozenset({"IncreaseAmount", "Activation"})
 """INDRA statement types representing transcriptional activation."""
 
-REPRESSION_TYPES = {"DecreaseAmount", "Inhibition"}
+REPRESSION_TYPES: frozenset[str] = frozenset({"DecreaseAmount", "Inhibition"})
 """INDRA statement types representing transcriptional repression."""
 
-ALL_REGULATORY_TYPES = ACTIVATION_TYPES | REPRESSION_TYPES
+ALL_REGULATORY_TYPES: frozenset[str] = ACTIVATION_TYPES | REPRESSION_TYPES
 """All INDRA statement types for TF regulatory relationships.
 
 .. warning:: **Statement type conflation**

@@ -842,36 +842,174 @@ class TestProteinLevelRewiringNull:
 
 
 class TestRegulatoryEdgeScope:
-    """The bridge defaults INDRA queries to ``ALL_REGULATORY_TYPES`` —
-    only the four canonical regulatory statements (Activation,
-    Inhibition, IncreaseAmount, DecreaseAmount).  This is the
-    architectural commitment from Wave 24: graph proximity is computed
-    over edges that propagate perturbation, not over co-mention or
-    binding edges.
+    """All gradient-pipeline graph queries operate over
+    ``ALL_REGULATORY_TYPES`` — the four canonical regulatory INDRA
+    statements (Activation, Inhibition, IncreaseAmount, DecreaseAmount).
+    This is the Wave 24 architectural commitment, enforced by
+    absence-of-parameter: the gradient layer no longer accepts a
+    ``stmt_types`` override.
+
+    The tripwires below catch the regressions that matter:
+    - constants drifting (a future engineer adding Phosphorylation to
+      ACTIVATION_TYPES — caught by content assertions, not just isinstance);
+    - configurability sneaking back in (a future engineer reintroducing
+      ``stmt_types=...`` with an `ALL_REGULATORY_TYPES` default — caught
+      by signature-absence checks, not by behavior);
+    - cypher dropping the filter while keeping the binding (a future
+      engineer removing ``WHERE rel.stmt_type IN $stmt_types`` —
+      caught by query-shape assertions).
     """
 
-    def test_bridge_defaults_to_regulatory_types(self):
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+    # ---- Constants are pinned by content, not just by type --------------
 
-        engine = MagicMock()
-        engine.gene_to_idx = {"P1": 0}
-        bridge = DiscoveryBridge(engine, {"G1": "P1"}, env_file=None)
-        assert set(bridge.stmt_types) == ALL_REGULATORY_TYPES
-
-    def test_bridge_accepts_explicit_stmt_types(self):
-        engine = MagicMock()
-        engine.gene_to_idx = {"P1": 0}
-        bridge = DiscoveryBridge(
-            engine, {"G1": "P1"}, env_file=None,
-            stmt_types=["Phosphorylation"],
+    def test_regulatory_constants_are_immutable_and_pinned(self):
+        from cliquefinder.knowledge.cogex import (
+            ACTIVATION_TYPES,
+            ALL_REGULATORY_TYPES,
+            REPRESSION_TYPES,
         )
-        assert bridge.stmt_types == ["Phosphorylation"]
+
+        assert isinstance(ACTIVATION_TYPES, frozenset)
+        assert isinstance(REPRESSION_TYPES, frozenset)
+        assert isinstance(ALL_REGULATORY_TYPES, frozenset)
+
+        # Content tripwire: any drift here is a methodology change and
+        # must be a deliberate test update, not a silent edit.
+        assert ACTIVATION_TYPES == frozenset({"IncreaseAmount", "Activation"})
+        assert REPRESSION_TYPES == frozenset({"DecreaseAmount", "Inhibition"})
+        assert ALL_REGULATORY_TYPES == frozenset({
+            "IncreaseAmount", "Activation",
+            "DecreaseAmount", "Inhibition",
+        })
+
+    # ---- Absence-of-parameter tripwires ---------------------------------
+
+    def test_bridge_constructor_does_not_accept_stmt_types(self):
+        """The Wave 24 commitment is enforced by absence of
+        configurability.  If a future engineer reintroduces
+        ``stmt_types=...`` (even with a regulatory default), this test
+        is the only signal short of reading the diff.
+        """
+        import inspect
+
+        params = inspect.signature(DiscoveryBridge.__init__).parameters
+        assert "stmt_types" not in params, (
+            "DiscoveryBridge.__init__ must not accept stmt_types — "
+            "the gradient pipeline is committed to ALL_REGULATORY_TYPES."
+        )
+
+    def test_network_proximity_helpers_do_not_accept_stmt_types(self):
+        import inspect
+        from cliquefinder.stats.network_proximity import (
+            extract_local_subgraph_edges,
+            query_gene_degrees_batched,
+            query_shortest_paths_batched,
+        )
+
+        for fn in (
+            query_shortest_paths_batched,
+            query_gene_degrees_batched,
+            extract_local_subgraph_edges,
+        ):
+            params = inspect.signature(fn).parameters
+            assert "stmt_types" not in params, (
+                f"{fn.__name__} must not accept stmt_types — "
+                "the gradient pipeline is committed to ALL_REGULATORY_TYPES."
+            )
+
+    # ---- Cypher binding + filter tripwires ------------------------------
+
+    def test_query_shortest_paths_pins_regulatory_scope(self):
+        """``query_shortest_paths_batched`` binds
+        ``stmt_types=list(ALL_REGULATORY_TYPES)`` AND its cypher
+        actually consumes that binding via ``WHERE ALL(rel ...
+        rel.stmt_type IN $stmt_types)``.  Both are required — passing
+        a binding that the cypher never reads would silently widen the
+        scope back to all of indra_rel.
+        """
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            query_shortest_paths_batched,
+        )
+
+        captured: dict = {}
+
+        def fake_execute(query, **params):
+            captured["query"] = query
+            captured["params"] = params
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        query_shortest_paths_batched(
+            cogex_client=client,
+            seed_gene_name="SEED",
+            target_gene_names=["A"],
+            max_hops=2,
+            verbose=False,
+        )
+        assert set(captured["params"]["stmt_types"]) == ALL_REGULATORY_TYPES
+        assert "rel.stmt_type IN $stmt_types" in captured["query"]
+
+    def test_query_gene_degrees_pins_regulatory_scope(self):
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            query_gene_degrees_batched,
+        )
+
+        captured: dict = {}
+
+        def fake_execute(query, **params):
+            captured["query"] = query
+            captured["params"] = params
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        query_gene_degrees_batched(
+            cogex_client=client,
+            gene_names=["A"],
+        )
+        assert set(captured["params"]["stmt_types"]) == ALL_REGULATORY_TYPES
+        assert "r.stmt_type IN $stmt_types" in captured["query"]
+
+    def test_extract_local_subgraph_pins_regulatory_scope(self):
+        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
+        from cliquefinder.stats.network_proximity import (
+            extract_local_subgraph_edges,
+        )
+
+        captured: dict = {}
+
+        def fake_execute(query, **params):
+            captured["query"] = query
+            captured["params"] = params
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+
+        extract_local_subgraph_edges(
+            cogex_client=client,
+            seed_gene_name="SEED",
+            max_hops=2,
+        )
+        assert set(captured["params"]["stmt_types"]) == ALL_REGULATORY_TYPES
+        assert "r.stmt_type IN $stmt_types" in captured["query"]
+
+    # ---- End-to-end: bridge propagates scope through both query types ----
 
     @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
-    def test_shortest_paths_query_filters_by_stmt_types(self, mock_ensure):
-        """Bridge passes its ``stmt_types`` (default regulatory) into
-        every Cypher query — the path-finder must restrict to
-        regulatory edges.
+    def test_bridge_passes_regulatory_scope_to_query_calls(self, mock_ensure):
+        """End-to-end through the bridge: when
+        ``run_gradient_via_shortest_paths`` runs, every Cypher
+        invocation receives ``ALL_REGULATORY_TYPES`` as its
+        ``stmt_types`` param.  Routes the bridge's single Neo4j client
+        to the two query types by **param shape** (shortest-paths
+        carries ``seed_name``; degrees does not), avoiding coupling to
+        the cypher string.
         """
         import numpy as np
         from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
@@ -896,34 +1034,50 @@ class TestRegulatoryEdgeScope:
         bridge._indra_source = MagicMock()
         bridge._indra_source.client = MagicMock()
 
-        with patch(
-            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
-        ) as mock_paths, patch(
-            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
-        ) as mock_degrees:
-            mock_paths.return_value = {
-                **{f"G{i}": 1 for i in range(10)},
-                **{f"G{i}": 2 for i in range(10, 30)},
-            }
-            mock_degrees.return_value = {f"G{i}": (10 - i % 5) for i in range(50)}
+        # Param-shape discriminator: shortestPath calls carry a
+        # ``seed_name`` kwarg; degrees calls do not.  Decoupled from
+        # the cypher string itself.
+        cypher_calls: list[dict] = []
 
-            bridge.run_gradient_via_shortest_paths(
-                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+        def routed_execute(query, **params):
+            cypher_calls.append({"query": query, "params": params})
+            if "seed_name" in params:
+                # 10 at distance 1, 20 at distance 2 — clears the n≥10
+                # floor in run_gradient_test.
+                return (
+                    [[f"G{i}", 1] for i in range(10)]
+                    + [[f"G{i}", 2] for i in range(10, 30)]
+                )
+            return [[f"G{i}", 10 - (i % 5)] for i in range(n_genes)]
+
+        bridge._indra_source.client._execute_query = routed_execute
+
+        bridge.run_gradient_via_shortest_paths(
+            seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
+        )
+
+        # Every cypher call must carry the regulatory scope binding.
+        stmt_type_bindings = [
+            c["params"].get("stmt_types") for c in cypher_calls
+        ]
+        assert len(cypher_calls) >= 2, (
+            f"Expected ≥2 cypher calls (paths + degrees); got {len(cypher_calls)}"
+        )
+        for binding in stmt_type_bindings:
+            assert binding is not None, "every cypher call must bind stmt_types"
+            assert set(binding) == ALL_REGULATORY_TYPES, (
+                f"scope drift: {binding} != ALL_REGULATORY_TYPES"
             )
 
-        # Bridge should have passed ALL_REGULATORY_TYPES (as a list) to
-        # both queries.
-        paths_kwargs = mock_paths.call_args.kwargs
-        degrees_kwargs = mock_degrees.call_args.kwargs
-        assert "stmt_types" in paths_kwargs
-        assert "stmt_types" in degrees_kwargs
-        assert set(paths_kwargs["stmt_types"]) == ALL_REGULATORY_TYPES
-        assert set(degrees_kwargs["stmt_types"]) == ALL_REGULATORY_TYPES
+    # ---- Cache key behavior: scope is invariant, so cache hits work ----
 
     @patch("cliquefinder.stats.discovery_bridge.DiscoveryBridge._ensure_indra")
-    def test_explicit_stmt_types_overrides_default(self, mock_ensure):
-        """Constructor stmt_types override the default and propagate
-        to network query calls.
+    def test_bridge_caches_graph_queries_across_calls(self, mock_ensure):
+        """The Wave 24 cache-key simplification (dropping
+        ``stmt_types_key``) is safe only because the edge scope is
+        invariant across the bridge's lifetime.  This test makes the
+        invariant load-bearing: a second call with the same args must
+        be a cache hit (no new Neo4j round trips).
         """
         import numpy as np
 
@@ -938,101 +1092,37 @@ class TestRegulatoryEdgeScope:
         engine._effects = effects
 
         sym_to_feat = {f"G{i}": f"P{i:05d}" for i in range(n_genes)}
-        custom_types = ["Activation", "Phosphorylation"]
-        bridge = DiscoveryBridge(
-            engine, sym_to_feat, env_file=None, stmt_types=custom_types,
-        )
+        bridge = DiscoveryBridge(engine, sym_to_feat, env_file=None)
         bridge._indra_source = MagicMock()
         bridge._indra_source.client = MagicMock()
 
-        with patch(
-            "cliquefinder.stats.network_proximity.query_shortest_paths_batched"
-        ) as mock_paths, patch(
-            "cliquefinder.stats.network_proximity.query_gene_degrees_batched"
-        ) as mock_degrees:
-            mock_paths.return_value = {
-                **{f"G{i}": 1 for i in range(10)},
-                **{f"G{i}": 2 for i in range(10, 30)},
-            }
-            mock_degrees.return_value = {f"G{i}": 5 for i in range(50)}
+        call_count = [0]
 
-            bridge.run_gradient_via_shortest_paths(
-                seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
-            )
+        def counting_execute(query, **params):
+            call_count[0] += 1
+            if "seed_name" in params:
+                return (
+                    [[f"G{i}", 1] for i in range(10)]
+                    + [[f"G{i}", 2] for i in range(10, 30)]
+                )
+            return [[f"G{i}", 10 - (i % 5)] for i in range(n_genes)]
 
-        paths_kwargs = mock_paths.call_args.kwargs
-        assert paths_kwargs["stmt_types"] == custom_types
+        bridge._indra_source.client._execute_query = counting_execute
 
-    def test_query_shortest_paths_default_is_regulatory(self):
-        """The standalone network_proximity function defaults to
-        ALL_REGULATORY_TYPES too — so a caller that bypasses the bridge
-        still gets the right scope.
-        """
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-        from cliquefinder.stats.network_proximity import (
-            query_shortest_paths_batched,
+        # First call: must hit Neo4j for paths + degrees.
+        bridge.run_gradient_via_shortest_paths(
+            seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
         )
+        first_call_count = call_count[0]
+        assert first_call_count >= 2
 
-        captured = {}
-
-        def fake_execute(query, **params):
-            captured.update(params)
-            return []
-
-        client = MagicMock()
-        client._execute_query = fake_execute
-
-        query_shortest_paths_batched(
-            cogex_client=client,
-            seed_gene_name="SEED",
-            target_gene_names=["A"],
-            max_hops=2,
-            verbose=False,
+        # Second identical call: must be a cache hit — zero new
+        # Neo4j round trips.
+        bridge.run_gradient_via_shortest_paths(
+            seed="SEED", max_hops=2, n_permutations=49, rng_seed=42,
         )
-        assert "stmt_types" in captured
-        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES
-
-    def test_query_gene_degrees_default_is_regulatory(self):
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-        from cliquefinder.stats.network_proximity import (
-            query_gene_degrees_batched,
+        second_call_count = call_count[0] - first_call_count
+        assert second_call_count == 0, (
+            f"cache miss on identical 2nd call ({second_call_count} new "
+            "_execute_query invocations); cache key likely fragmented"
         )
-
-        captured = {}
-
-        def fake_execute(query, **params):
-            captured.update(params)
-            return []
-
-        client = MagicMock()
-        client._execute_query = fake_execute
-
-        query_gene_degrees_batched(
-            cogex_client=client,
-            gene_names=["A"],
-        )
-        assert "stmt_types" in captured
-        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES
-
-    def test_extract_local_subgraph_default_is_regulatory(self):
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-        from cliquefinder.stats.network_proximity import (
-            extract_local_subgraph_edges,
-        )
-
-        captured = {}
-
-        def fake_execute(query, **params):
-            captured.update(params)
-            return []
-
-        client = MagicMock()
-        client._execute_query = fake_execute
-
-        extract_local_subgraph_edges(
-            cogex_client=client,
-            seed_gene_name="SEED",
-            max_hops=2,
-        )
-        assert "stmt_types" in captured
-        assert set(captured["stmt_types"]) == ALL_REGULATORY_TYPES

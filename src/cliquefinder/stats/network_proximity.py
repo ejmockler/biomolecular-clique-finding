@@ -5,6 +5,16 @@ instead of binary gene set membership. Each produces a single p-value,
 eliminating the set-size / null-width problem that plagues competitive
 enrichment tests on large gene sets.
 
+Edge scope
+----------
+All graph queries below operate over the **regulatory subgraph**: only
+INDRA statement types in :data:`ALL_REGULATORY_TYPES <cliquefinder.knowledge.cogex.ALL_REGULATORY_TYPES>`
+(Activation, Inhibition, IncreaseAmount, DecreaseAmount) contribute.
+Complex co-mention, Phosphorylation, and other statement types do not.
+This is a research methodology commitment: perturbation propagates over
+edges that imply directional regulation, not over co-mention or binding
+events.
+
 Tests
 -----
 1. **Proximity decay**: Shortest path distance from seed gene predicts
@@ -40,6 +50,12 @@ import pandas as pd
 import scipy.sparse as sp
 from numpy.typing import NDArray
 from scipy import stats as sp_stats
+
+from cliquefinder.knowledge.cogex import (
+    ACTIVATION_TYPES,
+    ALL_REGULATORY_TYPES,
+    REPRESSION_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -448,12 +464,7 @@ def run_reverse_causal_reasoning(
     -------
     ReverseCausalResult
     """
-    from cliquefinder.knowledge.cogex import (
-        ALL_REGULATORY_TYPES,
-        ACTIVATION_TYPES,
-        REPRESSION_TYPES,
-        INDRAModuleExtractor,
-    )
+    from cliquefinder.knowledge.cogex import INDRAModuleExtractor
 
     # 1. Split DE genes into up and down
     # Compute FDR if not already present (CSV restore may lack it)
@@ -720,20 +731,6 @@ def run_rwr_correlation_test(
 # ---------------------------------------------------------------------------
 
 
-# Edge type sets imported lazily to avoid circular imports
-_ACTIVATION_TYPES: set[str] | None = None
-_REPRESSION_TYPES: set[str] | None = None
-
-
-def _load_edge_types() -> tuple[set[str], set[str]]:
-    global _ACTIVATION_TYPES, _REPRESSION_TYPES
-    if _ACTIVATION_TYPES is None:
-        from cliquefinder.knowledge.cogex import ACTIVATION_TYPES, REPRESSION_TYPES
-        _ACTIVATION_TYPES = ACTIVATION_TYPES
-        _REPRESSION_TYPES = REPRESSION_TYPES
-    return _ACTIVATION_TYPES, _REPRESSION_TYPES
-
-
 def partition_signed_edges(
     edges: list[tuple[str, str, dict[str, Any]]],
 ) -> tuple[list[tuple[str, str, dict]], list[tuple[str, str, dict]]]:
@@ -749,14 +746,13 @@ def partition_signed_edges(
     (activation_edges, repression_edges)
         Two edge lists. Edges with types not in either set are excluded.
     """
-    act_types, rep_types = _load_edge_types()
     act_edges = []
     rep_edges = []
     for src, tgt, attrs in edges:
         st = attrs.get("stmt_type", "")
-        if st in act_types:
+        if st in ACTIVATION_TYPES:
             act_edges.append((src, tgt, attrs))
-        elif st in rep_types:
+        elif st in REPRESSION_TYPES:
             rep_edges.append((src, tgt, attrs))
     return act_edges, rep_edges
 
@@ -872,93 +868,13 @@ def compute_signed_rwr_scores(
 
 # ---------------------------------------------------------------------------
 # Graph extraction (from CoGExClient or MCP)
+#
+# All graph queries below restrict to ALL_REGULATORY_TYPES (Activation,
+# Inhibition, IncreaseAmount, DecreaseAmount).  This is the canonical
+# scope for the gradient pipeline: edges that propagate perturbation,
+# not Complex co-occurrence or co-mention.  The single source of truth
+# is the constant imported at module top.
 # ---------------------------------------------------------------------------
-
-
-def extract_indra_subgraph_edges(
-    cogex_client: Any,
-    seed_gene_id: str,
-    max_hops: int = 4,
-    min_evidence: int = 1,
-    stmt_types: list[str] | None = None,
-) -> list[tuple[str, str, dict[str, Any]]]:
-    """Extract INDRA indra_rel edges within max_hops of seed gene.
-
-    Uses BFS expansion from the seed node. Each edge is returned as
-    (source_name, target_name, {evidence_count, stmt_type}).
-
-    Parameters
-    ----------
-    cogex_client
-        An active CoGExClient instance. Uses ``_execute_query()`` for
-        retry/reconnect handling.
-    seed_gene_id
-        CURIE identifier for the seed gene (e.g. "hgnc:1667").
-    max_hops
-        Maximum path length from seed to include in subgraph.
-    min_evidence
-        Minimum evidence count for edges to include.
-    stmt_types
-        If provided, filter to these statement types.
-
-    Returns
-    -------
-    List of (source_name, target_name, edge_attrs) tuples.
-    """
-    stmt_filter = ""
-    if stmt_types:
-        stmt_filter = "AND r.stmt_type IN $stmt_types"
-
-    # Two-phase extraction: first find reachable nodes, then collect edges.
-    # This avoids the combinatorial explosion of variable-length path +
-    # edge matching in a single query on a 92M-node graph.
-    query = f"""
-    MATCH (seed:BioEntity {{id: $seed_id}})
-    CALL apoc.path.subgraphNodes(seed, {{
-        relationshipFilter: 'indra_rel',
-        maxLevel: {max_hops}
-    }}) YIELD node
-    WITH collect(node) AS nodes
-    UNWIND nodes AS a
-    MATCH (a)-[r:indra_rel]->(b)
-    WHERE b IN nodes
-      AND r.evidence_count >= $min_evidence
-      {stmt_filter}
-    RETURN DISTINCT
-      a.name AS source_name,
-      a.id AS source_id,
-      b.name AS target_name,
-      b.id AS target_id,
-      r.evidence_count AS evidence_count,
-      r.stmt_type AS stmt_type
-    """
-
-    params: dict[str, Any] = {
-        "seed_id": seed_gene_id,
-        "min_evidence": min_evidence,
-    }
-    if stmt_types:
-        params["stmt_types"] = stmt_types
-
-    rows = cogex_client._execute_query(query, **params)
-
-    edges = []
-    for row in rows:
-        # query_tx returns List[List[Any]] — positional access only
-        # Column order: source_name(0), source_id(1), target_name(2),
-        #               target_id(3), evidence_count(4), stmt_type(5)
-        edges.append((
-            row[0],  # source_name
-            row[2],  # target_name
-            {
-                "evidence_count": row[4],
-                "stmt_type": row[5],
-                "source_id": row[1],
-                "target_id": row[3],
-            },
-        ))
-
-    return edges
 
 
 def query_shortest_paths_batched(
@@ -968,53 +884,20 @@ def query_shortest_paths_batched(
     max_hops: int = 8,
     batch_size: int = 500,
     verbose: bool = True,
-    stmt_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Query Neo4j for shortest path distances from seed to target genes.
+    """Query Neo4j for shortest path distances under the regulatory scope.
 
     Uses server-side BFS via ``shortestPath`` — orders of magnitude faster
-    than extracting the full subgraph and computing BFS locally.
-
-    Edges are filtered by ``stmt_type`` so that the path-finder only
-    traverses edges with one of the listed types.  This is the regulatory
-    scope: by default the four canonical regulatory statements
-    (Activation, Inhibition, IncreaseAmount, DecreaseAmount).  Pass an
-    explicit ``stmt_types=None`` only for sensitivity analyses where the
-    full unfiltered ``indra_rel`` graph is wanted.
-
-    Parameters
-    ----------
-    cogex_client
-        An active CoGExClient instance.
-    seed_gene_name
-        Gene symbol of the seed (e.g. "C9orf72").
-    target_gene_names
-        List of gene symbols to find distances for.
-    max_hops
-        Maximum path length.
-    batch_size
-        Number of target genes per query batch.
-    verbose
-        Log per-batch progress.
-    stmt_types
-        INDRA statement types allowed for path edges.  Default
-        ``ALL_REGULATORY_TYPES`` from
-        :mod:`cliquefinder.knowledge.cogex` (Activation, Inhibition,
-        IncreaseAmount, DecreaseAmount).  Pass ``[]`` or override if you
-        want a different scope (e.g., include Phosphorylation).
+    than extracting the full subgraph and computing BFS locally.  The
+    path-finder only traverses edges whose ``stmt_type`` is in
+    ``ALL_REGULATORY_TYPES``.
 
     Returns
     -------
-    Dict of {gene_name: min_distance}. Only reachable genes are included.
-    Reachability is computed under the regulatory-edge subgraph: a gene
-    reachable in INDRA via Complex/co-mention edges but with no
-    regulatory path within ``max_hops`` will not appear.
+    Dict of ``{gene_name: min_distance}``.  Only genes reachable via a
+    regulatory path within ``max_hops`` are included; genes reachable
+    in INDRA only via Complex/co-mention edges will not appear.
     """
-    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-
-    if stmt_types is None:
-        stmt_types = list(ALL_REGULATORY_TYPES)
-
     distances: dict[str, int] = {}
     n_batches = (len(target_gene_names) + batch_size - 1) // batch_size
 
@@ -1033,7 +916,7 @@ def query_shortest_paths_batched(
             query,
             seed_name=seed_gene_name,
             gene_list=batch,
-            stmt_types=stmt_types,
+            stmt_types=list(ALL_REGULATORY_TYPES),
         )
         for row in rows:
             gene, dist = row[0], int(row[1])
@@ -1054,42 +937,21 @@ def query_gene_degrees_batched(
     cogex_client: Any,
     gene_names: list[str],
     batch_size: int = 500,
-    stmt_types: list[str] | None = None,
 ) -> dict[str, int]:
-    """Query Neo4j for ``indra_rel`` degree of each gene (undirected).
+    """Query Neo4j for each gene's regulatory degree (undirected).
 
     The degree counted here drives the degree-binning in the gradient's
     label-permutation null.  It must be computed under the same edge
     scope as the path-finding query — otherwise the bins place a
-    "regulatory-isolated" gene next to a "regulatory-hub" gene that
-    happens to have many co-mention edges, breaking the hub-bias
-    control.
-
-    By default, only edges whose ``stmt_type`` is in
-    ``ALL_REGULATORY_TYPES`` are counted.
-
-    Parameters
-    ----------
-    cogex_client
-        An active CoGExClient instance.
-    gene_names
-        Gene symbols to query.
-    batch_size
-        Genes per batch.
-    stmt_types
-        INDRA statement types to count.  Default
-        ``ALL_REGULATORY_TYPES`` (Activation, Inhibition,
-        IncreaseAmount, DecreaseAmount).
+    regulatory-isolated gene next to a regulatory-hub gene that happens
+    to have many co-mention edges, breaking the hub-bias control.
+    Restricting both queries to ``ALL_REGULATORY_TYPES`` keeps them
+    coherent.
 
     Returns
     -------
-    Dict of {gene_name: regulatory_degree}.
+    Dict of ``{gene_name: regulatory_degree}``.
     """
-    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-
-    if stmt_types is None:
-        stmt_types = list(ALL_REGULATORY_TYPES)
-
     degrees: dict[str, int] = {}
 
     for i in range(0, len(gene_names), batch_size):
@@ -1103,7 +965,9 @@ def query_gene_degrees_batched(
         RETURN gene, degree
         """
         rows = cogex_client._execute_query(
-            query, gene_list=batch, stmt_types=stmt_types,
+            query,
+            gene_list=batch,
+            stmt_types=list(ALL_REGULATORY_TYPES),
         )
         for row in rows:
             gene, deg = row[0], int(row[1])
@@ -1117,45 +981,21 @@ def extract_local_subgraph_edges(
     seed_gene_name: str,
     max_hops: int = 2,
     min_evidence: int = 1,
-    stmt_types: list[str] | None = None,
 ) -> list[tuple[str, str, dict[str, Any]]]:
     """Extract a local regulatory subgraph around seed gene.
 
-    The seed's max_hops-radius neighborhood is found via APOC traversal
-    over ``indra_rel`` (which catches every candidate node), then the
-    induced edge set is filtered to ``stmt_types``.  Nodes that are
-    only reachable via non-regulatory edges will become isolated /
+    The seed's ``max_hops``-radius neighborhood is found via APOC
+    traversal over ``indra_rel`` (which catches every candidate node),
+    then the induced edge set is filtered to ``ALL_REGULATORY_TYPES``.
+    Nodes only reachable via non-regulatory edges will become
     disconnected in the resulting edge list — downstream code is
     responsible for restricting to the seed's connected component.
 
-    By default, only edges whose ``stmt_type`` is in
-    ``ALL_REGULATORY_TYPES`` are returned.
-
-    Parameters
-    ----------
-    cogex_client
-        An active CoGExClient instance.
-    seed_gene_name
-        Gene symbol (name, not CURIE).
-    max_hops
-        Maximum hops from seed for the candidate-node traversal.
-    min_evidence
-        Minimum evidence count for edges.
-    stmt_types
-        INDRA statement types to keep on the induced edges.  Default
-        ``ALL_REGULATORY_TYPES`` (Activation, Inhibition,
-        IncreaseAmount, DecreaseAmount).
-
     Returns
     -------
-    List of (source_name, target_name, edge_attrs) tuples.  Each
+    List of ``(source_name, target_name, edge_attrs)`` tuples.  Each
     ``edge_attrs`` includes ``evidence_count`` and ``stmt_type``.
     """
-    from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-
-    if stmt_types is None:
-        stmt_types = list(ALL_REGULATORY_TYPES)
-
     query = f"""
     MATCH (seed:BioEntity {{name: $seed_name}})
     CALL apoc.path.subgraphNodes(seed, {{
@@ -1178,7 +1018,7 @@ def extract_local_subgraph_edges(
         query,
         seed_name=seed_gene_name,
         min_evidence=min_evidence,
-        stmt_types=stmt_types,
+        stmt_types=list(ALL_REGULATORY_TYPES),
     )
 
     edges = []

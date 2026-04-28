@@ -1487,6 +1487,13 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             # GeneId is Tuple[str, str] e.g. ("HGNC", "11998")
             seed_curie = f"hgnc:{seed_gene_id[1]}"
 
+            # Phase 6 graph queries (shortest paths, degrees, RWR subgraph)
+            # all operate over the regulatory edge scope:
+            # ALL_REGULATORY_TYPES = {Activation, Inhibition,
+            # IncreaseAmount, DecreaseAmount} — same canonical scope as
+            # the gradient pipeline.  Edges with stmt_type Complex,
+            # Phosphorylation, etc. do not contribute.
+            #
             # -- Server-side shortest paths (78s vs 30-70 min for APOC) --
             measured_symbols = sorted(set(abs_t_stats.keys()))
             print(f"\n  Querying server-side shortest paths to {len(measured_symbols)} genes...")
@@ -1555,7 +1562,7 @@ def run_validate_baselines(args: argparse.Namespace) -> int:
             print(f"\n  Phase 6c: RWR correlation test...")
             import scipy.sparse as sp_sparse
 
-            # Extract small 2-hop subgraph for RWR (minutes, not hours)
+            # Extract small 2-hop subgraph for RWR (minutes, not hours).
             print(f"  Extracting 2-hop subgraph for RWR...")
             rwr_edges = extract_local_subgraph_edges(
                 cogex_client=cogex,

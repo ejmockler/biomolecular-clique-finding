@@ -68,10 +68,7 @@ class DiscoveryBridge:
         use_recalibrated_priors: bool = True,  # use benchmark-calibrated priors
         composed_scorer: Any | None = None,
         use_competitive: bool = False,
-        stmt_types: list[str] | None = None,
     ):
-        from cliquefinder.knowledge.cogex import ALL_REGULATORY_TYPES
-
         self.engine = engine
         self.sym_to_feat = sym_to_feat
         self.env_file = str(env_file) if env_file else None
@@ -80,14 +77,6 @@ class DiscoveryBridge:
         self.min_sources = min_sources
         self.composed_scorer = composed_scorer
         self.use_competitive = use_competitive
-        # Edge-type scope for INDRA graph queries (gradient + rewiring null).
-        # Default: ALL_REGULATORY_TYPES = {Activation, Inhibition,
-        # IncreaseAmount, DecreaseAmount}.  Pass a different list (or
-        # ``[]`` / ``None`` then explicitly pass ``stmt_types=None`` per
-        # method) for sensitivity analyses.
-        self.stmt_types = (
-            list(ALL_REGULATORY_TYPES) if stmt_types is None else list(stmt_types)
-        )
         if use_recalibrated_priors:
             from indra_belief.noise_model import RECALIBRATED_PRIORS
             self._priors = RECALIBRATED_PRIORS
@@ -880,31 +869,28 @@ class DiscoveryBridge:
 
         # Cache key: HGNC-level queries are invariant under contrast and
         # under the protein-level aggregation (which is deterministic
-        # given the alias map).  Edge scope (stmt_types) is part of the
-        # key so a regulatory-only result and an unfiltered result never
-        # cross-contaminate.
-        stmt_types_key = tuple(sorted(self.stmt_types))
+        # given the alias map).  Edge scope is the constant
+        # ALL_REGULATORY_TYPES, so it doesn't enter the key.
         cache_key = (
             "hgnc_dist_deg",
             seed_fid or seed,
             max_hops,
-            stmt_types_key,
             hash(tuple(measured_symbols)),
         )
         cached = self._graph_query_cache.get(cache_key)
         if cached is not None:
             distances_hgnc, degrees_hgnc = cached
             logger.info(
-                "Using cached shortest paths and degrees (seed=%s, max_hops=%d, "
-                "stmt_types=%s)",
-                seed, max_hops, sorted(self.stmt_types),
+                "Using cached shortest paths and degrees (seed=%s, max_hops=%d)",
+                seed, max_hops,
             )
         else:
             cogex = self._indra_source.client
             logger.info(
                 "Querying server-side shortest paths from %s to %d HGNC aliases "
-                "(measured proteins, alias-expanded; stmt_types=%s)",
-                seed, len(measured_symbols), sorted(self.stmt_types),
+                "(measured proteins, alias-expanded; edge scope: regulatory — "
+                "Activation/Inhibition/IncreaseAmount/DecreaseAmount)",
+                seed, len(measured_symbols),
             )
             distances_hgnc = query_shortest_paths_batched(
                 cogex_client=cogex,
@@ -913,18 +899,16 @@ class DiscoveryBridge:
                 max_hops=max_hops,
                 batch_size=500,
                 verbose=True,
-                stmt_types=list(self.stmt_types),
             )
 
             logger.info(
-                "Querying graph degrees for %d HGNC aliases (stmt_types=%s)",
-                len(measured_symbols), sorted(self.stmt_types),
+                "Querying graph degrees for %d HGNC aliases",
+                len(measured_symbols),
             )
             degrees_hgnc = query_gene_degrees_batched(
                 cogex_client=cogex,
                 gene_names=measured_symbols,
                 batch_size=500,
-                stmt_types=list(self.stmt_types),
             )
             self._graph_query_cache[cache_key] = (distances_hgnc, degrees_hgnc)
 
@@ -1051,31 +1035,28 @@ class DiscoveryBridge:
         if subgraph_max_hops is None:
             subgraph_max_hops = max_hops
 
-        stmt_types_key = tuple(sorted(self.stmt_types))
-        cache_key = ("subgraph_edges", seed, subgraph_max_hops, stmt_types_key)
+        cache_key = ("subgraph_edges", seed, subgraph_max_hops)
         cached = self._graph_query_cache.get(cache_key)
         if cached is not None:
             edge_list = cached[0]  # reuse existing tuple slot
             logger.info(
-                "Using cached subgraph edges for %s (subgraph_max_hops=%d, "
-                "stmt_types=%s)",
-                seed, subgraph_max_hops, sorted(self.stmt_types),
+                "Using cached subgraph edges for %s (subgraph_max_hops=%d)",
+                seed, subgraph_max_hops,
             )
         else:
             cogex = self._indra_source.client
             logger.info(
-                "Extracting INDRA subgraph around %s (max_hops=%d, "
-                "stmt_types=%s) for rewiring...",
-                seed, subgraph_max_hops, sorted(self.stmt_types),
+                "Extracting INDRA subgraph around %s (max_hops=%d) for rewiring "
+                "(edge scope: regulatory — "
+                "Activation/Inhibition/IncreaseAmount/DecreaseAmount)...",
+                seed, subgraph_max_hops,
             )
             edge_list = extract_local_subgraph_edges(
                 cogex_client=cogex,
                 seed_gene_name=seed,
                 max_hops=subgraph_max_hops,
                 min_evidence=1,
-                stmt_types=list(self.stmt_types),
             )
-            # Store in the same dict pattern as the shortest-paths cache
             self._graph_query_cache[cache_key] = (edge_list, None)
 
         if not edge_list:
