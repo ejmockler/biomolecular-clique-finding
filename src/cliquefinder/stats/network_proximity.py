@@ -41,6 +41,7 @@ References
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1053,23 +1054,30 @@ def extract_subgraph_induced_by_features(
 
     Implementation
     --------------
-    Per ``seed_batch_size`` batch of features:
+    Iterative regulatory-only BFS via simple property-filtered
+    ``MATCH`` queries — **not** APOC.  APOC's ``subgraphNodes``
+    cannot filter on edge properties, so it walks every ``indra_rel``
+    edge (including the ~80% Complex / co-mention edges) and
+    materializes the union node set in transaction memory.  At
+    proteome scale this OOMs Neo4j (verified: 200 seeds × max_hops=2
+    breached a 20.6 GiB transaction memory cap in a single query).
 
-    1. APOC ``subgraphNodes`` from each feature accumulates a node
-       set within ``max_hops`` of any seed in the batch.  APOC walks
-       all ``indra_rel`` edges (relationship type, not property), so
-       the candidate node set includes nodes reachable only via
-       Complex / Phosphorylation / etc.
-    2. The induced regulatory edges within that node set are
-       returned, filtered to ``ALL_REGULATORY_TYPES`` and
-       ``evidence_count >= min_evidence``.  Server-side ``LIMIT``
-       at ``max_edges_per_batch`` prevents result-set blowup
-       (KG-1 / KG-2 pattern from ``cogex.py``).
+    The iterative-BFS approach instead expands the node frontier one
+    hop at a time, querying only regulatory edges via the
+    ``stmt_type IN $stmt_types`` clause inline.  Each batch is
+    bounded by ``len(batch) × avg_regulatory_degree``, orders of
+    magnitude smaller than the APOC equivalent.
 
-    Edges from multiple batches are unioned (deduplicated by
-    ``(source, target, stmt_type)``).  Nodes only reachable via
-    non-regulatory edges become isolated in the returned edge list
-    — downstream BFS will not reach them.
+    Phases
+    ------
+    1. **Frontier expansion** (per hop, 1..max_hops): for each batch
+       of frontier nodes, query their regulatory neighbors.  Add
+       newly-seen nodes to the next-hop frontier and to the global
+       node-seen set.  Track which seeds had ≥1 edge match (matched_features).
+    2. **Edge extraction**: for each batch over the union of
+       collected nodes, query out-edges with the regulatory filter,
+       post-filter in Python to keep only edges where the target is
+       also in the node set.
 
     Parameters
     ----------
@@ -1083,11 +1091,12 @@ def extract_subgraph_induced_by_features(
     min_evidence
         Minimum INDRA ``evidence_count`` per edge.
     seed_batch_size
-        Number of features per Cypher round-trip.  Smaller values are
-        more resilient to Neo4j memory pressure on dense seed lists;
-        larger values reduce round-trip count.
+        Number of nodes per Cypher round-trip (used by both the
+        frontier expansion and edge-extraction phases).  Smaller
+        values are more resilient to Neo4j memory pressure; larger
+        values reduce round-trip count.
     max_edges_per_batch
-        Server-side ``LIMIT`` per batch.  If a batch hits the limit,
+        Server-side ``LIMIT`` per query.  If a batch hits the limit,
         a ``RuntimeWarning`` is emitted — the result is incomplete and
         the caller must reduce ``seed_batch_size`` or ``max_hops``.
 
@@ -1100,16 +1109,29 @@ def extract_subgraph_induced_by_features(
         code is responsible for treating the graph as undirected if
         that is the gradient pipeline's convention (it is).
     matched_features
-        Set of input feature names that successfully matched a
-        ``BioEntity`` node by name.  Features absent from this set
-        could not be resolved (typo, not-in-INDRA, alias mismatch);
-        downstream code should distinguish these from biologically
-        isolated features.
+        Set of input feature names that resolved to a ``BioEntity``
+        node by name in INDRA — independent of whether the entity
+        has any regulatory edges.  This is determined via a separate
+        BioEntity-existence probe before the BFS expansion.  The
+        complement (``set(features) - matched_features``) is the set
+        of names that don't exist as BioEntity nodes (typo,
+        not-in-INDRA, alias mismatch).
+
+        A feature can be matched but have zero regulatory neighbors
+        (matched-but-isolated under the regulatory edge scope); such
+        a feature is in ``matched_features`` but contributes no
+        edges to the result.
 
     Raises
     ------
     ValueError
         If ``max_hops < 1`` or ``seed_batch_size < 1``.
+    RuntimeError
+        If any Cypher query hits ``max_edges_per_batch`` rows; the
+        result would be a silently truncated graph and downstream
+        analysis would compute against an incomplete subgraph.
+        Increase ``max_edges_per_batch`` or decrease
+        ``seed_batch_size`` / ``max_hops``.
     """
     if max_hops < 1:
         raise ValueError(f"max_hops must be >= 1, got {max_hops}")
@@ -1121,62 +1143,113 @@ def extract_subgraph_induced_by_features(
     if not features:
         return [], set()
 
-    # Phase 1: in one query per batch, collect candidate nodes via
-    # APOC and the induced regulatory edges.  Server-side LIMIT
-    # prevents transaction OOM on dense batches.
-    extract_query = f"""
-    MATCH (seed:BioEntity)
-    WHERE seed.name IN $seed_names
-    WITH collect(DISTINCT seed) AS seeds, collect(DISTINCT seed.name) AS matched
-    UNWIND seeds AS s
-    CALL apoc.path.subgraphNodes(s, {{
-        relationshipFilter: 'indra_rel',
-        maxLevel: {max_hops}
-    }}) YIELD node
-    WITH matched, collect(DISTINCT node) AS nodes
-    UNWIND nodes AS a
-    MATCH (a)-[r:indra_rel]->(b)
-    WHERE b IN nodes
+    # Phase 0: BioEntity-existence probe.  Determines which input
+    # feature names resolve to a node in INDRA, independent of
+    # whether they have any regulatory edges.  Without this, a
+    # matched-but-regulatory-isolated feature would be
+    # indistinguishable from an unresolved one — and downstream
+    # analysis (LandscapeResult, FeatureDistanceMatrix) treats them
+    # very differently.
+    matched_features: set[str] = set()
+    feature_list = list(features)
+    probe_query = """
+    MATCH (b:BioEntity)
+    WHERE b.name IN $batch
+    RETURN DISTINCT b.name AS name
+    """
+    for i in range(0, len(feature_list), seed_batch_size):
+        batch = feature_list[i:i + seed_batch_size]
+        rows = cogex_client._execute_query(probe_query, batch=batch)
+        for row in rows:
+            matched_features.add(row[0])
+
+    feature_set = set(features)
+    nodes_seen: set[str] = set(features)
+    frontier: set[str] = set(features)
+
+    # Phase 1: regulatory-only BFS frontier expansion, hop by hop.
+    expand_query = """
+    MATCH (a:BioEntity)-[r:indra_rel]-(b:BioEntity)
+    WHERE a.name IN $batch
+      AND r.evidence_count >= $min_evidence
+      AND r.stmt_type IN $stmt_types
+    RETURN DISTINCT a.name AS source, b.name AS target
+    LIMIT $max_edges
+    """
+    for hop in range(1, max_hops + 1):
+        if not frontier:
+            break
+        new_frontier: set[str] = set()
+        frontier_list = sorted(frontier)
+        for i in range(0, len(frontier_list), seed_batch_size):
+            batch = frontier_list[i:i + seed_batch_size]
+            rows = cogex_client._execute_query(
+                expand_query,
+                batch=batch,
+                min_evidence=min_evidence,
+                stmt_types=list(ALL_REGULATORY_TYPES),
+                max_edges=max_edges_per_batch,
+            )
+            if rows and len(rows) >= max_edges_per_batch:
+                # Hard fail: a truncated result silently saved as a
+                # landscape would compute slopes against an
+                # incomplete graph.  Better to refuse and force the
+                # caller to retune than to ship a broken artifact.
+                raise RuntimeError(
+                    f"extract_subgraph_induced_by_features hit "
+                    f"max_edges_per_batch={max_edges_per_batch} during "
+                    f"hop {hop} frontier expansion (batch "
+                    f"{i // seed_batch_size + 1}). The subgraph would be "
+                    f"silently truncated; refusing to continue. "
+                    f"Increase max_edges_per_batch, decrease "
+                    f"seed_batch_size, or decrease max_hops."
+                )
+            for row in rows:
+                tgt = row[1]
+                if tgt not in nodes_seen:
+                    new_frontier.add(tgt)
+                    nodes_seen.add(tgt)
+        frontier = new_frontier
+
+    # Phase 2: extract regulatory edges among collected nodes.  Per
+    # batch over nodes_seen, query out-edges then post-filter to keep
+    # only those whose target is also in nodes_seen.
+    edge_query = """
+    MATCH (a:BioEntity)-[r:indra_rel]->(b:BioEntity)
+    WHERE a.name IN $batch
       AND r.evidence_count >= $min_evidence
       AND r.stmt_type IN $stmt_types
     RETURN DISTINCT
       a.name AS source_name,
       b.name AS target_name,
       r.evidence_count AS evidence_count,
-      r.stmt_type AS stmt_type,
-      matched
+      r.stmt_type AS stmt_type
     LIMIT $max_edges
     """
-
-    # Dedup edges by (source, target, stmt_type).  Different evidence
-    # counts for the "same" edge across batches collapse to the max.
     edge_index: dict[tuple[str, str, str], int] = {}
-    matched_features: set[str] = set()
-
-    feature_list = list(features)
-    for i in range(0, len(feature_list), seed_batch_size):
-        batch = feature_list[i:i + seed_batch_size]
+    nodes_list = sorted(nodes_seen)
+    for i in range(0, len(nodes_list), seed_batch_size):
+        batch = nodes_list[i:i + seed_batch_size]
         rows = cogex_client._execute_query(
-            extract_query,
-            seed_names=batch,
+            edge_query,
+            batch=batch,
             min_evidence=min_evidence,
             stmt_types=list(ALL_REGULATORY_TYPES),
             max_edges=max_edges_per_batch,
         )
         if rows and len(rows) >= max_edges_per_batch:
-            import warnings
-            warnings.warn(
+            raise RuntimeError(
                 f"extract_subgraph_induced_by_features hit "
-                f"max_edges_per_batch={max_edges_per_batch} on batch "
-                f"{i // seed_batch_size + 1}; result is incomplete. "
-                f"Reduce seed_batch_size or max_hops.",
-                RuntimeWarning,
-                stacklevel=2,
+                f"max_edges_per_batch={max_edges_per_batch} during "
+                f"edge extraction (batch {i // seed_batch_size + 1}). "
+                f"The subgraph would be silently truncated; refusing "
+                f"to continue. Increase max_edges_per_batch or "
+                f"decrease seed_batch_size."
             )
         for row in rows:
-            src, tgt, ec, st, matched = row[0], row[1], row[2], row[3], row[4]
-            if matched_features.isdisjoint(matched):
-                matched_features.update(matched)
+            src, tgt, ec, st = row[0], row[1], row[2], row[3]
+            if tgt not in nodes_seen:
+                continue  # post-filter: keep only edges within nodes_seen
             key = (src, tgt, st)
             existing = edge_index.get(key)
             if existing is None or existing < ec:

@@ -21,71 +21,47 @@ from cliquefinder.stats.network_proximity import (
 
 
 class TestExtractSubgraphCypherShape:
-    """Cypher binding + parameter behavior verified via fake _execute_query
-    that captures the query/params and returns synthetic rows.
+    """Cypher shape + parameter behavior verified via fake _execute_query
+    that captures every query/params and returns synthetic rows.
+
+    The implementation is iterative regulatory-only BFS (no APOC):
+    one query per hop for frontier expansion, then one query per
+    batch for final edge extraction.
     """
 
-    def test_pins_regulatory_scope_in_cypher_params(self):
-        captured: dict = {}
+    def test_pins_regulatory_scope_in_edge_queries(self):
+        """Every Cypher that touches edges must bind ALL_REGULATORY_TYPES.
+        The Phase-0 BioEntity-existence probe is exempt — it queries
+        nodes only, not edges.
+        """
+        captured: list[dict] = []
 
         def fake_execute(query, **params):
-            captured["query"] = query
-            captured["params"] = params
+            captured.append({"query": query, "params": params})
             return []
 
         client = MagicMock()
         client._execute_query = fake_execute
 
         extract_subgraph_induced_by_features(
-            cogex_client=client,
-            features=["A", "B", "C"],
-            max_hops=2,
-            min_evidence=1,
+            cogex_client=client, features=["A", "B"], max_hops=2,
         )
-        assert "stmt_types" in captured["params"]
-        assert set(captured["params"]["stmt_types"]) == ALL_REGULATORY_TYPES
+        # Every edge-touching Cypher call must bind the scope.
+        edge_calls = [c for c in captured if "indra_rel" in c["query"]]
+        assert edge_calls, "expected at least one edge-touching call"
+        for call in edge_calls:
+            assert "stmt_types" in call["params"]
+            assert set(call["params"]["stmt_types"]) == ALL_REGULATORY_TYPES
 
-    def test_seed_names_passed_as_list(self):
-        captured: dict = {}
+    def test_does_not_use_apoc(self):
+        """APOC subgraphNodes is unaware of edge properties and walked
+        every indra_rel edge — OOMed Neo4j at 200 seeds.  The new
+        implementation must not regress to that pattern.
+        """
+        captured: list[str] = []
 
         def fake_execute(query, **params):
-            captured.update(params)
-            return []
-
-        client = MagicMock()
-        client._execute_query = fake_execute
-
-        extract_subgraph_induced_by_features(
-            cogex_client=client,
-            features=["A", "B"],
-            max_hops=2,
-        )
-        assert captured["seed_names"] == ["A", "B"]
-
-    def test_uses_apoc_subgraph_nodes_for_traversal(self):
-        captured: dict = {}
-
-        def fake_execute(query, **params):
-            captured["query"] = query
-            return []
-
-        client = MagicMock()
-        client._execute_query = fake_execute
-
-        extract_subgraph_induced_by_features(
-            cogex_client=client, features=["A"], max_hops=2,
-        )
-        assert "apoc.path.subgraphNodes" in captured["query"]
-        assert "indra_rel" in captured["query"]
-        assert "r.stmt_type IN $stmt_types" in captured["query"]
-
-    def test_cypher_has_server_side_limit(self):
-        """KG-1/KG-2 pattern: every extraction Cypher must have LIMIT."""
-        captured: dict = {}
-
-        def fake_execute(query, **params):
-            captured["query"] = query
-            captured["params"] = params
+            captured.append(query)
             return []
 
         client = MagicMock()
@@ -93,14 +69,55 @@ class TestExtractSubgraphCypherShape:
         extract_subgraph_induced_by_features(
             cogex_client=client, features=["A"], max_hops=2,
         )
-        assert "LIMIT $max_edges" in captured["query"]
-        assert captured["params"]["max_edges"] == 5_000_000  # default
+        for q in captured:
+            assert "apoc" not in q.lower(), (
+                "APOC reintroduced — see Wave 24g: APOC traversal "
+                "ignores stmt_type and OOMs at proteome scale"
+            )
+
+    def test_edge_queries_filter_by_stmt_type_inline(self):
+        """Edge-touching queries (expansion + extraction) must have
+        the inline regulatory filter.  Phase-0 probe is exempt.
+        """
+        captured: list[str] = []
+
+        def fake_execute(query, **params):
+            captured.append(query)
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+        extract_subgraph_induced_by_features(
+            cogex_client=client, features=["A"], max_hops=2,
+        )
+        edge_qs = [q for q in captured if "indra_rel" in q]
+        assert edge_qs
+        for q in edge_qs:
+            assert "r.stmt_type IN $stmt_types" in q
+
+    def test_edge_queries_have_server_side_limit(self):
+        """Edge-touching queries must carry LIMIT $max_edges (KG-1/KG-2)."""
+        captured: list[dict] = []
+
+        def fake_execute(query, **params):
+            captured.append({"query": query, "params": params})
+            return []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+        extract_subgraph_induced_by_features(
+            cogex_client=client, features=["A"], max_hops=2,
+        )
+        edge_calls = [c for c in captured if "indra_rel" in c["query"]]
+        for call in edge_calls:
+            assert "LIMIT $max_edges" in call["query"]
+            assert call["params"]["max_edges"] == 5_000_000
 
     def test_max_edges_per_batch_overridable(self):
-        captured: dict = {}
+        captured: list[dict] = []
 
         def fake_execute(query, **params):
-            captured.update(params)
+            captured.append({"query": query, "params": params})
             return []
 
         client = MagicMock()
@@ -109,22 +126,29 @@ class TestExtractSubgraphCypherShape:
             cogex_client=client, features=["A"], max_hops=2,
             max_edges_per_batch=1000,
         )
-        assert captured["max_edges"] == 1000
+        edge_calls = [c for c in captured if "indra_rel" in c["query"]]
+        for call in edge_calls:
+            assert call["params"]["max_edges"] == 1000
 
-    def test_max_hops_inlined_in_cypher(self):
-        captured: dict = {}
+    def test_iterative_bfs_issues_probe_plus_expansion_plus_extraction(self):
+        """For an isolated seed (no edges), expansion stops after hop 1
+        and we still issue the final extraction query.  Plus the
+        Phase-0 BioEntity-existence probe.
+        """
+        call_log: list[dict] = []
 
         def fake_execute(query, **params):
-            captured["query"] = query
+            call_log.append({"query": query, "batch": list(params.get("batch", []))})
             return []
 
         client = MagicMock()
         client._execute_query = fake_execute
-
         extract_subgraph_induced_by_features(
-            cogex_client=client, features=["A"], max_hops=3,
+            cogex_client=client, features=["A"], max_hops=2,
         )
-        assert "maxLevel: 3" in captured["query"]
+        # 1 BioEntity probe + 1 hop-1 expansion (returns nothing so
+        # no hop 2) + 1 edge extraction = 3 queries.
+        assert len(call_log) == 3
 
     def test_max_hops_validated(self):
         client = MagicMock()
@@ -146,20 +170,21 @@ class TestExtractSubgraphCypherShape:
                 cogex_client=client, features=["A"], seed_batch_size=0,
             )
 
-    def test_min_evidence_passed_as_param(self):
-        captured: dict = {}
+    def test_min_evidence_passed_to_edge_queries(self):
+        captured: list[dict] = []
 
         def fake_execute(query, **params):
-            captured.update(params)
+            captured.append({"query": query, "params": params})
             return []
 
         client = MagicMock()
         client._execute_query = fake_execute
-
         extract_subgraph_induced_by_features(
             cogex_client=client, features=["A"], min_evidence=5,
         )
-        assert captured["min_evidence"] == 5
+        edge_calls = [c for c in captured if "indra_rel" in c["query"]]
+        for call in edge_calls:
+            assert call["params"]["min_evidence"] == 5
 
     def test_empty_features_returns_empty_without_query(self):
         client = MagicMock()
@@ -172,85 +197,132 @@ class TestExtractSubgraphCypherShape:
         assert edges == []
         assert matched == set()
 
-    def test_returns_edges_and_matched_features(self):
-        client = MagicMock()
-        client._execute_query = MagicMock(return_value=[
-            ["A", "B", 5, "Activation", ["A", "B"]],
-            ["B", "C", 2, "Inhibition", ["A", "B"]],
-        ])
-        edges, matched = extract_subgraph_induced_by_features(
-            cogex_client=client, features=["A", "B", "C"], max_hops=2,
-        )
-        assert len(edges) == 2
-        assert ("A", "B", {"evidence_count": 5, "stmt_type": "Activation"}) in edges
-        assert ("B", "C", {"evidence_count": 2, "stmt_type": "Inhibition"}) in edges
-        # Cypher reported A and B as matched; C did not match a BioEntity.
-        assert matched == {"A", "B"}
-
-    def test_unmatched_features_distinguishable(self):
-        """A feature that doesn't resolve to a BioEntity must NOT be in
-        matched_features — distinguishable from a matched-but-isolated one.
+    def test_matched_features_from_bioentity_probe_not_edges(self):
+        """matched_features should reflect BioEntity existence, NOT
+        whether the entity has regulatory edges.  A matched-but-isolated
+        feature must be in matched_features.
         """
+        call_idx = [0]
+        # Probe returns A and C (both exist as BioEntity nodes).
+        # Expansion: A has an edge A→B; C has no edges.
+        # No hop 2 (frontier = {B}, B has no edges).
+        # Extraction: A→B edge.
+        responses = [
+            [["A"], ["C"]],          # Phase 0 probe: A and C resolve
+            [["A", "B"]],            # Phase 1 hop 1: A→B
+            [],                       # Phase 1 hop 2: from B → nothing
+            [["A", "B", 5, "Activation"]],  # Phase 2 extraction
+        ]
+
+        def fake_execute(q, **kw):
+            i = call_idx[0]
+            call_idx[0] += 1
+            return responses[i] if i < len(responses) else []
+
         client = MagicMock()
-        client._execute_query = MagicMock(return_value=[
-            ["A", "B", 1, "Activation", ["A"]],  # B was reachable but not a seed match
-        ])
+        client._execute_query = fake_execute
         edges, matched = extract_subgraph_induced_by_features(
+            cogex_client=client,
+            features=["A", "C"],
+            max_hops=2,
+            seed_batch_size=10,
+        )
+        # Both A and C exist as BioEntity nodes → both matched, even
+        # though C has no regulatory edges.
+        assert matched == {"A", "C"}
+        assert ("A", "B", {"evidence_count": 5, "stmt_type": "Activation"}) in edges
+
+    def test_unmatched_feature_truly_absent_from_matched(self):
+        """A feature whose name doesn't resolve to a BioEntity must
+        NOT be in matched_features.
+        """
+        call_idx = [0]
+        responses = [
+            [["A"]],                 # Probe: only A resolves; TYPO does not
+            [],                       # No edges from A
+            [],                       # Extraction: nothing
+        ]
+
+        def fake_execute(q, **kw):
+            i = call_idx[0]
+            call_idx[0] += 1
+            return responses[i] if i < len(responses) else []
+
+        client = MagicMock()
+        client._execute_query = fake_execute
+        _, matched = extract_subgraph_induced_by_features(
             cogex_client=client,
             features=["A", "TYPO_NOT_IN_INDRA"],
             max_hops=2,
         )
-        assert "A" in matched
-        assert "TYPO_NOT_IN_INDRA" not in matched
+        assert matched == {"A"}
 
-    def test_dedupes_edges_across_batches(self):
-        """Two batches that both surface the same edge collapse it."""
-        edge_attr_row = ["X", "Y", 3, "Activation", ["X", "Y"]]
-        client = MagicMock()
-        client._execute_query = MagicMock(return_value=[edge_attr_row])
-        edges, _ = extract_subgraph_induced_by_features(
-            cogex_client=client,
-            features=["X", "Y", "Z"],
-            seed_batch_size=2,  # forces 2 batches
-            max_hops=2,
-        )
-        # Even though the fake execute returns the same row twice (once
-        # per batch), the dedup keeps one entry.
-        assert len(edges) == 1
-        assert edges[0] == ("X", "Y", {"evidence_count": 3, "stmt_type": "Activation"})
-
-    def test_dedup_keeps_max_evidence_count(self):
-        """If two batches report the same edge with different evidence,
-        keep the larger count (deterministic).
+    def test_edge_extraction_post_filters_to_collected_nodes(self):
+        """Final edge extraction must drop edges whose target is NOT
+        in the collected node set (those edges leave the subgraph).
         """
-        client = MagicMock()
-        # Batch 1 returns evidence_count=2; batch 2 returns 5.
-        client._execute_query = MagicMock(side_effect=[
-            [["X", "Y", 2, "Activation", ["X", "Y"]]],
-            [["X", "Y", 5, "Activation", ["X", "Y"]]],
+        responses = iter([
+            # Phase 0 probe: A resolves.
+            [["A"]],
+            # Hop 1 expansion: A→B.
+            [["A", "B"]],
+            # Hop 2 expansion: B has no new neighbors.
+            [],
+            # Edge extraction over {A, B}: returns A→B (in set) AND
+            # B→Z (Z is OUTSIDE the collected node set).
+            [
+                ["A", "B", 1, "Activation"],
+                ["B", "Z", 1, "Inhibition"],
+            ],
         ])
+        client = MagicMock()
+        client._execute_query = MagicMock(side_effect=lambda q, **kw: next(responses))
         edges, _ = extract_subgraph_induced_by_features(
             cogex_client=client,
-            features=["X", "Y", "Z"],
-            seed_batch_size=2,  # forces 2 batches
+            features=["A"],
             max_hops=2,
+            seed_batch_size=10,
         )
-        assert len(edges) == 1
-        assert edges[0][2]["evidence_count"] == 5
+        edge_pairs = {(s, t) for s, t, _ in edges}
+        assert ("A", "B") in edge_pairs
+        assert ("B", "Z") not in edge_pairs  # Z not in nodes_seen
 
-    def test_warns_when_limit_hit(self):
-        """When a batch returns exactly max_edges_per_batch rows, warn."""
+    def test_raises_when_limit_hit_during_expansion(self):
+        """A truncated subgraph would silently corrupt downstream
+        analysis — refuse to continue rather than ship a broken result.
+        """
+        responses = iter([
+            # Phase 0 probe: S resolves.
+            [["S"]],
+            # Expansion query returns exactly max_edges rows → limit hit.
+            [[f"S", f"T{i}"] for i in range(10)],
+        ])
         client = MagicMock()
-        rows = [
-            [f"S{i}", f"T{i}", 1, "Activation", [f"S{i}"]]
-            for i in range(10)
-        ]
-        client._execute_query = MagicMock(return_value=rows)
-        with pytest.warns(RuntimeWarning, match="max_edges_per_batch"):
+        client._execute_query = MagicMock(side_effect=lambda q, **kw: next(responses))
+        with pytest.raises(RuntimeError, match="frontier expansion"):
             extract_subgraph_induced_by_features(
                 cogex_client=client,
-                features=[f"S{i}" for i in range(10)],
-                max_hops=2,
+                features=["S"],
+                max_hops=1,
+                max_edges_per_batch=10,
+            )
+
+    def test_raises_when_limit_hit_during_edge_extraction(self):
+        responses = iter([
+            # Phase 0: S resolves.
+            [["S"]],
+            # Phase 1: S has 1 edge to T (1 row, not at limit).
+            [["S", "T"]],
+            # Phase 2 extraction returns max_edges rows.
+            [[f"S{i}", "X", 1, "Activation"] for i in range(10)],
+        ])
+        client = MagicMock()
+        client._execute_query = MagicMock(side_effect=lambda q, **kw: next(responses))
+        with pytest.raises(RuntimeError, match="edge extraction"):
+            extract_subgraph_induced_by_features(
+                cogex_client=client,
+                features=["S"],
+                max_hops=1,
                 max_edges_per_batch=10,
             )
 

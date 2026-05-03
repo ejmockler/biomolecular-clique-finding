@@ -35,6 +35,7 @@ runner, it inherits Wave 24d's commitment to ``ALL_REGULATORY_TYPES``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -817,7 +818,13 @@ def _per_feature_gradient_loop(
                 fid: t for fid, t in abs_t_per_feature.items()
                 if fid != seed_fid
             }
-            seed_rng = rng_base + (hash(seed_fid) & 0x7FFFFFFF)
+            # Stable per-feature RNG seed: Python's built-in hash() is
+            # randomized per process (PYTHONHASHSEED), so using it
+            # would make landscape runs non-reproducible across
+            # subprocess boundaries.  md5 is process-stable.
+            seed_rng = rng_base + int.from_bytes(
+                hashlib.md5(seed_fid.encode()).digest()[:4], "big",
+            )
             t_seed = time.time()
             result = run_gradient_test(
                 adjacency={},
