@@ -34,7 +34,7 @@ from cliquefinder.utils.fileio import atomic_write_text
 # Reserved sentinel for the implicit target stratum.  See
 # ``cliquefinder.panels.analysis.TARGET_STRATUM_LABEL``; defined here
 # to break a circular import while keeping the constant in one place.
-_RESERVED_STRATUM_NAMES: frozenset[str] = frozenset({"<target>"})
+_RESERVED_STRATUM_NAMES: frozenset[str] = frozenset({"<target>", "<feature>"})
 
 
 @dataclass(frozen=True)

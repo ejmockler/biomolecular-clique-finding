@@ -1034,6 +1034,240 @@ def extract_local_subgraph_edges(
     return edges
 
 
+def extract_subgraph_induced_by_features(
+    cogex_client: Any,
+    features: list[str],
+    max_hops: int = 2,
+    min_evidence: int = 1,
+    seed_batch_size: int = 500,
+    max_edges_per_batch: int = 5_000_000,
+) -> tuple[list[tuple[str, str, dict[str, Any]]], set[str]]:
+    """Extract regulatory edges induced by ``features`` ∪ their k-hop neighbors.
+
+    Generalization of :func:`extract_local_subgraph_edges` from one
+    seed to many.  Used by the landscape pipeline to extract the
+    regulatory subgraph relevant to all measured features without
+    paying per-seed Neo4j round-trip costs, after which all-pairs
+    shortest paths are computed locally via
+    :func:`compute_all_pairs_shortest_paths_bounded`.
+
+    Implementation
+    --------------
+    Per ``seed_batch_size`` batch of features:
+
+    1. APOC ``subgraphNodes`` from each feature accumulates a node
+       set within ``max_hops`` of any seed in the batch.  APOC walks
+       all ``indra_rel`` edges (relationship type, not property), so
+       the candidate node set includes nodes reachable only via
+       Complex / Phosphorylation / etc.
+    2. The induced regulatory edges within that node set are
+       returned, filtered to ``ALL_REGULATORY_TYPES`` and
+       ``evidence_count >= min_evidence``.  Server-side ``LIMIT``
+       at ``max_edges_per_batch`` prevents result-set blowup
+       (KG-1 / KG-2 pattern from ``cogex.py``).
+
+    Edges from multiple batches are unioned (deduplicated by
+    ``(source, target, stmt_type)``).  Nodes only reachable via
+    non-regulatory edges become isolated in the returned edge list
+    — downstream BFS will not reach them.
+
+    Parameters
+    ----------
+    cogex_client
+        An active CoGExClient instance.
+    features
+        Gene symbols for which we want the local regulatory subgraph.
+    max_hops
+        Hops from each feature to include in the candidate-node set.
+        Must be ``>= 1``.
+    min_evidence
+        Minimum INDRA ``evidence_count`` per edge.
+    seed_batch_size
+        Number of features per Cypher round-trip.  Smaller values are
+        more resilient to Neo4j memory pressure on dense seed lists;
+        larger values reduce round-trip count.
+    max_edges_per_batch
+        Server-side ``LIMIT`` per batch.  If a batch hits the limit,
+        a ``RuntimeWarning`` is emitted — the result is incomplete and
+        the caller must reduce ``seed_batch_size`` or ``max_hops``.
+
+    Returns
+    -------
+    edges
+        List of ``(source_name, target_name, edge_attrs)`` tuples,
+        deduplicated by ``(source, target, stmt_type)``.  Each
+        underlying directed regulatory edge appears once; downstream
+        code is responsible for treating the graph as undirected if
+        that is the gradient pipeline's convention (it is).
+    matched_features
+        Set of input feature names that successfully matched a
+        ``BioEntity`` node by name.  Features absent from this set
+        could not be resolved (typo, not-in-INDRA, alias mismatch);
+        downstream code should distinguish these from biologically
+        isolated features.
+
+    Raises
+    ------
+    ValueError
+        If ``max_hops < 1`` or ``seed_batch_size < 1``.
+    """
+    if max_hops < 1:
+        raise ValueError(f"max_hops must be >= 1, got {max_hops}")
+    if seed_batch_size < 1:
+        raise ValueError(
+            f"seed_batch_size must be >= 1, got {seed_batch_size}"
+        )
+
+    if not features:
+        return [], set()
+
+    # Phase 1: in one query per batch, collect candidate nodes via
+    # APOC and the induced regulatory edges.  Server-side LIMIT
+    # prevents transaction OOM on dense batches.
+    extract_query = f"""
+    MATCH (seed:BioEntity)
+    WHERE seed.name IN $seed_names
+    WITH collect(DISTINCT seed) AS seeds, collect(DISTINCT seed.name) AS matched
+    UNWIND seeds AS s
+    CALL apoc.path.subgraphNodes(s, {{
+        relationshipFilter: 'indra_rel',
+        maxLevel: {max_hops}
+    }}) YIELD node
+    WITH matched, collect(DISTINCT node) AS nodes
+    UNWIND nodes AS a
+    MATCH (a)-[r:indra_rel]->(b)
+    WHERE b IN nodes
+      AND r.evidence_count >= $min_evidence
+      AND r.stmt_type IN $stmt_types
+    RETURN DISTINCT
+      a.name AS source_name,
+      b.name AS target_name,
+      r.evidence_count AS evidence_count,
+      r.stmt_type AS stmt_type,
+      matched
+    LIMIT $max_edges
+    """
+
+    # Dedup edges by (source, target, stmt_type).  Different evidence
+    # counts for the "same" edge across batches collapse to the max.
+    edge_index: dict[tuple[str, str, str], int] = {}
+    matched_features: set[str] = set()
+
+    feature_list = list(features)
+    for i in range(0, len(feature_list), seed_batch_size):
+        batch = feature_list[i:i + seed_batch_size]
+        rows = cogex_client._execute_query(
+            extract_query,
+            seed_names=batch,
+            min_evidence=min_evidence,
+            stmt_types=list(ALL_REGULATORY_TYPES),
+            max_edges=max_edges_per_batch,
+        )
+        if rows and len(rows) >= max_edges_per_batch:
+            import warnings
+            warnings.warn(
+                f"extract_subgraph_induced_by_features hit "
+                f"max_edges_per_batch={max_edges_per_batch} on batch "
+                f"{i // seed_batch_size + 1}; result is incomplete. "
+                f"Reduce seed_batch_size or max_hops.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        for row in rows:
+            src, tgt, ec, st, matched = row[0], row[1], row[2], row[3], row[4]
+            if matched_features.isdisjoint(matched):
+                matched_features.update(matched)
+            key = (src, tgt, st)
+            existing = edge_index.get(key)
+            if existing is None or existing < ec:
+                edge_index[key] = ec
+
+    edges = [
+        (src, tgt, {"evidence_count": ec, "stmt_type": st})
+        for (src, tgt, st), ec in edge_index.items()
+    ]
+    return edges, matched_features
+
+
+def compute_all_pairs_shortest_paths_bounded(
+    edges: list[tuple[str, str, dict[str, Any]]],
+    source_nodes: list[str],
+    max_hops: int,
+    target_filter: set[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    """All-pairs BFS over an edge list, bounded at ``max_hops``, undirected.
+
+    Treats each ``(source, target, ...)`` edge as undirected (consistent
+    with the gradient pipeline's convention).  For each source in
+    ``source_nodes``, returns the shortest-path distances to every
+    reachable node within ``max_hops``.
+
+    Parameters
+    ----------
+    edges
+        Edge list as returned by
+        :func:`extract_subgraph_induced_by_features` (or any equivalent).
+    source_nodes
+        Nodes from which to launch BFS.  A source not present in any
+        edge is reported as ``{source: 0}`` (only itself reachable).
+    max_hops
+        Maximum BFS depth.  ``max_hops < 1`` raises ``ValueError``.
+    target_filter
+        If provided, only distances whose target is in this set are
+        retained.  Used by the landscape runner to limit storage to
+        ``(source × measured_features)`` pairs.  The source itself
+        is always included in its own dict at distance 0.
+
+    Returns
+    -------
+    Dict ``{source: {target: distance}}``.  Distance 0 for the source
+    itself; positive integers up to ``max_hops`` for reachable nodes.
+    """
+    if max_hops < 1:
+        raise ValueError(f"max_hops must be >= 1, got {max_hops}")
+
+    # Build undirected adjacency (set-of-neighbors per node).  Using a
+    # set drops duplicate edges and self-loops automatically.
+    adjacency: dict[str, set[str]] = {}
+    for src, tgt, _ in edges:
+        if src == tgt:
+            continue  # drop self-loops
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+
+    distances: dict[str, dict[str, int]] = {}
+    for source in source_nodes:
+        dist: dict[str, int] = {source: 0}
+        if source not in adjacency:
+            # Source has no edges; only itself is reachable.
+            distances[source] = (
+                dist if target_filter is None or source in target_filter
+                else {}
+            )
+            continue
+
+        frontier = {source}
+        for hop in range(1, max_hops + 1):
+            new_frontier: set[str] = set()
+            for node in frontier:
+                for neighbor in adjacency[node]:
+                    if neighbor not in dist:
+                        dist[neighbor] = hop
+                        new_frontier.add(neighbor)
+            if not new_frontier:
+                break
+            frontier = new_frontier
+
+        if target_filter is not None:
+            dist = {
+                t: d for t, d in dist.items()
+                if t in target_filter or t == source
+            }
+        distances[source] = dist
+
+    return distances
+
+
 def build_networkx_graph(
     edges: list[tuple[str, str, dict[str, Any]]],
     weight_key: str = "evidence_count",

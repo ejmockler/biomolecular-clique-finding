@@ -28,14 +28,28 @@ from .analysis import (
     analyze_panel,
 )
 from .design import PanelDesign, PanelStratum
+from .landscape import (
+    AdjustedFeatureResult,
+    FeatureDistanceMatrix,
+    LandscapeAnalysis,
+    LandscapeDesign,
+    LandscapeResult,
+    analyze_landscape,
+    compute_landscape,
+)
 from .runner import run_panel
 from .seed_runner import GroupResolver, run_seed_gradient
 from .selection import select_panel
 
 __all__ = [
+    "AdjustedFeatureResult",
     "AdjustedSeedResult",
     "FailedSeed",
+    "FeatureDistanceMatrix",
     "GroupResolver",
+    "LandscapeAnalysis",
+    "LandscapeDesign",
+    "LandscapeResult",
     "PanelAnalysis",
     "PanelDesign",
     "PanelResult",
@@ -45,7 +59,9 @@ __all__ = [
     "StratumComparison",
     "TARGET_STRATUM_LABEL",
     "TargetPosition",
+    "analyze_landscape",
     "analyze_panel",
+    "compute_landscape",
     "run_panel",
     "run_seed_gradient",
     "select_panel",
