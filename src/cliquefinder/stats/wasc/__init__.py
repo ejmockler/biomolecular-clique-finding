@@ -11,6 +11,25 @@ control / three-contrast decomposition come in M2-M5.
 """
 from __future__ import annotations
 
+from .bins import (
+    AnchorBins,
+    assign_decile,
+    build_anchor_bins,
+    compute_marginal_correlation_with_anchor,
+    compute_missingness_per_protein,
+    load_measured_degrees,
+    sample_matched_non_neighbors,
+)
+from .null import (
+    AnchorNullResult,
+    AnchorWork,
+    NullLoopContext,
+    anchor_seed,
+    append_checkpoint,
+    compute_anchor_null,
+    load_completed_anchors,
+    run_null_serial,
+)
 from .edges import (
     DEFAULT_CLUSTER_TERMS,
     compute_measured_cluster_members,
@@ -39,6 +58,23 @@ from .preprocess import (
 from .types import Network, Theme, WascEdge
 
 __all__ = [
+    # M2.3 — bins
+    "AnchorBins",
+    "assign_decile",
+    "build_anchor_bins",
+    "compute_marginal_correlation_with_anchor",
+    "compute_missingness_per_protein",
+    "load_measured_degrees",
+    "sample_matched_non_neighbors",
+    # M2.4 — null loop
+    "AnchorNullResult",
+    "AnchorWork",
+    "NullLoopContext",
+    "anchor_seed",
+    "append_checkpoint",
+    "compute_anchor_null",
+    "load_completed_anchors",
+    "run_null_serial",
     # M1 — edges
     "DEFAULT_CLUSTER_TERMS",
     "compute_measured_cluster_members",

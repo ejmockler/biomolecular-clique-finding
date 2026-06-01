@@ -1,0 +1,81 @@
+{
+  "amendment_tag": "wasc-prereg-v1.0.2",
+  "amendment_date_utc": "2026-06-02",
+  "supersedes": ["wasc-prereg-v1.0", "wasc-prereg-v1.0.1"],
+  "scope": "Drop missingness from the matched-bin null (Axis 2). 2-axis (degree, |Pearson|) becomes the v1.0.2 default; 3-axis code path preserved as opt-in for v1.1 prebatch re-derivation.",
+  "trigger": {
+    "type": "EMPIRICAL_AUDIT",
+    "finding": "load_proteomics() returns matrix with 0/1,423,104 NaN cells; the AnswerALS correctedImputed_436 track is RF-imputed upstream by the data portal.",
+    "investigated_in_workflow": "wf_4528d33d-b02",
+    "investigator_count": 3,
+    "investigator_recommendations": {
+      "A_code_trace": "substitute_preimputation",
+      "B_filesystem_search": "substitute_preimputation",
+      "C_cluster_missingness": "drop_axis"
+    },
+    "synthesizer_recommendation": "drop_axis",
+    "synthesizer_reasoning_summary": "Pre-imputation substitute exists externally but requires cohort harmonization, sample-ID reconciliation, and re-validating batch-correction assumptions — that is a v1.1 methodology change, not a v1.0.2 hotfix to a frozen pre-registration. Dropping the inert axis is the only honest amendment respecting the freeze."
+  },
+  "brutalist_verdicts": {
+    "n_total": 3,
+    "ENDORSE": 0,
+    "MODIFY": 3,
+    "REJECT": 0,
+    "incorporated_modifications": [
+      "Rewrite §214 rationale paragraph (V1)",
+      "Migrate existing test_bins.py fixtures (V3)",
+      "Add bit-exact 2-axis vs 3-axis snapshot test on 0%-NaN matrix (V1, V2)",
+      "Add explicit ValueError test for axes=('degree','miss','corr') + missingness=None (V1)",
+      "Audit assign_decile constant-input behavior + add regression test (V2)",
+      "Add no-Q-exposure attestation with SHA-256 pin (V2)",
+      "Enumerate frozen items NOT touched by v1.0.2 (V2)",
+      "Sanity Gate 7 retains diagnostic value: report |Pearson| distribution + n-eligible-candidates-per-cell per anchor (V2)",
+      "Prohibit prebatch matrix substitution under v1.0.2 (V2)",
+      "AnchorBins pickle invalidation policy (V1)",
+      "Add 2-axis ≥ 3-axis cell-count regression assertion (V3)",
+      "Acknowledge v1.0.1 commit-message 'Analytical spec unchanged' claim broken by v1.0.2 (V2)"
+    ]
+  },
+  "no_q_exposure_attestation": {
+    "claim": "The amendment was decided based on the structural property of the abundance matrix (0/1,423,104 NaN) and the bit-exact equivalence of 2-axis vs 3-axis matched-draw sampling on that substrate. No null Q draws against real data were computed prior to the amendment.",
+    "evidence": "Workflow agents read only: (a) the abundance matrix metadata (shape, NaN rate, value scale), (b) the upstream AnswerALS portal README, (c) the per-theme cluster-member NaN distribution. The observed Q CSV existed but was not consulted for the axis decision; its SHA-256 is pinned below to lock its content as of amendment time."
+  },
+  "frozen_artifact_fingerprints_at_amendment_time": {
+    "output/wasc/concordance_per_edge_m2_2.csv": "6e026ce7930bcf504cf79da1a4dc969389c46e8092feb8dc55f7fb5d8a6bf57b",
+    "output/wasc/beta_per_edge_per_group_m2.csv": "2a6c4a392fbc16d81a3ffe6c720dccb131f1e555d83cedf830617ba8c2dcf126",
+    "data/wasc/E_WASC_v1.json": "aeef82ab6a013fe61166405fb13fcb28299d342b39b8342f2803d60f3f90df36",
+    "data/wasc/cluster_members_v1.json": "b5b2cf110ef9ea97c719bb63fc3c68347ed0c5668e14663be042e6c13012dd56",
+    "data/wasc/manifest_v1.json": "2732ce9897b1484abdf3bb287bfc1b3c3d4ae6580f7a44149517efb75bb3a19f",
+    "data/wasc/measured_degrees_v1.json": "c415b498dadb4e79a70b6fe5a88ace7f58921e8cfdcab0409d618ab460883baa"
+  },
+  "items_NOT_modified_by_v102": [
+    "B = 9999 primary; B = 999 sensitivities; B = 99999 floor-tie rerun (D2)",
+    "q-threshold = 0.10 (D4)",
+    "Per-anchor combination = empirical Brown's (D5)",
+    "C2 floor = 48 (§8 three-contrast floor)",
+    "Claim ceiling §9 verbatim including forbidden-language list (D8)",
+    "Three-contrast C1–C4 criterion (D7)",
+    "BY-FDR method (D4)",
+    "STRING five-branch decision rule including STRING-ZERO-POSITIVES (D6)",
+    "Donor exclusions E7 (20 external/iPSC-derived donors)",
+    "C9 batch collapse mapping E9",
+    "Mandatory sensitivities batch (Tertiary table in §10)",
+    "M2.5 four-pronged HARD-HALT tripwire",
+    "Edge enumeration |E_WASC| = 944 (E4)"
+  ],
+  "prohibitions_under_v102": [
+    "Prebatch matrix substitution (incl. sensitivity runs) — prevents silent cherry-picking between substrates",
+    "Use of AnchorBins pickles from pre-amendment runs — dataclass shape changed"
+  ],
+  "v11_future_path": {
+    "candidate_file": "/Users/noot/Documents/case-control-genomics/proteomics/4_matrix/AnswerALS-447-P_proteomics-protein-matrix_prebatchcorrected.txt",
+    "shape": "4144 proteins × 447 samples",
+    "zero_as_missing_rate": 0.1757,
+    "blockers": [
+      "cohort harmonization (27% larger protein universe, 11 extra samples)",
+      "sample-ID separator reconciliation against metadata_enriched_v1.json",
+      "re-validating §2 batch-correction assumptions against pre-ComBat input",
+      "explicit zero-as-missing recoding policy with low-intensity-floor sensitivity"
+    ]
+  }
+}

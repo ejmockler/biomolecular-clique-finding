@@ -488,3 +488,92 @@ These are run as automated tests in the WASC pipeline. The run is INVALID if any
 ---
 
 *End of specification v1.0. Frozen at git tag `wasc-prereg-v1.0` (M6a). Any deviation post-tag must be documented as a SECONDARY analysis with explicit "post-hoc" labelling.*
+
+---
+
+## v1.0.2 Amendment — Missingness axis dropped (2-axis null)
+
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.2`. Applies to all M2.4+ compute. Supersedes the 3-axis language in §4, the Axis 2 reference in §10 (D3), the §11 sampler name, and Sanity Gate 7 in §12. All other v1.0 / v1.0.1 frozen items remain binding.
+
+### Trigger
+
+Empirical audit of `output/proteomics/all_als.data.csv` (the file `load_proteomics()` consumes by default) found a literal NaN rate of `0 / 1,423,104` cells (0.0000%). The matrix is the AnswerALS data-portal `correctedImputed_436` track, which the portal README at `/Users/noot/Documents/case-control-genomics/proteomics/4_matrix/Proteomic Analysis Guidance README.txt:35` documents as Random-Forest imputed upstream of this repo. Cluster-member rate is identically 0.0 across all 345 deduped members (Splicing 190, Chromatin 145, Transport 42). No sibling pre-imputation file, detection-call matrix, or missingness mask exists anywhere under `output/` or `data/`.
+
+Consequence: `compute_missingness_per_protein(abundance)` returns the all-zero series; `assign_decile` collapses every protein into bin 9 (verified by regression test `test_constant_input_does_not_return_minus_one`); the (degree, missingness, |r|) cell key degenerates to (degree, 9, |r|) by construction. Axis 2 contributes zero discriminative power to the matched draw on this dataset.
+
+### No-Q-exposure attestation
+
+At the time of this amendment, **944 observed Q values exist** (`output/wasc/concordance_per_edge_m2_2.csv`, generated 2026-06-02 06:27 from `cac32d0`). The amendment decision is based solely on the structural property of the abundance matrix (0/1,423,104 NaN), demonstrably independent of any observed Q value. No null Q draws have been computed against real data prior to the amendment. The bit-exact equivalence of 2-axis and 3-axis sampling on a 0%-NaN matrix is technical evidence (test `test_2axis_identical_to_3axis_on_zero_nan_matrix`): the rename is a descriptive correction, not a methodology relaxation.
+
+A signed decision log is pinned at `data/wasc/v1.0.2_amendment_decision_log.json` with SHA-256 of the concordance CSV at amendment time and references to the three investigations + three brutalist verdicts (workflow `wf_4528d33d-b02`).
+
+### Amendment §4 — 2-axis null
+
+Replace "3-axis match" / "3-D grid" / "(degree-decile, missingness-decile, |r|-decile)" throughout §4 with **2-axis match** / **2-D grid** / **(degree-decile, |r|-decile)**. The Axis 2 bullet (line 195) is REMOVED. Axis 1 (degree) and Axis 3 (pooled |Pearson|) are retained and renumbered Axis 1 and Axis 2 respectively. On the v1.0.2 dataset, 2-axis and 3-axis matched draws are mathematically identical (the dropped axis was inert by data, not by spec change); the "strictly more conservative than 1-axis (degree-only)" framing applies only to hypothetical datasets where missingness is non-degenerate.
+
+### Amendment §10 — D3
+
+D3 reads: "Null model: anchor-local, **2-axis** (degree-decile × pooled-|Pearson|-decile) matched, sampled WITHOUT replacement (§4)."
+
+### Amendment §11 — Implementation map
+
+Sampler row renames `sample_n_3axis_matched_non_neighbors` to `sample_n_2axis_matched_non_neighbors`. Fallback description loses the missingness term: `(without replacement, exclude_set, ±1 decile fallback on |r|)`. Bin-builder row renames `Degree × coverage × |Pearson| 3-D bin builder` to `Degree × |Pearson| 2-D bin builder`. New code at `src/cliquefinder/stats/wasc/bins.py::build_anchor_bins` uses a `axes=("degree","corr")` default with the 3-axis code path preserved (opt-in via `axes=("degree","miss","corr")`) for the v1.1 prebatch re-derivation path.
+
+### Amendment §12 — Sanity Gate 7
+
+Renamed "**2-axis null match audit**". Reports per-anchor fraction of permutation iterations that required the ±1 decile fallback on the |r|-axis (unchanged threshold > 20%). **Additionally reports** (a) the per-anchor empirical distribution of `|Pearson(anchor, true_neighbor)|` vs `|Pearson(anchor, 2-axis_substitute)|` so v1.1 prebatch re-derivation has a baseline to compare against, and (b) per-anchor distribution of `n-eligible-candidates-per-cell`, which is the load-bearing diagnostic for whether 2-axis sampling saturates the eligible pool.
+
+The 2-axis cell count is structurally lower than the 3-axis cell count (regression test `test_2axis_at_least_3axis_cell_population`), which mechanically lowers fallback frequency. The unchanged > 20% threshold therefore inherits an interpretively looser gate; this is acceptable because the dropped axis was inert on the v1.0.2 substrate.
+
+### Amendment §214 — Rationale
+
+The paragraph titled "Three-axis binning rationale" is replaced with:
+
+> **2-axis binning rationale (v1.0.2):** The audit confirms degree-only matching was the prior practice in v0.9. Pooled |Pearson| was added in v1.0 in response to the brutalist's over-conservativeness diagnosis (within-cluster proteins co-express by pathway selection, so unmatched substitutes systematically have lower marginal correlation with the anchor than true neighbors). Missingness, added in v0.9, is dropped in v1.0.2 because the loaded matrix (`output/proteomics/all_als.data.csv`) is post-imputation by AnswerALS construction (audit: 0/1,423,104 NaN cells), making the axis discriminative-power-zero. Note: RF imputation depresses conditional variance for heavily-imputed proteins; this is partially absorbed by the |Pearson| axis but not fully controlled. A v1.1 re-derivation on the prebatch source (with detection mask preserved) is the canonical resolution.
+
+### Items NOT touched by v1.0.2 (explicit enumeration, prophylactic per brutalist V2 mod)
+
+The following v1.0 / v1.0.1 frozen items remain binding and are NOT modified by this amendment:
+
+- B = 9999 primary; B = 999 sensitivities; B = 99999 floor-tie rerun (D2)
+- q-threshold = 0.10 (D4)
+- Per-anchor combination = empirical Brown's (D5)
+- C2 floor = 48 (§8 three-contrast floor)
+- Claim ceiling §9 verbatim, including the forbidden-language list (D8)
+- Three-contrast C1–C4 criterion (D7)
+- BY-FDR method (D4); Brown's combination (D5)
+- STRING five-branch decision rule including STRING-ZERO-POSITIVES (D6)
+- Donor exclusions E7 (20 external/iPSC-derived donors)
+- C9 batch collapse mapping E9
+- Mandatory sensitivities batch (Tertiary table in §10)
+- M2.5 four-pronged HARD-HALT tripwire
+- Edge enumeration |E_WASC| = 944 (E4)
+
+### Prohibitions under v1.0.2
+
+- **Prebatch matrix substitution is prohibited under v1.0.2** (including sensitivity runs). Restoring Axis 2 requires re-tagging as `wasc-prereg-v1.1` to prevent silent cherry-picking between substrates.
+- AnchorBins pickles from prior runs are invalidated (the dataclass shape changed: `miss_bin: np.ndarray | None`, new `axes` field). M2.4 checkpoint, if any pre-amendment, must be rebuilt from scratch. Recommended runtime defense: startup assertion in the WASC orchestrator that logs the active `axes` and fails-loud if `axes` does not match the spec version pinned in `manifest_v1.json`.
+
+### Future re-derivation path (NOT activated in v1.0.2)
+
+A pre-imputation source exists outside this repo at `/Users/noot/Documents/case-control-genomics/proteomics/4_matrix/AnswerALS-447-P_proteomics-protein-matrix_prebatchcorrected.txt` (12.5 MB, 4144 × 447). Zero-as-missing rate 17.57% overall (literal-NaN rate 0%); per-protein zero-fraction min 0.22%, median 4.25%, max 79.19%; decile histogram populates 8 of 10 bins. Restoring Axis 2 requires:
+
+1. Cohort harmonization (4144 × 447 prebatch vs current 3264 × 436; 27% larger protein universe, 11 extra samples).
+2. Sample-ID separator reconciliation against `metadata_enriched_v1.json` (prebatch uses `-` separators, current uses `_`).
+3. Re-validating §2's batch-correction assumptions against pre-ComBat input.
+4. An explicit zero-as-missing recoding policy (defensible for LFQ MS data) with sensitivity vs a low-intensity-floor alternative.
+
+Reserved for a v1.1 methodology revision tagged `wasc-prereg-v1.1` if/when the pipeline is re-derived on the prebatch matrix.
+
+### Code locking
+
+- `src/cliquefinder/stats/wasc/bins.py`: `build_anchor_bins` gains an `axes=("degree", "corr")` default. Missingness argument is optional and ignored when `"miss"` is not in `axes`; raises `ValueError` if `"miss"` requested without missingness data. The 3-axis code path is preserved (re-activated via `axes=("degree", "miss", "corr")`) so v1.1 re-derivation can ship without reverting this amendment.
+- `AnchorBins` dataclass: `miss_bin: np.ndarray | None`, new `axes` field, `cells: dict[tuple[int, ...], tuple[str, ...]]` (variable-length keys).
+- v1.0.2 regression tests added (`tests/wasc/test_bins.py::TestV102AxesAmendment`, 7 tests): default cell key shape, 3-axis opt-in, ValueError guards, 2-axis ≥ 3-axis cell population, bit-exact equivalence on 0%-NaN matrix.
+- Constant-input regression test (`test_constant_input_does_not_return_minus_one`) closes the brutalist V2 concern that `assign_decile` might silently produce zero-candidate cells on constant input.
+
+### Acknowledgment of v1.0.1 commit-message claim
+
+The v1.0.1 tag commit message explicitly stated "Analytical spec unchanged". v1.0.2 amends an analytical decision (D3). This is a deliberate semver progression: v1.0.1 corrected the input metadata; v1.0.2 corrects an empirically-inert axis. The v1.0.2 commit message records this break.
+
+*End of v1.0.2 amendment. Frozen at git tag `wasc-prereg-v1.0.2`. Decided 2026-06-02; workflow `wf_4528d33d-b02` (3 investigators + 3 brutalist verifiers, 0 REJECT, 3 MODIFY, all mods incorporated).*
