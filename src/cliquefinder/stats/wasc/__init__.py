@@ -16,6 +16,12 @@ from .edges import (
     compute_measured_cluster_members,
     enumerate_wasc_indra_edges,
 )
+from .concordance import (
+    CochranQResult,
+    ConcordanceTable,
+    cochran_q,
+    compute_concordance_per_edge,
+)
 from .fit import (
     EdgeBetaTable,
     FwlFit,
@@ -49,6 +55,11 @@ __all__ = [
     "FwlFit",
     "fit_edges_per_group",
     "fit_fwl_per_pair",
+    # M2.2 — concordance
+    "CochranQResult",
+    "ConcordanceTable",
+    "cochran_q",
+    "compute_concordance_per_edge",
     # types
     "Network",
     "Theme",
