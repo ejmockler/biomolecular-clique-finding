@@ -16,6 +16,20 @@ from .edges import (
     compute_measured_cluster_members,
     enumerate_wasc_indra_edges,
 )
+from .fit import (
+    EdgeBetaTable,
+    FwlFit,
+    fit_edges_per_group,
+    fit_fwl_per_pair,
+)
+from .preprocess import (
+    GroupDesign,
+    WascDataBundle,
+    build_group_design,
+    build_wasc_data_bundle,
+    load_enriched_metadata,
+    load_proteomics,
+)
 from .types import Network, Theme, WascEdge
 
 __all__ = [
@@ -23,6 +37,18 @@ __all__ = [
     "DEFAULT_CLUSTER_TERMS",
     "compute_measured_cluster_members",
     "enumerate_wasc_indra_edges",
+    # M2 — preprocess
+    "GroupDesign",
+    "WascDataBundle",
+    "build_group_design",
+    "build_wasc_data_bundle",
+    "load_enriched_metadata",
+    "load_proteomics",
+    # M2 — fit
+    "EdgeBetaTable",
+    "FwlFit",
+    "fit_edges_per_group",
+    "fit_fwl_per_pair",
     # types
     "Network",
     "Theme",

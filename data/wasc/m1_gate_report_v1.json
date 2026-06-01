@@ -1,0 +1,8 @@
+{
+  "gate_passed": true,
+  "n_triples": 50,
+  "n_skipped": 0,
+  "max_beta_err": 7.959854997352522e-12,
+  "max_se_err_rel": 1.1977820900497834e-11,
+  "failures": []
+}
