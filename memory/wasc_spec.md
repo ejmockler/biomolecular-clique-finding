@@ -1,0 +1,490 @@
+# WASC — Within-cluster Anchor-Slope Concordance: Statistical Specification
+
+> **STATUS — v1.0 (PRE-REGISTRATION).** This spec is binding. It incorporates the brutalist modifications and the M1 enumeration results (locked 2026-06-02). All sections marked PRE-REGISTERED must be tagged in the git commit `wasc-prereg-v1.0` (M6a) prior to any analysis compute. M1 (edge enumeration + Frisch-Waugh kernel) is COMPLETE; M2 onward proceeds against this spec.
+>
+> **M1 results (LOCKED INPUTS):**
+> - `|E_WASC| = 944` total INDRA hop-1 within-theme edges over the Wave-22 measured proteome (3,264 UniProt accessions). Per-theme: **Splicing 434** (190 measured cluster members from 304 UniProt / 303 HGNC), **Chromatin 443** (145 measured cluster members from 468 UniProt / 467 HGNC), **Transport 67** (42 measured cluster members from 70 UniProt / 70 HGNC). Total measured cluster members: **377**.
+> - Within-theme edge densities (biological sanity): Splicing 2.4%, Chromatin 4.2%, Transport 7.8%.
+> - INDRA query: 2026-06-02 against `bolt://indra-cogex-lb-b954b684556c373c.elb.us-east-1.amazonaws.com:7687`.
+> - Three-contrast C2 floor (empirical, derived from `|E_WASC|=944`): `ceil(0.05 · 944) = 48`.
+>
+> **Brutalist modifications applied in this v1.0 (vs. v0.9 draft):**
+> 1. Null model uses a **3-axis** match: degree-decile × missingness-decile × **pooled |Pearson(anchor_a, p)| decile** (§4).
+> 2. STRING control has **five decision branches**: `INDRA-SPECIFIC`, `STRING-STRONGER`, `INCONCLUSIVE`, `STRING-UNDERPOWERED`, `STRING-ZERO-POSITIVES`. The primary STRING effect-size is **ΔQ on the anchor-pair edge-INTERSECTION** (robust to zero positives); median-of-positives is secondary. `STRING-ZERO-POSITIVES` explicitly **forbids** the "INDRA-specific by exclusion" interpretation (§7).
+> 3. STRING ENSP→UniProt mapping is **canonical-only** (not the union over isoforms) to avoid isoform double-counting (§7.1).
+> 4. Three-contrast C2 floor uses the **empirical 48** edges (= `ceil(0.05 · 944)`), not a re-derivation (§8).
+> 5. C9 Batch is **collapsed to site/year** before within-group ComBat, to defeat singleton-batch degeneracy across 25 C9 donors (§2.1).
+> 6. **Mandatory tertiary sensitivities** are PRE-REGISTERED and run regardless of primary outcome: T-Cell-stratified, iPSC-retained, batch-correction-OFF, down-sampled-SPOR-to-25 (most important — detects n-asymmetry attenuation), all-protein-pool null, B=99999 if floor-tied. Sensitivities may use B=999; primary stays at B=9999 (§10).
+> 7. **M1 numerical reference tests** are run and recorded: (a) Frisch-Waugh vs `statsmodels.OLS` agreement to 1e-8 on 50 real triples; (b) `j~a` vs `a~j` swap-invariance — if Q drifts >5% on real noisy data, the slope-symmetry caveat is appended verbatim to §9 (§2.5, §12).
+> 8. **Claim ceiling adopts the brutalist-revised version verbatim** (§9). Forbidden language list extended: *mechanism, causal, drives, regulates, controls, rewiring, validates, post-transcriptional, INDRA-edges-are-correct*.
+> 9. Runtime budget: ~25–40 h per primary run; sensitivities batch ~120–200 h (see build plan; M2 anchor loop is `joblib`-parallel `n_jobs=-1`).
+> 10. Pre-registration manifests are **frozen artifacts** at M6a tag time: `data/wasc/cluster_members_v1.json`, `data/wasc/E_WASC_v1.json` (and downstream E2–E9, see §10).
+
+**Version:** 1.0 (pre-registration)
+**Date:** 2026-06-02
+**Author:** WASC working group
+**Status:** FROZEN AT TAG `wasc-prereg-v1.0`. Any post-tag deviation is a SECONDARY analysis with explicit "post-hoc" labelling.
+
+WASC tests whether the *cross-protein abundance coupling* among INDRA hop-1 neighbor pairs within the eight pre-registered C9-ALS cluster terms is *invariant* across the three donor groups (C9, Sporadic, Control), more so than would be expected from degree-, coverage-, and marginal-correlation-matched non-neighbor pairs. It is a covariance-structure test, not a mean-shift test, and it is restricted to within-cluster edges. A positive result claims slope-shift structure descriptively; it does not claim mechanism, causation, or that INDRA edges are validated regulatory relationships.
+
+---
+
+## 1. Edge enumeration
+
+Let `T = {Splicing, Chromatin, Transport}` be the three pre-registered cluster themes. The 8 cluster terms (PRE-REGISTERED, frozen in `scripts/viz/common.py::TERMS`) are:
+
+| Theme | Term | Cogex ID |
+|---|---|---|
+| Splicing | mRNA Splicing | reactome:R-HSA-72172 |
+| Splicing | Processing of Capped Intron-Containing Pre-mRNA | reactome:R-HSA-72203 |
+| Splicing | mRNA splicing, via spliceosome | go:0000398 |
+| Chromatin | chromosome | go:0005694 |
+| Chromatin | chromatin | go:0000785 |
+| Transport | nucleocytoplasmic transport | go:0006913 |
+| Transport | nuclear pore | go:0005643 |
+| Transport | Vpr-mediated nuclear import of PICs | reactome:R-HSA-180910 |
+
+For each theme T:
+1. `C_T` = union over `members(t)` for `t ∈ TERMS, cluster(t) = T`, where `members(t)` is computed by `fetch_term_members_via_indra([term_id_t])` → `hgnc_ids_to_uniprots(union)` → UniProt set. (Code path: `scripts/viz/common.py:213,253`.)
+2. `M` = set of **3,264** measured UniProt accessions in the Wave-22 protein-level matrix.
+3. `M_T = M ∩ C_T` = measured cluster members for theme T.
+
+**Edge set:**
+
+```
+E_WASC = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T,  a ≠ j,  dist_INDRA(a, j) = 1,
+                                    anchor_a is INDRA-resolvable }
+```
+
+where `dist_INDRA` is the hop distance on the **Wave-24l measured-only INDRA regulatory subgraph** restricted to `ALL_REGULATORY_TYPES` (Activation / Inhibition / IncreaseAmount / DecreaseAmount), computed by `extract_subgraph_induced_by_features(... restrict_endpoints_to_features=True, max_hops=1, node_filter=M)` then `compute_all_pairs_shortest_paths_bounded(... max_hops=1)`.
+
+**Edges are undirected**: each unordered pair `{a, j}` is fit once. The regression assigns `y_j` to the lexicographically smaller of the two UniProts and `anchor_a` to the other. The choice is symmetric in inference (slope sign just flips with the swap; Q is invariant up to the swap-invariance tolerance verified in §12).
+
+**Both endpoints must be measured cluster members of the SAME theme T.** Cross-theme INDRA-hop-1 pairs are **DEFERRED** out of M1 scope and are NOT in `E_WASC`. They will be reported only in a future exploratory secondary module that does not affect the primary BY-FDR pool.
+
+**Locked edge count (M1):**
+
+| Theme | `|M_T|` (measured cluster members) | `|C_T|` UniProt union | `|C_T|` HGNC union | Within-theme edges |
+|---|---:|---:|---:|---:|
+| Splicing | 190 | 304 | 303 | **434** |
+| Chromatin | 145 | 468 | 467 | **443** |
+| Transport | 42 | 70 | 70 | **67** |
+| **TOTAL** | **377** | — | — | **`|E_WASC| = 944`** |
+
+Within-theme densities (sanity): Splicing 2.4%, Chromatin 4.2%, Transport 7.8% — all biologically plausible (Transport is dense because nuclear-pore + transport machinery is heavily annotated; Splicing is sparse because of the size of the spliceosome union).
+
+This count is **frozen** in `data/wasc/E_WASC_v1.json` at M6a (pre-registration item E4).
+
+---
+
+## 2. Per-edge per-group regression
+
+For each edge `(a, j) ∈ E_WASC` and each group `g ∈ G = {C9, SPOR, CTRL}`, fit a single OLS:
+
+```
+y_{j, s}  =  β_0  +  β_a · anchor_{a, s}  +  γ_Sex · Sex_s  +  γ_Age · Age_s
+            +  γ_Tissue · Tissue_s  +  ε_s     for  s ∈ donors(g)
+```
+
+with the contrast vector `c = (0, 1, 0, 0, ...)` zero-padded for all covariates, so that the SE targets the anchor-slope coefficient `β_a` only. The estimate of interest is `β̂_{j|a, g}` (the partial regression slope of target on anchor, within group g, adjusted for covariates).
+
+### 2.1 Response and Batch handling
+
+`y_{j, s}` = pre-residualized log2 abundance of target protein j in donor s, defined as:
+
+```
+y_{j, s}  =  log2_abundance_{j, s}  −  ComBat_location_{j, batch*(s)}^{(g)}
+                                     / ComBat_scale_{j, batch*(s)}^{(g)}
+```
+
+That is: within each group g, for each target protein j, residualize Batch via ComBat-style EB location/scale adjustment fit on the within-group donors only. The pre-residualization is the SAME for every edge whose target is j and whose group is g, so it is computed once per `(g, j)` pair and reused across all anchors a.
+
+**C9-Batch collapse (brutalist mod 5, PRE-REGISTERED, item E9).** The raw Batch field has up to 50 levels across 25 C9 donors, producing singleton batches that defeat ComBat EB estimation. **For the C9 group only**, Batch is collapsed to `site_year(s) := concat(donor_site(s), collection_year(s))` BEFORE ComBat is fit. The mapping `Batch_raw → site_year` is computed at pre-registration time and saved to `data/wasc/c9_batch_collapse_v1.json`. SPOR and CTRL retain their raw `Batch` because their donor counts (294, 71) make singleton batches rare; the audit at M6a will verify ≥3 donors per batch in those groups or extend the collapse rule accordingly.
+
+`anchor_{a, s}` = `log2_abundance_{a, s}` z-scored within group g (mean-centered, unit variance). Z-scoring within-group makes `β̂_{j|a,g}` interpretable as "1-SD-of-anchor change predicts β̂ SD-of-target change in group g" and makes the across-group comparison scale-comparable.
+
+### 2.2 Covariates (from the metadata audit)
+
+- **Sex:** binary (Male=0 / Female=1). 100% coverage. Fit directly.
+- **Age** = `Age_at_First_PBMC_Collection`, z-scored within group g. Missing values imputed by linear regression on Sex *within group g* (pre-registered imputation rule; see `memory/wave_24l_measured_only_paths.md`). 91.3% pre-imputation coverage.
+- **Tissue** = `Primary_Tissue` collapsed to 3 levels (T-Cell / NT-Cell+Bulk / Unknown), dummy-coded with T-Cell as reference (drop_first=True via `build_covariate_design_matrix`). This is the only available cell-composition proxy and is heavily group-confounded (C9 92% T-Cell, SPOR 65%, CTRL 38%), making it load-bearing.
+- **Batch:** PRE-RESIDUALIZED (see §2.1, with C9 site_year collapse), NOT a column of X.
+- **Excluded donors:** the 20 external/iPSC-derived controls (EDi*, CW50*, CS007, W14-16C* prefixes) have no Batch ID and no portal coverage; they are EXCLUDED from all WASC analyses (PRE-REGISTERED, item E7). Net C9 = 25, SPOR ≈ 294, CTRL ≈ 71 (post-exclusion).
+
+### 2.3 Missingness handling
+
+For each `(j, a, g)`, define `S_{j, a, g}` = donors s in group g where:
+- y_{j,s} is observed (after pre-residualization), AND
+- anchor_{a,s} is observed, AND
+- Sex_s, Age_s (post-imputation), Tissue_s are all defined, AND
+- s is not in the 20 excluded external/iPSC donors.
+
+Fit OLS on `S_{j, a, g}` only. Require `|S_{j, a, g}| ≥ 10` for C9 and `|S_{j, a, g}| ≥ 15` for SPOR/CTRL; otherwise the per-group fit is marked degenerate.
+
+### 2.4 Output per (j, a, g)
+
+- `β̂_{j|a, g}` — the anchor-slope point estimate
+- `SE(β̂_{j|a, g})` = `√(σ̂²_{g,(j,a)} · [(X_g^T X_g)^{-1}]_{a,a})` where the `[a,a]` element corresponds to the anchor column (column 1, after intercept)
+- `df_{g, (j, a)}` = `|S_{j, a, g}| − rank(X_g)`
+- `converged`: True iff `|S_{j, a, g}|` thresholds met AND `X_g` full rank AND `SE > 0`
+
+**Variance moderation (optional sensitivity):** apply EB shrinkage (`fit_f_dist` + `squeeze_var` from `permutation_gpu.py`) across all `(j, a)` pairs *within group g* to stabilize small-sample C9 variances. Report Q both with and without EB; the primary test uses the un-moderated SE (because EB shrinkage across edges introduces dependence between edges and complicates the Q null distribution).
+
+### 2.5 Implementation pattern
+
+Use Frisch-Waugh-Lovell to avoid O(|E| × |G|) full OLS:
+
+1. Per group g, build the covariate-only design `X_g^{cov} = [intercept | Sex | Age | Tissue_dummies]` once. Compute the residual projection `M_g = I − X_g^{cov} (X_g^{cov T} X_g^{cov})^{-1} X_g^{cov T}` once. This is O(n_g²) per group.
+2. For each protein p ∈ M (anchors and targets), compute `p̃_g = M_g @ z(p)_g` once — the covariate-residualized within-group expression vector for p. Cache.
+3. For each edge `(a, j)`, the anchor-slope and SE become the closed-form univariate regression of `j̃_g` on `ã_g`:
+   - `β̂_{j|a, g} = (ã_g^T j̃_g) / (ã_g^T ã_g)`
+   - `RSS = j̃_g^T j̃_g − β̂² · (ã_g^T ã_g)`
+   - `σ̂² = RSS / (n_g − rank(X_g^{cov}) − 1)`
+   - `SE = √(σ̂² / (ã_g^T ã_g))`
+
+This makes the WASC fit phase O(|M| · n_g) for residualization + O(|E_WASC| · n_g) for the per-edge dot products — fast enough for 944 edges × 3 groups × (25 + 294 + 71) samples on CPU without GPU. The anchor loop in M2 is `joblib.Parallel(n_jobs=-1)` over anchors (PRE-REGISTERED, brutalist mod 4); single-threaded scale is infeasible at `|E_WASC| = 944`.
+
+Reuse: `build_covariate_design_matrix` (`design_matrix.py:70`) for X_g^{cov} construction; reuse the numerical guards (rank check, condition number). Do NOT reuse `precompute_ols_matrices` (the batched paths assume shared X across the batch; the WASC kernel has shared X within group but different per-edge regression — Frisch-Waugh decouples this cleanly).
+
+**M1 numerical reference tests (brutalist mod 7, completed at M1 tag time, recorded in `data/wasc/m1_numerical_reference_v1.json`):**
+- **(a) Frisch-Waugh ≡ statsmodels.OLS.** On 50 randomly sampled real `(j, a, g)` triples, the absolute difference `|β̂_{FW} − β̂_{statsmodels}|` and `|SE_{FW} − SE_{statsmodels}|` must each be ≤ `1e-8`. M1 result: **PASS** (max abs diff `< 1e-10`).
+- **(b) Swap invariance.** On the same 50 triples, refit with `a` and `j` swapped (regress anchor on target instead of target on anchor) and recompute Q. If `|Q_{j~a} − Q_{a~j}| / Q_{j~a} > 5%` on the median triple, the slope-symmetry caveat below is appended verbatim to §9. M1 result: **PASS** (median drift 0.8%, max 3.2% on real noisy triples); §9 caveat NOT triggered.
+
+---
+
+## 3. Concordance statistic
+
+Define the precision weights `w_{g, j, a} = 1 / SE(β̂_{j|a, g})²` for each `(j, a, g)` with converged regression. Let `G_obs(j, a) = {g : (j, a, g) converged}`.
+
+**Primary edge statistic:**
+
+```
+β̄_{j, a}  =  Σ_{g ∈ G_obs} w_{g, j, a} · β̂_{j|a, g}   /   Σ_{g ∈ G_obs} w_{g, j, a}
+
+Q(j, a)  =  Σ_{g ∈ G_obs} w_{g, j, a} · (β̂_{j|a, g}  −  β̄_{j, a})²
+```
+
+This is Cochran's Q from inverse-variance-weighted meta-analysis. Under H0 of identical true slopes across groups (`β_{j|a, g} = β_{j, a}` for all g) and exact-Normal sampling, `Q ~ χ²_{|G_obs|−1}`. We do NOT use the χ² calibration; we use the empirical null from 3-axis-matched non-neighbor pairs (§4).
+
+**Interpretation:** **LOW Q = invariant coupling across groups = WASC-positive.** HIGH Q = group-dependent coupling.
+
+**Primary edge inclusion criterion:** `|G_obs(j, a)| = 3` (all three groups converged). Edges with `|G_obs| < 3` are reported in a SECONDARY two-group analysis and excluded from the primary BY-FDR pool.
+
+**Descriptive auxiliaries (reported, not tested):**
+- `I²(j, a) = max(0, (Q − (|G_obs|−1)) / Q)`
+- `τ̂²(j, a)` = DerSimonian-Laird random-effects variance estimate
+- `direction-pattern(j, a)` = sign tuple `(sign(β̂_{j|a, C9}), sign(β̂_{j|a, SPOR}), sign(β̂_{j|a, CTRL}))` for narrative reporting only
+
+**Rationale for choosing Q over alternatives:**
+- **Kendall's W (unweighted ordinal):** rejected — discards the precision asymmetry between n=25 C9 and n=294 SPOR; small samples should not vote equally with large.
+- **I²:** monotone-derivable from Q but bounded in [0, 1]; compresses signal range, saturates at 0 for many edges, complicates permutation null reuse.
+- **τ² (DerSimonian-Laird):** requires Q − df as intermediate; adds method-of-moments step whose small-k=3 sampling distribution is non-pivotal.
+- **Q:** pivotal under exact H0, directly weights by precision (handles n=25 vs n=294 asymmetry as required), works on continuous scale that survives permutation reshuffling.
+
+---
+
+## 4. Null model
+
+The Q statistic's permutation null is constructed **per anchor**, preserving anchor-degree, target-coverage, **and pooled marginal correlation with the anchor** (brutalist mod 1). The two-axis (degree × missingness) null was over-conservative because within-theme cluster members co-express by pathway selection, inflating the substitute targets' marginal correlation with the anchor relative to true neighbors; the third axis corrects this.
+
+For each anchor `a ∈ M_T` that participates in at least one edge in `E_WASC` and each theme T:
+1. Let `N_a^obs` = set of true measured within-theme INDRA hop-1 neighbors of a in theme T (the targets of a's WASC edges in theme T). Let `n_a = |N_a^obs|`.
+2. Let `P_a^candidate` = `M_T \ N_a^obs \ {a}` (measured cluster members in theme T, excluding a's true neighbors and a itself).
+3. Bin proteins in `P_a^candidate` on a **3-D grid**:
+   - **Axis 1 — degree decile** within the INDRA measured-only regulatory graph. Degree is the full regulatory degree from `query_gene_degrees_batched`, cached in `distances.meta.json`.
+   - **Axis 2 — missingness decile** within the proteomics matrix. Missingness rate is `missing_per_feature / n_samples_total` from `analyze_missing_values`.
+   - **Axis 3 — pooled |Pearson(anchor_a, p)| decile**, where the Pearson correlation is computed on the union of all three groups' donors (after the same Sex/Age/Tissue residualization used in §2 but BEFORE the per-group covariate-adjustment), restricted to donors where both `anchor_a` and `p` are observed. Bin edges are computed per-anchor (deciles of `|r(a, p)|` over `p ∈ M_T \ {a}`).
+4. For each true neighbor `j ∈ N_a^obs`, identify its (degree-decile, missingness-decile, |r|-decile) cell.
+5. **Per-anchor permutation:** for `b = 1, ..., B`:
+   - Draw n_a substitute targets without replacement from `P_a^candidate`, with the constraint that the multiset of (degree-decile, missingness-decile, |r|-decile) cells matches that of `N_a^obs` exactly. If a perfect 3-D match draw fails after 100 attempts, fall back to a relaxed match where the |r|-decile constraint is widened by ±1 decile (record the relaxation per-anchor in the null-diagnostics manifest). If still failing after 100 further attempts, mark anchor a's permutation as failed for iteration b (record but do not impute).
+   - For each substitute target `j'`, fit the per-group regressions §2, compute `Q^{(b)}(j', a)` exactly as for the real edges.
+
+6. Pool null Q values **across all anchors and all iterations** to form the global null distribution `Q_null = {Q^{(b)}(j', a) : a ∈ anchors, b ∈ 1..B, j' ∈ substitute set b}`. Total size: `|E_WASC| × B = 944 × 9999 ≈ 9.4 × 10^6`.
+
+**Per-edge p-value:**
+```
+p(j, a) = (1 + #{Q ∈ Q_null : Q ≤ Q(j, a)})  /  (1 + |Q_null|)
+```
+(one-sided, lower tail; small Q = invariant = WASC-positive). The "+1 / +1" is the Phipson-Smyth correction.
+
+**Per-anchor null pooling (PRE-REGISTERED as primary):** pool null Qs only within the same anchor a and same `n_a`, i.e., `Q_null^a = {Q^{(b)}(j', a) : b ∈ 1..B, j' ∈ substitute set b}`. This gives an anchor-local p-value that controls for anchor-specific noise structure. The global pool is reported as a sensitivity. The primary p-value uses the anchor-local pool.
+
+**B (number of permutations):** **`B = 9999` for the primary run.** Rationale: with `|E_WASC| = 944` edges, the smallest resolvable per-edge p-value is `1 / (B + 1) ≈ 10^{-4}`. After BY-FDR (§6) at q = 0.10 the most stringent rejection threshold is `q · (1/H_n) ≈ 0.10 / 7.5 ≈ 0.013` (`H_{944} ≈ 7.5`); B = 9999 provides ~7× safety margin against tied-rank ambiguity. **Sensitivity runs may use `B = 999`** (1/1000 floor) to fit the ~120–200 h sensitivities batch budget. If the primary BY q-table is **floor-tied** (i.e., the smallest p-value equals `1/(B+1)` at B=9999), a single `B = 99999` rerun is triggered (tertiary, pre-registered, item E10 in §10).
+
+**Three-axis binning rationale:** the audit confirms degree-only matching was the prior practice; missingness (Axis 2) was added in v0.9; pooled |Pearson| (Axis 3) is new in v1.0 in response to the brutalist's over-conservativeness diagnosis. Within-cluster proteins co-express by pathway selection, so unmatched substitutes systematically have lower marginal correlation with the anchor than true neighbors — making the null too easy to beat. Decile-matching on `|r(a, p)|` neutralizes this and produces a strictly more conservative null than 2-axis matching.
+
+**Implementation note:** the new sampling primitive `sample_n_3axis_matched_non_neighbors(anchor, n, joint_bins_3d, exclude_set, rng) -> list[str]` is in `src/cliquefinder/stats/wasc/null.py`. The per-anchor RNG seeding pattern (`md5(anchor_uniprot + "wasc-v1.0" + iteration)`) from `_per_feature_gradient_loop` (`landscape.py:1033`) is reused for reproducibility under multi-process parallelism. Parallelism via `joblib.Parallel(n_jobs=-1)` over anchors (PRE-REGISTERED, brutalist mod 4).
+
+---
+
+## 5. Per-anchor combination
+
+Each anchor a contributes `n_a` edge tests. To combine into a per-anchor statistic, use **empirical Brown's method** (Poole et al. 2016).
+
+```
+χ²_a (combined)  =  −2 · Σ_{j ∈ N_a^obs} log(p(j, a))
+
+E[χ²_a]  =  2 · n_a
+Var[χ²_a]  =  4 · n_a  +  2 · Σ_{i ≠ j} cov_emp(−2 log p(i, a), −2 log p(j, a))
+
+c_a  =  Var[χ²_a] / (2 · E[χ²_a])
+df_a  =  2 · E[χ²_a]² / Var[χ²_a]
+
+p_a^Brown  =  Pr(χ²_{df_a} ≥ χ²_a / c_a)
+```
+
+The covariance `cov_emp` is estimated **from the null distribution** of `(−2 log p(i, a), −2 log p(j, a))` pairs across the B permutation iterations — this is the "empirical" variant and correctly captures within-anchor dependence (the null tests share donors, share anchor expression vector, share covariate design). Brown's method reduces to Fisher's combination if the covariance is zero.
+
+**Pre-registered combination decision:** Brown's chosen because (a) within-anchor edge tests are positively correlated through the shared anchor expression vector, (b) the audit confirms no Brown's implementation exists in the repo — this is new code with the empirical estimator landing in `src/cliquefinder/stats/combination.py`, re-exported through `stats/__init__.py`. Fisher's method is reported as a sensitivity and would over-state significance under positive dependence.
+
+**Reporting:**
+- Primary table 1: per-edge `(j, a, Q, p, q_BY)` for all `(j, a) ∈ E_WASC`.
+- Primary table 2: per-anchor `(a, n_a, χ²_a, p_a^Brown, q_a^BY)` for all anchors.
+- Per-edge and per-anchor analyses are reported in PARALLEL, not as a hierarchy. The primary hypothesis is on the per-edge BY-FDR table (§6); per-anchor combination is reported alongside as a complementary view.
+
+---
+
+## 6. Multiple testing
+
+**Primary:** Benjamini-Yekutieli FDR over the per-edge p-values, q-threshold **q = 0.10**.
+
+```
+q(j, a) = BY-adjusted p(j, a)   via fdr_correction(p_values, method="BY")
+```
+
+Edge is "WASC-positive" iff `q(j, a) ≤ 0.10`.
+
+**Rationale for BY over BH:** the per-edge p-values are positively dependent through (a) shared anchors (same X column reused), (b) shared targets (same y vector reused across multiple anchor regressions), (c) the within-anchor null draws are themselves dependent. BH controls FDR only under PRDS (positive regression dependency on a subset), which the WASC p-value graph does NOT satisfy generally — anchor-sharing produces dependence between edges with the SAME anchor that is not strictly monotone in any natural ordering. BY controls FDR under arbitrary dependence at the cost of an inflation factor `H_n = Σ_{i=1}^{n} 1/i` (for `n = |E_WASC| = 944`, `H_n ≈ 7.5`). The effective per-edge threshold at q = 0.10 is therefore approximately `0.10 / 7.5 ≈ 0.013` at the smallest rank.
+
+**Implementation:** `fdr_correction(pvalues, method="BY", alpha=0.10)` from `src/cliquefinder/stats/differential.py:242`. No new code; BY is already wired through.
+
+**q-threshold = 0.10 (not 0.05), framed as "count + cluster pattern":** WASC is an exploratory invariance test of structural equality, not a confirmatory mean-shift gate. The **primary claim is the COMPLEX — the count of WASC-positive edges and their per-theme cluster-membership pattern — not any single per-edge mechanism** (brutalist mod 3, user-confirmed M1 decision). At q = 0.05 with BY's inflation, power for 944 edges with n=25 in C9 is dangerously low; q = 0.10 is the conventional FDR threshold for exploratory genomics. The threshold is PRE-REGISTERED at q = 0.10 and cannot be changed post-hoc.
+
+**Per-anchor BY:** apply `fdr_correction(p_a^Brown_values, method="BY", alpha=0.10)` independently on the per-anchor table.
+
+**Sensitivity:** report results at q = 0.05 and q = 0.20 as descriptive, but the binary decision rule uses q = 0.10.
+
+**Effective-tests diagnostic (secondary):** compute `estimate_effective_tests(correlation_matrix_of_edge_p_values)` from `stats/correlation_tests.py:628` for transparency on the dependence structure, but do not use M_eff to lower the threshold.
+
+---
+
+## 7. STRING-PPI negative control
+
+PRE-REGISTERED. Same anchor set, same regression spec (§2), same Q statistic (§3), same null model (§4), same FDR procedure (§6) — only the edge set changes.
+
+### 7.1 STRING edge set construction
+
+Implement (audit gap — no loader exists):
+
+1. Load `data/string/9606.protein.physical.links.v12.0.txt.gz`. Filter rows to `combined_score ≥ 700`. Result: ≈ 173,038 edges among ≈ 10,746 ENSP.
+2. **Map ENSP → UniProt CANONICAL ONLY** (brutalist mod 3). For each ENSP, the canonical UniProt accession is the **reviewed Swiss-Prot primary accession** for the gene that the ENSP belongs to, as resolved by `mygene` (`species=human`, `fields=uniprot.Swiss-Prot`) with the unreviewed/isoform accessions discarded. This avoids isoform double-counting that inflates STRING density (multiple ENSP isoforms of the same gene would otherwise each contribute an edge per partner). If `mygene` returns multiple Swiss-Prot accessions, take the alphabetically-first **after** filtering to reviewed entries; the mapping is recorded with the version date in `data/wasc/string_ensp_to_uniprot_canonical_v1.json` (E5).
+3. Collapse to UniProt adjacency under the canonical-only policy: there is an edge between canonical UniProts u1, u2 iff there exists an ENSP-edge (e1, e2) with `canonical_UniProt(e1) = u1` and `canonical_UniProt(e2) = u2`. Expected measured-coverage: comparable to T43's ~71% but somewhat lower because isoform-only matches are dropped.
+
+### 7.2 STRING edge set for WASC negative control
+
+```
+E_STRING = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T,  a ≠ j,  dist_STRING(a, j) = 1 }
+```
+
+Same theme-purity and within-cluster constraints as INDRA. Edge count will be different (STRING physical density differs from INDRA regulatory density on these proteins).
+
+### 7.3 Decision rule
+
+**Primary STRING effect-size (brutalist mod 2): ΔQ on the anchor-pair edge-INTERSECTION.** Let `E_BOTH = E_WASC ∩ E_STRING` (edges that appear in *both* networks over the WASC anchor pool). Compute the mean (or median) Q over `E_BOTH` separately under the INDRA regression (`Q̄_INDRA^{∩}`) and under the STRING regression (`Q̄_STRING^{∩}` — note: same regression spec, same data; only the null-set membership differs, but for the intersection-effect we compute Q directly on `E_BOTH` and compare its distribution to the corresponding intersection-restricted null under each network). The intersection-restricted effect-size is:
+
+```
+ΔQ^{∩}  =  Q̄_STRING^{∩}  −  Q̄_INDRA^{∩}      (positive = INDRA more invariant on shared edges)
+```
+
+This is **robust to the zero-positives degenerate case** because it does not depend on either network having a non-empty WASC-positive set — it compares the full Q distributions on the same edge population.
+
+**Secondary STRING effect-size: median Q across WASC-positive edges.** As in v0.9: compute `Q̃_INDRA` over INDRA's BY-positive edges and `Q̃_STRING` over STRING's BY-positive edges. The effect-size is `ΔQ̃ = Q̃_STRING − Q̃_INDRA`. **This statistic is UNDEFINED when STRING has zero BY-positive edges** and triggers the `STRING-ZERO-POSITIVES` branch below.
+
+Confidence intervals on both ΔQ-statistics via 1000-resample BCa bootstrap over edges (within each network independently, then differenced). For the intersection effect-size, the bootstrap resamples edges of `E_BOTH`.
+
+**Decision rule (PRE-REGISTERED, FIVE BRANCHES):**
+
+| Branch | Trigger | Interpretation |
+|---|---|---|
+| **INDRA-SPECIFIC** | Primary `ΔQ^{∩}` BCa 95% CI lower bound > 0 AND STRING coverage gate (§12) passes AND STRING has ≥ 1 BY-positive edge | INDRA-specific coupling-invariance interpretation is SUPPORTED. Secondary `ΔQ̃` is reported for context. |
+| **STRING-STRONGER** | Primary `ΔQ^{∩}` BCa 95% CI upper bound < 0 | The result is STRING-stronger. INDRA-specific interpretation is **REJECTED**. Result is reported as a generic within-cluster coupling-structure finding without regulatory-edge framing. |
+| **INCONCLUSIVE** | Primary `ΔQ^{∩}` BCa 95% CI straddles 0 AND STRING coverage gate passes AND STRING has ≥ 1 BY-positive edge | Edge-source specificity is undetermined. Both networks' Q distributions are reported side-by-side. Do NOT claim INDRA-specific wiring. |
+| **STRING-UNDERPOWERED** | STRING measured-coverage on cluster members < 60% of INDRA's coverage (per §12 gate 3) | STRING control is statistically uninformative. Result section reports STRING as underpowered; no INDRA-specific claim from STRING is licensed. |
+| **STRING-ZERO-POSITIVES** | STRING has 0 BY-positive edges (secondary `ΔQ̃` undefined) BUT STRING coverage gate passes | The primary `ΔQ^{∩}` BCa CI is still the decision input, but the **`STRING-ZERO-POSITIVES` branch EXPLICITLY FORBIDS the "INDRA-specific by exclusion" interpretation** even if `ΔQ^{∩}` lower bound > 0. Report as: "STRING returned zero WASC-positive edges; the intersection-effect-size remains the only quantifiable comparison and is reported, but no claim of INDRA-edge-source specificity by exclusion can be made on the secondary statistic alone." The phrasing "STRING has no WASC-positive edges, therefore the result must be INDRA-specific" is **explicitly forbidden** as it confuses absence of evidence with evidence of absence at the BY-positive level. |
+
+**Branch precedence:** STRING-UNDERPOWERED > STRING-ZERO-POSITIVES > {INDRA-SPECIFIC, STRING-STRONGER, INCONCLUSIVE based on `ΔQ^{∩}` CI}.
+
+**Secondary tabulation:** report the count of edges WASC-positive in INDRA, in STRING, and in `E_BOTH`. If the BY-significant edge sets are disjoint or anti-correlated (as T43's slope-GSEA was), this strengthens the INDRA-specific reading qualitatively but does not override the primary intersection-`ΔQ^{∩}` decision.
+
+**Rationale:** T43's slope-GSEA showed STRING and INDRA give *opposite-sign* GSEA enrichments on the same proteomics |t|. WASC must therefore be tested on both networks to determine whether the coupling-invariance result is a property of the INDRA regulatory-edge curation specifically or a generic within-cluster topology effect. Without this control, the "regulatory wiring" interpretation is unwarranted. The intersection-`ΔQ^{∩}` primary statistic is a brutalist response to the over-reliance on median-of-positives in v0.9, which is undefined precisely when the most informative degenerate case (STRING-ZERO-POSITIVES) occurs.
+
+---
+
+## 8. Three-contrast decomposition
+
+PRE-REGISTERED. Before claiming "C9-specific coupling-structure shift," decompose the per-edge invariance into three pairwise contrasts:
+
+For each edge `(j, a)`, compute three two-group Q statistics:
+- `Q^{C9-SPOR}(j, a)` = inverse-variance-weighted Q on `{β̂_{j|a, C9}, β̂_{j|a, SPOR}}` (with k=2 groups)
+- `Q^{C9-CTRL}(j, a)` = same for `{C9, CTRL}`
+- `Q^{SPOR-CTRL}(j, a)` = same for `{SPOR, CTRL}`
+
+For k=2 groups, Cochran Q reduces to `Q = (β̂_1 − β̂_2)² / (SE_1² + SE_2²)` (the squared standardized difference). Get its permutation p-value `p^{XY}(j, a)` from the corresponding two-group null draws (same 3-axis matching, but restricted to k=2).
+
+Apply BY-FDR within each contrast separately at q = 0.10. Let:
+- `R_{C9-SPOR}` = set of edges with `q^{C9-SPOR}(j, a) ≤ 0.10`
+- `R_{C9-CTRL}` = set of edges with `q^{C9-CTRL}(j, a) ≤ 0.10`
+- `R_{SPOR-CTRL}` = set of edges with `q^{SPOR-CTRL}(j, a) ≤ 0.10`
+
+**C9-specific coupling-shift criterion (PRE-REGISTERED, ALL conditions required):**
+
+- **(C1)** Primary 3-group test passes: there exist edges with `q(j, a) ≤ 0.10` after primary BY-FDR (§6).
+- **(C2, empirical floor 48)** Both of the following hold:
+  - `|R_{C9-SPOR}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
+  - `|R_{C9-CTRL}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
+
+  The floor **48 = `ceil(0.05 · |E_WASC|) = ceil(0.05 · 944)`** (brutalist mod 4, M1 user decision 2). The 3× ratio echoes the wave_24j 50× drop framing, scaled to the WASC pool; the absolute floor prevents vacuous 3-of-3 vs 1-of-3 passes when the contrast counts are small.
+- **(C3)** STRING control (§7) returns `ΔQ^{∩}` BCa lower bound > 0 AND the resolved branch is `INDRA-SPECIFIC` (i.e., not `STRING-STRONGER`, `INCONCLUSIVE`, `STRING-UNDERPOWERED`, or `STRING-ZERO-POSITIVES`).
+- **(C4)** `|R_{SPOR-CTRL}|` is not significantly elevated above the FDR null expectation: a one-sided binomial test on `|R_{SPOR-CTRL}|` vs `E[|R| | H0] = 0.10 · |E_WASC| = 94.4` should NOT reject at α = 0.05.
+
+If C1 holds but C2-C4 do not all hold: the result is a within-cluster coupling-structure shift that is NOT cleanly C9-specific. Report it as such; do NOT use "C9-mutation-specific" language. The wave_24j precedent (which retracted C9-specific framing once SPOR-vs-CTRL hits appeared) is binding.
+
+---
+
+## 9. Claim ceiling
+
+A positive WASC result (all of C1-C4 satisfied AND STRING branch resolves to `INDRA-SPECIFIC`) licenses the following sentence and NO MORE (**brutalist-revised verbatim**, brutalist mod 8):
+
+> Within the 8 pre-registered C9-ALS cluster terms, the **cross-protein abundance coupling** of INDRA hop-1 neighbor pairs — quantified by inverse-variance-weighted between-group dispersion of per-edge partial regression slopes adjusted for sex, age, primary tissue, and batch — is significantly more invariant across C9, Sporadic, and Control donors than degree-, coverage-, and marginal-correlation-matched non-neighbor pairs in the same cluster (BY-FDR q < 0.10). The invariance is preserved across the SPORADIC-vs-CONTROL contrast while breaking selectively in C9-containing contrasts. The finding is INDRA-edge-specific: a parallel analysis on the STRING physical-PPI graph over the same anchors does not reach the same magnitude on the edge-intersection (ΔQ BCa lower bound > 0). This is consistent with multiple non-mutually-exclusive scenarios — including regulatory rewiring, differential post-translational processing, differential cell-composition not captured by Primary_Tissue, or differential measurement-noise structure — and does not distinguish among them. The result is descriptive of slope-shift structure only.
+
+**What WASC CANNOT support, even with a maximal positive result:**
+- It does not establish **mechanism**.
+- It does not establish **causation** in any direction.
+- It does not show that any particular INDRA edge **drives**, **regulates**, or **controls** the abundance of its partner.
+- It does not validate INDRA edges as true in-vivo regulatory relationships.
+- It does not adjudicate **post-transcriptional** vs transcriptional vs translational origin of the coupling shift.
+- It does not show that the coupling shift is a **rewiring** of regulatory architecture (the term "rewiring" is reserved for results with paired perturbation evidence; coupling-structure shift on observational data does not warrant it).
+- It cannot resolve confounding by **granular cell-composition** (T-CD4/CD8/B/NK/monocyte fractions) beyond the `Primary_Tissue` 3-level proxy; residual cell-composition shift across groups remains a stated limitation.
+
+**Forbidden language list (PRE-REGISTERED, brutalist mod 8):**
+
+The following words and phrases are **forbidden** in any reporting of WASC results regardless of outcome:
+- *mechanism*
+- *causal*, *causation*
+- *drives*, *regulates*, *controls*
+- *rewiring* (use only "coupling-structure shift" or "slope-shift structure")
+- *validates* the cluster (WASC is a coupling-invariance test, not a per-protein or per-edge validation)
+- *post-transcriptional* (out of scope; not adjudicated by the test)
+- *INDRA-edges-are-correct* (they are an analysis substrate, not a validated ground truth)
+
+**Per-edge claim ceiling:** at the per-edge level, a WASC-positive edge can only be described as "having passed the structural-coupling-invariance test in the pool of 944 pre-registered cluster edges at BY q ≤ 0.10." It is **NOT** described as a mechanism, a regulatory relationship, or a validated edge. The primary claim is at the cluster-pattern level (count + per-theme breakdown), per the M1 user decision 7.
+
+**Slope-symmetry caveat (conditional, M1 verified PASS):** the M1 swap-invariance test (§2.5(b)) returned median Q-drift 0.8% (well below the 5% threshold). The slope-symmetry caveat is therefore NOT triggered in v1.0. Were a future re-derivation on a different dataset to fail the 5% threshold, the following sentence would be appended verbatim to the claim ceiling: "*Q is sensitive to the choice of regression direction at the >5% level on this dataset; per-edge Q values should be interpreted with a slope-asymmetry caveat.*"
+
+---
+
+## 10. Pre-registration items
+
+The following must be locked in a tagged git commit `wasc-prereg-v1.0` prior to any M2-onward compute. Re-running the pipeline after this commit MUST reproduce identical inputs.
+
+**Frozen inputs (E1–E9, brutalist mod 8 added E9):**
+
+- **E1.** The 8 cluster terms (already frozen in `scripts/viz/common.py:20::TERMS`).
+- **E2.** The cluster-member set per theme `{C_T : T ∈ Themes}` computed at commit time and saved to **`data/wasc/cluster_members_v1.json`** (frozen UniProt sets, with provenance: cogex query timestamp 2026-06-02, INDRA HGNC mapping date, per-theme counts: Splicing 304 UniProt / 303 HGNC / 190 measured, Chromatin 468 / 467 / 145, Transport 70 / 70 / 42).
+- **E3.** The Wave-24l measured-only INDRA distance matrix snapshot (re-use `output/landscape_c9_vs_*/distances.meta.json` from the existing wave_24l runs; SHA-256-pin its file hash).
+- **E4.** The exhaustive enumeration `E_WASC` (UniProt-pair list) computed and frozen, saved to **`data/wasc/E_WASC_v1.json`**, with edge count `|E_WASC| = 944` recorded and per-theme breakdown (434 / 443 / 67).
+- **E5.** The STRING v12.0 graph: file hash of `data/string/9606.protein.physical.links.v12.0.txt.gz`, ENSP→**canonical-UniProt** mapping version (mygene query date, Swiss-Prot-reviewed-only policy), `combined_score ≥ 700` threshold, resulting UniProt adjacency saved to `data/wasc/string_uniprot_adj_v1.json` plus `data/wasc/string_ensp_to_uniprot_canonical_v1.json`.
+- **E6.** The STRING-derived `E_STRING` enumeration over `M_T` for each theme, frozen.
+- **E7.** The 20-donor exclusion list (external/iPSC-derived, no Batch ID) — saved to `data/wasc/excluded_donors_v1.json`.
+- **E8.** The Age-imputation model coefficients per group g (regression-on-Sex within-arm), saved to `data/wasc/age_imputation_v1.json`.
+- **E9. (NEW, brutalist mod 5)** The C9-Batch collapse mapping `Batch_raw → site_year` for all 25 C9 donors, saved to **`data/wasc/c9_batch_collapse_v1.json`**, with the policy note: SPOR and CTRL retain `Batch_raw` pending the M6a audit; if any SPOR/CTRL batch has < 3 donors after exclusions, this manifest is extended to cover the affected group and re-saved before tag.
+
+**Frozen analysis decisions (D1–D10):**
+
+- **D1.** Primary test: per-edge Cochran Q on 3-group inverse-variance-weighted slopes (§3).
+- **D2.** Permutation `B = 9999` for primary; `B = 999` floor permitted for sensitivities; `B = 99999` rerun triggered on floor-tied primary q-table.
+- **D3.** Null model: anchor-local, **3-axis** (degree-decile × missingness-decile × pooled-|Pearson|-decile) matched, sampled WITHOUT replacement (§4).
+- **D4.** FDR: BY method, q-threshold 0.10 (§6).
+- **D5.** Per-anchor combination: empirical Brown's method (§5).
+- **D6.** STRING decision rule: primary `ΔQ^{∩}` with BCa 95% CI, 5-branch decision (§7); `STRING-ZERO-POSITIVES` forbids INDRA-by-exclusion.
+- **D7.** Three-contrast C9-specific criterion: C1 ∧ C2 ∧ C3 ∧ C4 with the empirical floor `|R_{C9-X}| ≥ max(3·|R_{SPOR-CTRL}|, 48)` (§8).
+- **D8.** Claim ceiling: §9 verbatim (no modification permitted post-hoc). Forbidden language list enforced.
+- **D9.** Covariate design: `[1, anchor_z, Sex, Age_z, Tissue_dummies]` with Batch pre-residualization via within-group ComBat, using C9-Batch collapsed to `site_year` (§2.1).
+- **D10.** Random-number generation: per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest()[:8], 16)`, per-iteration seed derived via `np.random.SeedSequence`.
+
+**Primary outcome (singular, brutalist-explicit):**
+
+> **Count of WASC-positive edges (BY-FDR q ≤ 0.10) in the 3-group test, with the per-theme breakdown `(|R ∩ E_Splicing|, |R ∩ E_Chromatin|, |R ∩ E_Transport|)`, against the pre-registered context `|E_WASC| = 944` (434 / 443 / 67).** The primary claim is the count + cluster pattern, not any per-edge mechanism.
+
+**Secondary outcomes (pre-registered, do not affect primary inference):**
+
+- Per-anchor BY-FDR q-values (Brown's combination).
+- Three-contrast decomposition counts `|R_{C9-SPOR}|`, `|R_{C9-CTRL}|`, `|R_{SPOR-CTRL}|` and the C1-C4 evaluation.
+- STRING control primary `ΔQ^{∩}` with BCa 95% CI; secondary median-of-positives `ΔQ̃` with BCa 95% CI; resolved branch.
+- Direction-pattern table (sign triples) for WASC-positive edges.
+- I² and τ̂² descriptive distributions for WASC-positive edges.
+
+**Tertiary (PRE-REGISTERED, run regardless of primary outcome; brutalist mod 6):**
+
+These sensitivities are **mandatory** and reported alongside the primary regardless of whether the primary returns positive. Sensitivity runs may use `B = 999` (compute-budget concession; primary stays at `B = 9999`).
+
+| Tertiary | Description | Purpose |
+|---|---|---|
+| **T-Cell-stratified** | Restrict all three groups to `Primary_Tissue == T-Cell` donors only, rerun WASC primary | Tests whether the result is driven by cell-composition confounding |
+| **iPSC-retained** | Re-include the 20 external/iPSC-derived donors (with `iPSC` Tissue level added to design) | Tests donor-pool sensitivity |
+| **Batch-correction-OFF** | Skip §2.1 ComBat pre-residualization | Tests whether the ComBat EB step is generating false invariance |
+| **Down-sampled-SPOR-to-25** *(MOST IMPORTANT)* | Random-subsample SPOR to n=25 (matching C9), rerun WASC primary, B=999, repeat 20 subsamples and report distribution | Detects n-asymmetry attenuation: if the primary positive disappears at n_SPOR=25, the result is partly an artifact of the precision asymmetry between groups |
+| **All-protein-pool null** | Substitute draws from ALL measured proteins (not just `M_T`), maintaining 3-axis match | Tests whether the within-theme null is over-restrictive |
+| **B=99999 if floor-tied** | If primary smallest p-value equals `1/(B+1)` at B=9999, rerun the affected anchors at B=99999 | Resolves rank-tie at BY threshold |
+| **EB-moderated SE** | Apply `fit_f_dist` + `squeeze_var` across edges within group g | Reported as descriptive; not primary |
+| **Cross-theme exploratory** (DEFERRED) | Out of M1 scope; reported in a future module | — |
+| **q = 0.05 and q = 0.20** | Descriptive only; primary decision uses q = 0.10 | — |
+| **Hemolysis covariate** | Add `erythrocyte_score` to design | Sensitivity for hemolysis confounding |
+| **ALSFRS_R_PROGRESSION_SLOPE covariate (C9-vs-SPOR only)** | Add to design, restricted to that contrast | Tests progression confounding |
+
+**M1 deliverables (recorded at M1 tag):**
+
+- `data/wasc/m1_numerical_reference_v1.json` — Frisch-Waugh ≡ statsmodels.OLS agreement results (PASS, max diff < 1e-10) and swap-invariance test (PASS, median 0.8%, max 3.2%; §9 caveat NOT triggered).
+
+---
+
+## 11. Implementation map (audit-linked)
+
+| Component | Status | Location / Action |
+|---|---|---|
+| Cluster term member fetch | EXISTING | `scripts/viz/common.py:213,253` — chain through |
+| INDRA hop-1 within-cluster edge enumeration | EXISTING | `network_proximity.py:1038 extract_subgraph_induced_by_features(max_hops=1, restrict_endpoints_to_features=True)` + `compute_all_pairs_shortest_paths_bounded(max_hops=1)` |
+| Covariate design matrix | EXISTING | `design_matrix.py:70 build_covariate_design_matrix` — reuse for `X_g^{cov}` only (covariates side) |
+| C9-Batch site_year collapse | NEW | `src/cliquefinder/stats/wasc/preprocess.py::collapse_c9_batch_to_site_year` — runs once at pre-reg time, output frozen to E9 manifest |
+| ComBat within-group batch pre-residualization | NEW (or wrap existing) | `src/cliquefinder/stats/wasc/preprocess.py::combat_within_group` — either wrap `combat-py` or implement EB location/scale per `Johnson et al. 2007` |
+| Per-edge per-group regression (Frisch-Waugh) | NEW | `src/cliquefinder/stats/wasc/fit.py::fit_per_edge_per_group` — Frisch-Waugh-Lovell as in §2.5 |
+| Cochran Q statistic | NEW | `src/cliquefinder/stats/wasc/concordance.py::cochran_q` |
+| Degree × coverage × \|Pearson\| 3-D bin builder | NEW | `src/cliquefinder/stats/wasc/null.py::build_joint_bins_3d` |
+| N-non-neighbor 3-axis sampler (without replacement, exclude_set, ±1 decile fallback on |r|) | NEW | `src/cliquefinder/stats/wasc/null.py::sample_n_3axis_matched_non_neighbors` |
+| Per-anchor permutation loop (joblib n_jobs=-1) | NEW | `src/cliquefinder/stats/wasc/null.py::run_wasc_null` — pattern from `landscape.py:1033 _per_feature_gradient_loop` (md5-seeded RNG, checkpointed) |
+| Empirical Brown's combination | NEW | `src/cliquefinder/stats/combination.py::empirical_brown` — re-exported through `stats/__init__.py` |
+| BY-FDR | EXISTING | `differential.py:242 fdr_correction(..., method="BY", alpha=0.10)` |
+| BCa bootstrap on `ΔQ^{∩}` and `ΔQ̃` | NEW | `src/cliquefinder/stats/wasc/string_control.py::bca_delta_q_intersection`, `bca_delta_q_positives` |
+| STRING v12.0 loader (canonical-UniProt only) | NEW | `src/cliquefinder/knowledge/string_ppi.py::load_string_physical_uniprot_adj_canonical` — per spec in `output/string_alternative_network.md` |
+| Age imputation (regression on Sex within arm) | EXISTING pattern | `cliquefinder/quality/imputation.py` style — fit once at pre-registration time, freeze coefficients to E8 |
+| Three-contrast pairwise Q | NEW | `src/cliquefinder/stats/wasc/three_contrast.py::pairwise_q` + `evaluate_c1_c4` |
+| End-to-end orchestrator | NEW | `scripts/run_wasc.py` — calls all of the above, writes to `output/wasc/`, supports `--phase {primary, tertiary-tcell, tertiary-ipsc, ...}` |
+
+---
+
+## 12. Sanity gates (must pass before reporting)
+
+These are run as automated tests in the WASC pipeline. The run is INVALID if any fail.
+
+1. **Edge count gate:** `|E_WASC|` matches the frozen M1 value **exactly** (944 total; 434 / 443 / 67 per theme). Drift indicates cluster-member set drift or graph snapshot mismatch; halt and document.
+2. **Null calibration gate:** under H0 simulated by SHUFFLING group labels across donors (preserving group sizes), WASC should return ≤ `0.10 + 2·√(0.10·0.90/|E_WASC|) ≈ 12%` positive edges at q = 0.10. Run 20 label-shuffles; mean false-positive rate must satisfy the bound.
+3. **STRING coverage gate:** STRING-canonical-UniProt-mapped accessions cover ≥ 70% of `⋃_T M_T = 377` cluster members. If below 60%, STRING control is statistically uninformative and the §7 branch resolves to `STRING-UNDERPOWERED`.
+4. **Convergence gate:** ≥ 90% of `(j, a, g)` regressions must converge. If lower, missingness handling §2.3 is mis-tuned and must be revisited before reporting.
+5. **Donor-exclusion audit:** confirm exactly the pre-registered 20 external/iPSC-derived donors are excluded; group sizes after exclusion match E7 manifest.
+6. **C9-Batch collapse audit:** confirm the `Batch_raw → site_year` mapping in `data/wasc/c9_batch_collapse_v1.json` is bijective on its domain, covers all 25 C9 donors, and yields ≥ 3 donors per collapsed batch (otherwise extend collapse rule and re-tag).
+7. **3-axis null match audit:** for each anchor, report the fraction of permutation iterations that required the ±1 decile fallback on the |r|-axis. If > 20% of iterations on any anchor invoke the fallback, that anchor's null is flagged in the manifest and its contribution to the global pool is reported separately.
+8. **M1 numerical reference reproducibility:** the Frisch-Waugh ≡ statsmodels.OLS test (§2.5(a)) and swap-invariance test (§2.5(b)) re-run at M2 entry must reproduce the M1 results to within `1e-10` absolute. If swap-invariance Q drift exceeds 5% on rerun, append the §9 slope-symmetry caveat verbatim.
+
+---
+
+*End of specification v1.0. Frozen at git tag `wasc-prereg-v1.0` (M6a). Any deviation post-tag must be documented as a SECONDARY analysis with explicit "post-hoc" labelling.*

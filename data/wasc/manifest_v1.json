@@ -1,0 +1,39 @@
+{
+  "version": "v1.0",
+  "frozen_at_git_tag": "wasc-prereg-v1.0",
+  "frozen_at_utc": "2026-06-01T19:38:42.180775+00:00",
+  "artifacts": {
+    "cluster_members_v1.json": {
+      "path": "data/wasc/cluster_members_v1.json",
+      "sha256": "dc2300a18c7c2d048a37c3af47b44c37a6932b6a2f230a3864e1d7d9d002980e",
+      "size_bytes": 7864
+    },
+    "E_WASC_v1.json": {
+      "path": "data/wasc/E_WASC_v1.json",
+      "sha256": "baa370ae3897a46988c6cd07a61db32f6f5d67c04590dd1513b96580b7057dd6",
+      "size_bytes": 304711
+    }
+  },
+  "inputs": {
+    "proteomics_csv": {
+      "path": "output/proteomics/all_als.data.csv",
+      "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+    },
+    "metadata_csv": {
+      "path": "output/proteomics/all_als.metadata.csv",
+      "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+    },
+    "indra_cogex_endpoint": "bolt://indra-cogex-lb-b954b684556c373c.elb.us-east-1.amazonaws.com:7687",
+    "indra_query_timestamp_utc": "2026-06-01T19:38:42.180775+00:00"
+  },
+  "summary": {
+    "total_measured_uniprots": 3264,
+    "total_cluster_members_measured": 377,
+    "edge_count_total": 944,
+    "edge_count_per_theme": {
+      "Splicing": 434,
+      "Chromatin": 443,
+      "Transport": 67
+    }
+  }
+}
