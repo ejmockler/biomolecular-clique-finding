@@ -30,6 +30,13 @@ from .null import (
     load_completed_anchors,
     run_null_serial,
 )
+from .combination import (
+    BrownResult,
+    BrownTable,
+    by_fdr,
+    compute_brown_per_anchor,
+    empirical_brown_per_anchor,
+)
 from .sanity import (
     LabelShuffleResult,
     run_label_shuffle_calibration,
@@ -84,6 +91,12 @@ __all__ = [
     "LabelShuffleResult",
     "run_label_shuffle_calibration",
     "shuffle_group_labels",
+    # M3 — empirical Brown's + BY-FDR
+    "BrownResult",
+    "BrownTable",
+    "by_fdr",
+    "compute_brown_per_anchor",
+    "empirical_brown_per_anchor",
     # M1 — edges
     "DEFAULT_CLUSTER_TERMS",
     "compute_measured_cluster_members",
