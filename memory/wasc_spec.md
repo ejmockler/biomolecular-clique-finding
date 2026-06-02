@@ -682,3 +682,63 @@ Replace Tertiary item 5 ("all-protein-pool" sensitivity) with:
 > **Theme-restricted-with-known-FAILED-calibration sensitivity** — Re-run prong (a) with `eligible_proteins=M_T` per (anchor, theme). Reports per-theme FP rate, n_finite_p, and the surviving-edge subset's per-anchor BY-FDR. Reported as a SENSITIVITY whose result-set is interpretable only against the v1.0.2 sub-pre-registered failure baseline (FP=0.261). Not a primary inference.
 
 *End of v1.0.3 amendment. Frozen at git tag `wasc-prereg-v1.0.3`. Decided 2026-06-02; workflows `wf_45fe2105-641` (3I + 3V) + `wf_ed466540-7c8` (4S + 3V) returned 0 ENDORSE, 0 ACCEPT for any path other than (iii) all-protein-pool primary.*
+
+---
+
+## v1.0.4 Amendment — Spec corrections from foundational audit
+
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.4`. **CORRECTIONS-ONLY** per the discipline established by workflow `wf_4e08b440-036` (4 auditors + synthesis + 3 brutalist verifiers). Items with rescue-risk explicitly deferred to v1.1.
+
+### Trigger
+
+The v1.0.3 amendment chain (4 brutalist gates: v1.0 / v1.0.1 / v1.0.2 / v1.0.3) focused on the amendments being made and treated `items_NOT_modified` as trusted. A holistic audit of the full spec + amendments + code (`wf_4e08b440-036`) found 37 issues including 3 CRITICAL and 16 HIGH-severity arithmetic / ambiguity / consistency / feasibility bugs that survived all prior gates. The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in the audit's first-draft amendment proposal; those are deferred. v1.0.4 is the residual: 7 clean corrections + CI test infrastructure.
+
+### No-Q-exposure attestation
+
+The corrections in v1.0.4 derive from audit of the spec text + code defaults. No observed Q values, p-values, q-values, or BY-FDR tables were consulted in deriving any correction. Each correction fixes a bug whose existence is independent of any prong's pass/fail verdict (verified by the rescue-screen brutalist).
+
+### Corrections — clean (no rescue risk)
+
+**C1 (CRITICAL) — BY rank-1 arithmetic.** Spec §4 line 212 and §6 line 257 derived the BY rank-1 raw-p threshold as `q · (1/H_n) ≈ 0.10/7.5 ≈ 0.013`. This is the BH adjustment factor, not the BY rank-1 threshold. The correct BY adjustment is `p_(k) · N · H_N / k`, so the rank-1 raw-p rejection threshold at q=0.10, N=944, H_944=7.4279 is `q / (N · H_N) = 1.43e-5`. The previously-claimed "~7× safety margin" of B=9999 (raw-p floor 1e-4) over `0.013` is actually a 7× DEFICIT below the true threshold of 1.43e-5. **Consequence**: at B=9999 the raw-p floor exceeds the rank-1 threshold; ranks 1..7 are untestable at q≤0.10 from a B=9999 primary alone. The "B=99999 rerun if floor-tied" tertiary becomes effectively guaranteed (not contingent) for any strong-signal edge. Whether to PROMOTE B=99999 to primary is a separate analytical decision and is deferred to v1.1. v1.0.4 corrects the SPEC NARRATIVE only.
+
+**C3 (HIGH) — Brown variance spec text.** Spec §5 line 228 wrote `Var[χ²_a] = 4 · n_a + 2 · Σ_{i ≠ j} cov_emp(...)`. The notation `Σ_{i ≠ j}` enumerates each unordered pair twice; the `2 ·` then double-counts. Correct: `Var = 4·n_a + Σ_{i ≠ j} cov_emp = 4·n_a + 2·Σ_{i<j} cov_emp`. The code at `src/cliquefinder/stats/wasc/combination.py:184-189` already implements the correct formula. v1.0.4 aligns spec text with code. No code change.
+
+**C7 (MEDIUM) — RNG formula reconciliation.** Spec §10 D10 says per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest()[:8], 16)`. Code in `src/cliquefinder/stats/wasc/null.py:anchor_seed` uses `int.from_bytes(md5(f"{global_salt}|{uniprot}").digest()[:4], "little", unsigned)`. Salt format differs (concatenation vs `|`-separated) AND the int-decoding path differs (hex prefix vs first-4-bytes little-endian). v1.0.4 reconciles to the CODE form (which is what has been producing all M2.4 / M3 / M2.5 results) and updates spec text accordingly.
+
+**C9 (LOW) — min_n_per_group keys.** Spec §2.3 line 122 says "≥10 for C9 and ≥15 for SPOR/CTRL". Code dict default uses keys `{"C9ORF72": 10, "SPORADIC": 15, "CONTROL": 15}`. v1.0.4 locks the canonical key names as the binding form (matches `group_order = ("C9ORF72", "SPORADIC", "CONTROL")` throughout).
+
+**C11 (LOW) — prong (b) comparator.** Build plan §5 line 25, 766 write the M2.5 prong (b) bound as `overlap ≥ 70%`. v1.0.4 confirms the comparator is `≥` (inclusive lower bound on Jaccard), not `>`. Observed v1.0.3 Jaccard = 0.285 < 0.70 = HARD FAIL.
+
+**C16 (LOW) — Anchor count documentation.** Spec text said "order 220-280" anchors loosely. Verified count: 203 distinct canonical anchors in `data/wasc/E_WASC_v1.json`; per-(anchor, theme) work units = 220 (17 multi-theme anchors get one unit per theme).
+
+**C17 (MEDIUM) — Perfect-H1 power statement.** At N=944, q=0.10, B=99999 (i.e., raw-p floor of 1e-5 below BY rank-1 threshold 1.43e-5): only ranks 1..69 can clear BY q ≤ 0.10 even with infinite per-edge power. Maximum testable rejections = 69 of 944. This is the structural ceiling on the primary outcome under the current pre-registered design.
+
+### Infrastructure — locked_bounds CI gate
+
+`data/wasc/locked_bounds_v1.json` (NEW) pins every load-bearing numeric threshold (B, q, min_n_per_group, C2 floor, min_valid_perms, min_unique_q_values, axes default, prong (b) Jaccard floor, prong (d) tolerance, canonical-direction convention, |E_WASC|=944, anchor count 203) with both spec_reference (file + verbatim quote) and code_default (file + symbol + parameter + value).
+
+`tests/wasc/test_locked_bounds.py` (NEW) reads the JSON and asserts:
+1. Every spec_reference.search_quote substring is present in the cited file (spec-text drift detector).
+2. Every code_default.parameter default value matches the binding (code drift detector via `inspect.signature`).
+3. `|E_WASC|` binding (944) matches `data/wasc/E_WASC_v1.json` row count.
+
+4/4 tests pass at amendment time. Drift in either spec OR code now fails CI loud, eliminating the silent-divergence pathology that allowed C1 + C3 to survive 4 prior gates.
+
+### Items DEFERRED to v1.1 (separate brutalist gate required)
+
+The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in the audit proposal. These are deferred to v1.1 per the v1.0.3 prohibitions clause:
+
+- **C2 deferred** — Promote B=9999 → B=99999 as primary. This eliminates v1.0.3's staged D2 design (adaptive trigger). Re-tag and re-gate.
+- **C5 deferred** — Pre-register 944 vs 904 as the BY-FDR denominator. The choice has rescue-risk (944 preserves the v1.0.3 prong (a) PASS verdict).
+- **C8 deferred** — Bind RAW-p vs BY-q as the Gate 2 metric. Locking RAW-p (the metric under which prong (a) PASSED) while deferring BY-q (under which the verdict could differ) is asymmetric.
+- **C12-partial deferred** — "K∈{1,10} permitted as tertiary diagnostics" — v1.0.3 prohibitions[0] explicitly forbid K-sweeps. K=5 plumbing through `run_label_shuffle_calibration` proceeds (already pre-registered K=5 in commit 43e5aba); only the SWEEP is deferred.
+
+### Items NOT modified by v1.0.4
+
+(Same enumeration as v1.0.3 items_NOT_modified, plus): the M2.5 four-pronged HARD HALT semantics, the v1.0.3 prong (a) PASS verdict, the v1.0.3 prong (b) FAIL verdict, the v1.0.3 candidate-pool primary (all-protein-pool), |E_WASC|=944.
+
+### Acknowledgment
+
+Three intra-day amendments to D3/D4-family decisions (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool; v1.0.4: correct BY arithmetic + Brown variance text) is a credibility stress on "pre-registered". Defensible framing: each amendment was triggered by an independent finding (v1.0.2: structural matrix property; v1.0.3: H0 calibration FAIL; v1.0.4: audit-discovered pre-existing bugs that survived 4 prior gates). The cumulative pattern reveals a deeper foundational issue: the original v1.0 spec had arithmetic and ambiguity bugs the brutalist gates did not catch because each gate scoped review to the amendment being made. v1.0.4 adds the CI infrastructure (locked_bounds + drift test) that prevents this class of bug from surviving future amendments.
+
+*End of v1.0.4 amendment. Frozen at git tag `wasc-prereg-v1.0.4`. Decided 2026-06-02; workflow `wf_4e08b440-036` (4 auditors + synthesis + 3 brutalist verifiers, 1 REJECT / 2 MODIFY; 4 rescue items deferred per V1 REJECT, 6 amendment-internal mods applied per all verdicts).*

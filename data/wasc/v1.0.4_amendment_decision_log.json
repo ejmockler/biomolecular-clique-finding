@@ -1,0 +1,111 @@
+{
+  "amendment_tag": "wasc-prereg-v1.0.4",
+  "amendment_date_utc": "2026-06-02",
+  "supersedes": ["wasc-prereg-v1.0", "wasc-prereg-v1.0.1", "wasc-prereg-v1.0.2", "wasc-prereg-v1.0.3"],
+  "scope": "CORRECTIONS-ONLY amendment from foundational spec audit (workflow wf_4e08b440-036). Fixes 7 clean arithmetic/text/documentation bugs that survived all prior brutalist gates because gate reviews scoped to amendments-being-made and treated items_NOT_modified as trusted. Adds CI infrastructure (locked_bounds_v1.json + test_locked_bounds.py) to prevent silent spec/code drift going forward.",
+  "trigger": {
+    "type": "FOUNDATIONAL_AUDIT",
+    "finding": "Audit of full spec + amendments + code found 37 issues (3 CRITICAL, 16 HIGH) in unchanged base text. CRITICAL examples: (1) Spec §4 L212/§6 L257 computed BY rank-1 raw-p threshold as q/H_N ≈ 0.013 (this is BH-style, not BY); correct formula q/(N·H_N) = 1.43e-5, which is 7× SMALLER than B=9999 raw-p floor 1e-4. (2) Spec §5 L228 Brown variance formula double-counts off-diagonal covariance.",
+    "investigated_in_workflow": "wf_4e08b440-036 — 4 auditors (arithmetic, ambiguity, spec-vs-code consistency, feasibility), 1 synthesis, 3 brutalist verifiers (rescue-screen, completeness, implementation-binding)",
+    "verdict_summary": "1 REJECT (V1 rescue-screen caught 4 rescue items in synthesis proposal), 2 MODIFY (V2 amendment-internal arithmetic, V3 implementation-binding gap). All MODIFY mods applied or deferred; all 4 REJECT items deferred to v1.1."
+  },
+  "corrections_applied": [
+    {
+      "id": "C1",
+      "severity": "CRITICAL",
+      "category": "arithmetic",
+      "description": "BY rank-1 arithmetic narrative: replace 'q/H_N ≈ 0.013' with q/(N·H_N) = 1.43e-5; document that B=9999 floor 1e-4 is 7× LARGER than rank-1 threshold; ranks 1..7 untestable at B=9999.",
+      "location": "memory/wasc_spec.md §4 L212, §6 L257"
+    },
+    {
+      "id": "C3",
+      "severity": "HIGH",
+      "category": "arithmetic",
+      "description": "Brown variance spec text alignment with code. Code in combination.py:184-189 already correct; spec §5 L228 double-counted.",
+      "location": "memory/wasc_spec.md §5 L228"
+    },
+    {
+      "id": "C7",
+      "severity": "MEDIUM",
+      "category": "spec_vs_code_inconsistency",
+      "description": "RNG formula reconciliation. Spec §10 D10 hex-prefix form vs code little-endian-4-byte form. Reconciled to code (which produced all M2.4/M3/M2.5 results).",
+      "location": "memory/wasc_spec.md §10 D10 vs src/cliquefinder/stats/wasc/null.py:anchor_seed"
+    },
+    {
+      "id": "C9",
+      "severity": "LOW",
+      "category": "spec_vs_code_inconsistency",
+      "description": "min_n_per_group key names canonicalized to {C9ORF72, SPORADIC, CONTROL} matching code defaults.",
+      "location": "memory/wasc_spec.md §2.3 L122"
+    },
+    {
+      "id": "C11",
+      "severity": "LOW",
+      "category": "ambiguity",
+      "description": "prong (b) Jaccard comparator confirmed as >= (inclusive) per build plan §5 L25, L766.",
+      "location": "memory/wasc_build_plan.md §5 L25, L766"
+    },
+    {
+      "id": "C16",
+      "severity": "LOW",
+      "category": "scope_or_definitional",
+      "description": "Anchor count: spec text said 'order 220-280' loosely; verified 203 distinct canonical anchors; 220 per-(anchor, theme) work units.",
+      "location": "memory/wasc_spec.md"
+    },
+    {
+      "id": "C17",
+      "severity": "MEDIUM",
+      "category": "feasibility",
+      "description": "Perfect-H1 power statement: at B=99999, only ranks 1..69 are testable for BY q ≤ 0.10. Structural ceiling on primary outcome.",
+      "location": "memory/wasc_spec.md (new)"
+    }
+  ],
+  "infrastructure_added": {
+    "locked_bounds_v1.json": {
+      "path": "data/wasc/locked_bounds_v1.json",
+      "sha256": "20e9ed6c40020a76984d875246b1d077433008d8ab545df915e2bbfef285855c",
+      "description": "Machine-readable lock of every numeric pre-registered threshold (B values, q, min_n_per_group, C2 floor, min_valid_perms, min_unique_q_values, axes default, prong-b Jaccard floor, prong-d tolerance, canonical-direction convention, |E_WASC|=944, anchor count 203). Each entry pairs spec_reference (file + verbatim quote) with code_default (file + symbol + parameter + value)."
+    },
+    "test_locked_bounds.py": {
+      "path": "tests/wasc/test_locked_bounds.py",
+      "sha256": "398afcd934f7e1aa5c9e08033b97036fd52a9a38280dd4417258530c3946c8a7",
+      "description": "CI gate. 4 tests: (1) JSON parses + has expected structure, (2) every spec_reference.search_quote is present in cited file, (3) every code_default.parameter default matches binding_value via inspect.signature, (4) |E_WASC| binding (944) matches data/wasc/E_WASC_v1.json row count. 4/4 pass at amendment time."
+    }
+  },
+  "items_deferred_to_v11": [
+    {
+      "id": "C2",
+      "rescue_risk_finding": "Promote B=9999 → B=99999 as primary eliminates v1.0.3 staged D2 design. Compute baseline 10× larger.",
+      "honest_path": "Re-tag wasc-prereg-v1.1 with own brutalist gate."
+    },
+    {
+      "id": "C5",
+      "rescue_risk_finding": "Pre-register 944 vs 904 as BY-FDR denominator. 944 preserves v1.0.3 prong (a) PASS verdict; choice cannot be principled at amendment time without rescue-risk taint.",
+      "honest_path": "Defer with B-001/B-002/B-003 (full dedup methodology)."
+    },
+    {
+      "id": "C8",
+      "rescue_risk_finding": "Bind RAW-p vs BY-q as Gate 2 metric. RAW-p is the metric under which prong (a) PASSED; BY-q is the metric under which the verdict could differ. Asymmetric ratification.",
+      "honest_path": "Either label v1.0.3 prong (a) PASS as 'under RAW-p interpretation; BY-q pending' or queue both interpretations together in v1.1."
+    },
+    {
+      "id": "C12-sweep",
+      "rescue_risk_finding": "'K∈{1,10} permitted as tertiary diagnostics' is exactly the K-sweep that v1.0.3 prohibitions[0] forbids without re-tag.",
+      "honest_path": "K=5 plumbing proceeds (already pre-registered K=5); only the SWEEP is deferred to v1.1."
+    }
+  ],
+  "items_NOT_modified_by_v104": [
+    "All v1.0.3 items_NOT_modified (B=9999 primary, B=999 sensitivity, B=99999 floor-tie rerun, q=0.10, Brown primary, C2=48, claim ceiling §9, three-contrast C1-C4, BY method, STRING 5-branch, donor exclusions E7, C9 batch collapse E9, mandatory sensitivities, M2.5 four-prong HARD HALT, |E_WASC|=944, lower-tail p-value, min_unique_q_values K=5)",
+    "v1.0.3 prong (a) PASS verdict (all-protein-pool, mean FP=0.111)",
+    "v1.0.3 prong (b) FAIL verdict (theme-restricted, Jaccard 0.285 vs ≥0.70 bound)",
+    "v1.0.3 canonical primary substrate (all-protein-pool)"
+  ],
+  "no_q_exposure_attestation": {
+    "claim": "v1.0.4 corrections derive from audit of spec text + code defaults. No Q values, p-values, q-values, or BY-FDR tables were consulted. Each correction fixes a bug whose existence is independent of any prong's pass/fail verdict.",
+    "verifier": "wf_4e08b440-036 V1 brutalist verdict (rescue-screen): 1 REJECT caught 4 rescue items in synthesis proposal. All 4 deferred. The remaining 7 corrections passed the rescue screen."
+  },
+  "frozen_artifact_fingerprints_at_amendment_time": {
+    "data/wasc/locked_bounds_v1.json": "20e9ed6c40020a76984d875246b1d077433008d8ab545df915e2bbfef285855c",
+    "tests/wasc/test_locked_bounds.py": "398afcd934f7e1aa5c9e08033b97036fd52a9a38280dd4417258530c3946c8a7"
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "schema_version": "v1",
+  "frozen_at_tag": "wasc-prereg-v1.0.4",
+  "description": "Machine-readable lock of every numeric pre-registered threshold in the WASC spec. Each entry pairs a spec_reference (file + line + verbatim quote) with a code_default location (file + symbol + value). tests/wasc/test_locked_bounds.py verifies (a) the spec_quote appears in the cited file and (b) the code_default value matches the runtime default. Drift in either side fails CI.",
+  "bounds": {
+    "E_WASC_total": {
+      "binding_value": 944,
+      "description": "Pre-registered count of WASC edges (Splicing 434 + Chromatin 443 + Transport 67, with 40 cross-theme dupes counted under each theme).",
+      "spec_reference": {
+        "file": "data/wasc/E_WASC_v1.json",
+        "key": "edges",
+        "quote_marker": "edges array length"
+      }
+    },
+    "permutation_B_primary": {
+      "binding_value": 9999,
+      "description": "B for the primary M3 run. v1.0.3 freeze.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "`B = 9999` for the primary run"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "parameter": "B",
+        "value": 9999
+      }
+    },
+    "permutation_B_sensitivity": {
+      "binding_value": 999,
+      "description": "B floor for sensitivity runs. v1.0.3 freeze (table at decision-log).",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "Sensitivity runs may use `B = 999`"
+      }
+    },
+    "permutation_B_floor_tie_rerun": {
+      "binding_value": 99999,
+      "description": "B for the floor-tie tertiary rerun. Per v1.0.4 audit: this is currently CONTINGENT on floor-tie detection per spec, but the arithmetic correction in v1.0.4 (C1) shows that at B=9999 ranks 1..7 are untestable for BY q<=0.10. Whether to PROMOTE this to primary is a v1.1 question (not in v1.0.4 scope).",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "`B = 99999` rerun"
+      }
+    },
+    "fdr_alpha_primary": {
+      "binding_value": 0.10,
+      "description": "BY-FDR q-threshold. v1.0/D4 freeze.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "q-threshold **q = 0.10**"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/combination.py",
+        "symbol": "by_fdr",
+        "parameter": "alpha",
+        "value": 0.10
+      }
+    },
+    "min_n_per_group_C9": {
+      "binding_value": 10,
+      "description": "Minimum complete-case donor count per group for FWL convergence. C9 floor.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "`|S_{j, a, g}| ≥ 10` for C9 and `|S_{j, a, g}| ≥ 15` for SPOR/CTRL"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "dict_default": {"C9ORF72": 10, "SPORADIC": 15, "CONTROL": 15},
+        "key": "C9ORF72",
+        "value": 10
+      }
+    },
+    "min_n_per_group_SPOR": {
+      "binding_value": 15,
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "dict_default": {"C9ORF72": 10, "SPORADIC": 15, "CONTROL": 15},
+        "key": "SPORADIC",
+        "value": 15
+      }
+    },
+    "min_n_per_group_CTRL": {
+      "binding_value": 15,
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "dict_default": {"C9ORF72": 10, "SPORADIC": 15, "CONTROL": 15},
+        "key": "CONTROL",
+        "value": 15
+      }
+    },
+    "C2_three_contrast_floor": {
+      "binding_value": 48,
+      "description": "Three-contrast |R_{C9-X}| floor: ceil(0.05 * |E_WASC|) = ceil(0.05 * 944) = 48. Spec §8.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "48 = `ceil(0.05 · |E_WASC|)"
+      }
+    },
+    "min_valid_perms_default": {
+      "binding_value": 48,
+      "description": "Per-edge floor of finite null draws for p-value computation. Spec C2 floor = 48 (spec §4 line 199).",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "C2 floor = 48 (§8 three-contrast floor)"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "parameter": "min_valid_perms",
+        "value": 48
+      }
+    },
+    "min_unique_q_values_default": {
+      "binding_value": 5,
+      "description": "Per-edge floor of DISTINCT finite null Q values. Defensive correctness guard for constant-Q_null pathology (commit 43e5aba). Not a primary spec value; pre-registered K=5 in commit message; inert at all-protein-pool substrate.",
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/null.py",
+        "symbol": "compute_anchor_null",
+        "parameter": "min_unique_q_values",
+        "value": 5
+      }
+    },
+    "max_relaxation_default": {
+      "binding_value": 1,
+      "description": "Sampler ±1-decile fallback default. Spec §4 v1.0.2: '±1 decile fallback on |r|'.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "1 decile fallback"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/bins.py",
+        "symbol": "sample_matched_non_neighbors",
+        "parameter": "max_relaxation",
+        "value": 1
+      }
+    },
+    "axes_default": {
+      "binding_value": ["degree", "corr"],
+      "description": "Default cell-key axes per v1.0.2 amendment (missingness dropped). 2-axis (degree, |Pearson|) matched.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "2-axis** (degree-decile × pooled-|Pearson|-decile)"
+      },
+      "code_default": {
+        "file": "src/cliquefinder/stats/wasc/bins.py",
+        "symbol": "DEFAULT_AXES",
+        "value": ["degree", "corr"]
+      }
+    },
+    "prong_b_jaccard_floor": {
+      "binding_value": 0.70,
+      "description": "M2.5 prong (b) DoD: down-sampled-SPOR-to-25 overlap with full-N WASC-positive set >= 70%. Per build plan §5 lines 25, 766. This is a SPEC value, not a code default. As of v1.0.3 substrate the observed Jaccard at raw p<0.10 was 0.285 (HARD FAIL). v1.0.4 corrects no rescue path; the FAIL remains binding.",
+      "spec_reference": {
+        "file": "memory/wasc_build_plan.md",
+        "search_quote": "Down-sampled-SPOR-to-25 overlap with full-N WASC-positive set"
+      }
+    },
+    "prong_d_FW_vs_OLS_tolerance": {
+      "binding_value": 1e-8,
+      "description": "M2.5 prong (d) DoD: F-W ≡ statsmodels.OLS on production design, absolute tolerance 1e-8 on β and SE. Per spec §2.5(a) line 150 + build plan §5 line 27, line 768. Observed at v1.0.3: β abs 2.39e-10, SE rel 3.14e-10 — both PASS with 30-40× margin.",
+      "spec_reference": {
+        "file": "memory/wasc_spec.md",
+        "search_quote": "agreement to 1e-8"
+      }
+    },
+    "canonical_direction_lex_order": {
+      "binding_value": "anchor_uniprot < target_uniprot",
+      "description": "WascEdge canonical direction: anchor = lex-smaller endpoint. Build plan §3: 'edge_id = f\"{min(a, j)}|{max(a, j)}\"'. M2.2 EdgeBetaTable fits each edge ONCE in canonical direction; per-anchor null/Brown must match. Fix applied commit f1081ba.",
+      "spec_reference": {
+        "file": "memory/wasc_build_plan.md",
+        "search_quote": "edge_id = f"
+      }
+    },
+    "canonical_anchor_count": {
+      "binding_value": 203,
+      "description": "Distinct UniProts appearing as canonical anchor in E_WASC. Per-(anchor,theme) work units = 220 (17 multi-theme anchors get one unit per theme). v1.0.4 C16 correction: prior spec text used 'order 220-280' loosely; verified 203 from data/wasc/E_WASC_v1.json."
+    }
+  }
+}
