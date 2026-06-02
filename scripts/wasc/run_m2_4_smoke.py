@@ -116,11 +116,15 @@ def main() -> int:
     edges_doc = json.loads((REPO / "data" / "wasc" / "E_WASC_v1.json").read_text())
 
     # Build anchor → list of (edge_id, target) — both directions of each edge
+    # CANONICAL-DIRECTION CONVENTION (spec §1/M1, build_plan §3):
+    # Each WascEdge has anchor = lex-smaller endpoint and is fit ONCE per
+    # M2.2's EdgeBetaTable.  The per-anchor null + Brown's combination
+    # therefore process each edge in its canonical direction only.
+    # Iterating both directions here would compare an anchor=v null against
+    # the anchor=u canonical observed Q — direction-flipped and invalid.
     anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for e in edges_doc["edges"]:
         anchor_targets[e["anchor_uniprot"]].append((e["edge_id"], e["target_uniprot"]))
-        # Also as anchor in reverse — undirected coverage
-        anchor_targets[e["target_uniprot"]].append((e["edge_id"], e["anchor_uniprot"]))
 
     # Pick anchors
     smoke_anchors = pick_smoke_anchors(edges_doc, n=2, min_targets=5, max_targets=10)

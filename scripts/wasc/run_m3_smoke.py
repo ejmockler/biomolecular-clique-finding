@@ -80,10 +80,12 @@ def main() -> int:
     obs_df = pd.read_csv(REPO / "output" / "wasc" / "concordance_per_edge_m2_2.csv")
     obs_by_edge = dict(zip(obs_df["edge_id"], obs_df["Q"]))
     edges_doc = json.loads((REPO / "data" / "wasc" / "E_WASC_v1.json").read_text())
+    # CANONICAL-DIRECTION CONVENTION (spec §1/M1, build_plan §3):
+    # WascEdges are oriented anchor < target.  M2.2 fits each edge ONCE
+    # in canonical direction; per-edge p + per-anchor Brown's must match.
     anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for e in edges_doc["edges"]:
         anchor_targets[e["anchor_uniprot"]].append((e["edge_id"], e["target_uniprot"]))
-        anchor_targets[e["target_uniprot"]].append((e["edge_id"], e["anchor_uniprot"]))
 
     all_anchors = sorted(anchor_targets.keys())
     degrees = load_measured_degrees()
