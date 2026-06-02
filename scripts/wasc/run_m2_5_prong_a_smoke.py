@@ -1,0 +1,170 @@
+"""M2.5 prong (a) — label-shuffle null calibration smoke.
+
+Small-scale wiring + calibration plausibility check.  Default: 5 shuffles
+× B=99 across all ~300 anchors.  Estimated wall-clock: ~5 min single-core
+based on M2.4 full B=100 timing (~20s for B=100 → ~20s × (99/100) per
+shuffle × 5 = ~100s).
+
+This is NOT the production calibration (which is 20 shuffles × B=999,
+per spec Gate 2 / M2.5 prong (a)).  Smoke purpose:
+
+  1. Validate the shuffle infrastructure end-to-end on real data.
+  2. Read the pooled FP rate at a budget that's tractable for iteration.
+  3. Compare against the spec Gate 2 bound:
+       mean_FP_rate ≤ 0.10 + 2·√(0.10·0.90/|edges|) ≈ 0.114 at n_edges≈1888
+
+If pooled mean FP rate looks far from 0.10 (e.g., > 0.20), the wiring
+or calibration has a problem and the production run is blocked until
+debugged.
+
+Output: output/wasc/m2_5_prong_a_smoke/result.json
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, (REPO / "src").as_posix())
+
+from cliquefinder.stats.wasc.bins import (  # noqa: E402
+    build_anchor_bins,
+    load_measured_degrees,
+)
+from cliquefinder.stats.wasc.null import AnchorWork, anchor_seed  # noqa: E402
+from cliquefinder.stats.wasc.preprocess import build_wasc_data_bundle  # noqa: E402
+from cliquefinder.stats.wasc.sanity import run_label_shuffle_calibration  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("m2.5.prong_a.smoke")
+
+
+OUT = REPO / "output" / "wasc" / "m2_5_prong_a_smoke"
+OUT.mkdir(parents=True, exist_ok=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-shuffles", type=int, default=5)
+    parser.add_argument("--B", type=int, default=99)
+    parser.add_argument("--min-valid-perms", type=int, default=20)
+    parser.add_argument("--p-threshold", type=float, default=0.10)
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Only use the first N anchors (for ultra-fast iteration)")
+    args = parser.parse_args()
+
+    t0 = time.time()
+    log.info("=== M2.5 prong (a) — label-shuffle calibration smoke ===")
+    log.info(f"n_shuffles={args.n_shuffles}, B={args.B}, p_threshold={args.p_threshold}")
+
+    bundle = build_wasc_data_bundle()
+    abundance = bundle.abundance
+    designs = bundle.designs
+
+    obs_df = pd.read_csv(REPO / "output" / "wasc" / "concordance_per_edge_m2_2.csv")
+    obs_by_edge = dict(zip(obs_df["edge_id"], obs_df["Q"]))
+    edges_doc = json.loads((REPO / "data" / "wasc" / "E_WASC_v1.json").read_text())
+
+    anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for e in edges_doc["edges"]:
+        anchor_targets[e["anchor_uniprot"]].append((e["edge_id"], e["target_uniprot"]))
+        anchor_targets[e["target_uniprot"]].append((e["edge_id"], e["anchor_uniprot"]))
+
+    all_anchors = sorted(anchor_targets.keys())
+    if args.limit:
+        all_anchors = all_anchors[:args.limit]
+    log.info(f"Anchors to process: {len(all_anchors)}")
+
+    degrees = load_measured_degrees()
+    uniprot_to_row = {p: i for i, p in enumerate(abundance.index)}
+
+    log.info("Building AnchorBins...")
+    t_bins = time.time()
+    bins_by_anchor = {}
+    for a in all_anchors:
+        bins_by_anchor[a] = build_anchor_bins(a, abundance, degrees)
+    log.info(f"  built in {time.time() - t_bins:.1f}s")
+
+    works = []
+    for a in all_anchors:
+        targets = anchor_targets[a]
+        edge_ids = tuple(e for (e, _) in targets)
+        true_targets = tuple(t for (_, t) in targets)
+        Q_obs = np.array([obs_by_edge.get(e, np.nan) for e in edge_ids], dtype=np.float64)
+        works.append(AnchorWork(
+            anchor_uniprot=a, edge_ids=edge_ids, true_targets=true_targets,
+            Q_obs=Q_obs,
+            seed=anchor_seed(a, global_salt="wasc-v1.0.2-shuffle-smoke"),
+        ))
+    n_edges_total = sum(len(w.edge_ids) for w in works)
+    log.info(f"Total true edges across anchors: {n_edges_total}")
+
+    log.info("Starting calibration...")
+    t_calib = time.time()
+    result = run_label_shuffle_calibration(
+        works_template=works,
+        anchor_bins_by_anchor=bins_by_anchor,
+        abundance=abundance,
+        designs=designs,
+        uniprot_to_row=uniprot_to_row,
+        n_shuffles=args.n_shuffles,
+        B=args.B,
+        p_threshold=args.p_threshold,
+        min_valid_perms=args.min_valid_perms,
+        shuffle_seed=42,
+        global_salt="wasc-v1.0.2-shuffle-smoke",
+        verbose=True,
+    )
+    calib_dt = time.time() - t_calib
+
+    log.info("\n=== M2.5 prong (a) smoke result ===")
+    log.info(f"  n_shuffles completed: {result.n_shuffles}")
+    log.info(f"  B per shuffle       : {result.B}")
+    log.info(f"  p_threshold         : {result.p_threshold}")
+    log.info(f"  per-shuffle FP rate : {result.fp_rate_per_shuffle}")
+    log.info(f"  mean FP rate        : {result.mean_fp_rate:.4f}")
+    log.info(f"  spec Gate 2 bound   : {result.bound:.4f}")
+    log.info(f"  pooled pass         : {result.pooled_pass}")
+    log.info(f"  per-shuffle n_finite: {result.per_shuffle_n_finite_p}")
+    log.info(f"  total calib time    : {calib_dt:.1f}s "
+             f"({calib_dt / args.n_shuffles:.1f}s per shuffle)")
+
+    # Persist
+    out_doc = {
+        "n_shuffles_requested": args.n_shuffles,
+        "n_shuffles_completed": int(result.n_shuffles),
+        "B": int(result.B),
+        "p_threshold": float(result.p_threshold),
+        "fp_rate_per_shuffle": [
+            float(x) if np.isfinite(x) else None
+            for x in result.fp_rate_per_shuffle
+        ],
+        "mean_fp_rate": float(result.mean_fp_rate) if np.isfinite(result.mean_fp_rate) else None,
+        "bound": float(result.bound),
+        "pooled_pass": bool(result.pooled_pass),
+        "per_shuffle_n_finite_p": [int(x) for x in result.per_shuffle_n_finite_p],
+        "wall_clock_seconds": float(calib_dt),
+        "extrapolated_production_minutes": float(
+            calib_dt / args.n_shuffles * 20 * (999 / args.B) / 60
+        ),
+        "n_anchors": len(works),
+        "n_edges_total": int(n_edges_total),
+    }
+    (OUT / "result.json").write_text(json.dumps(out_doc, indent=2))
+    log.info(f"\nWrote {OUT / 'result.json'}")
+    log.info(f"Extrapolated production (20 shuffles × B=999): "
+             f"~{out_doc['extrapolated_production_minutes']:.1f} min single-core")
+    log.info(f"Total elapsed: {time.time() - t0:.1f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

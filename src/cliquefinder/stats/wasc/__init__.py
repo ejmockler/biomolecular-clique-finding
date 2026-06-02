@@ -30,6 +30,11 @@ from .null import (
     load_completed_anchors,
     run_null_serial,
 )
+from .sanity import (
+    LabelShuffleResult,
+    run_label_shuffle_calibration,
+    shuffle_group_labels,
+)
 from .edges import (
     DEFAULT_CLUSTER_TERMS,
     compute_measured_cluster_members,
@@ -75,6 +80,10 @@ __all__ = [
     "compute_anchor_null",
     "load_completed_anchors",
     "run_null_serial",
+    # M2.5 — calibration tripwire
+    "LabelShuffleResult",
+    "run_label_shuffle_calibration",
+    "shuffle_group_labels",
     # M1 — edges
     "DEFAULT_CLUSTER_TERMS",
     "compute_measured_cluster_members",
