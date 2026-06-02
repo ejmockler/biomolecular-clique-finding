@@ -128,6 +128,7 @@ def compute_anchor_null(
     B: int = 9999,
     min_n_per_group: dict[str, int] | None = None,
     min_valid_perms: int = 48,
+    min_unique_q_values: int = 5,
     group_order: tuple[str, ...] = ("C9ORF72", "SPORADIC", "CONTROL"),
 ) -> AnchorNullResult:
     """Run B permutations for one anchor and return the null + p-values.
@@ -156,6 +157,14 @@ def compute_anchor_null(
     min_valid_perms
         Edges with fewer than this many finite null draws get p = NaN.
         Spec C2 floor = 48.
+    min_unique_q_values
+        Edges whose finite null distribution has fewer than this many
+        DISTINCT values get p = NaN.  Default 5.  Addresses the
+        mathematical pathology where sparse-cell matched-bin sampling
+        draws the same fake t' across many iterations → Q_null is
+        constant → lower-tail formula `(1+#{Q_null ≤ Q_obs})/(B+1)` is
+        deterministic 0.01 or 1.0 (workflow wf_45fe2105-641 V1 verdict
+        finding).  Set to 1 to disable the guard.
 
     Returns
     -------
@@ -226,11 +235,22 @@ def compute_anchor_null(
 
     # Per-edge permutation p-values — LOWER-TAIL per spec §4 line 207.
     # Small Q ⇒ invariant slopes ⇒ WASC-positive ⇒ small p.
+    #
+    # GUARD (V1 verdict, workflow wf_45fe2105-641): sparse-cell matched-bin
+    # sampling can draw the same fake t' across many iterations, producing
+    # CONSTANT Q_null.  The lower-tail formula is then mechanically
+    # undefined (deterministic 0.01 or 1.0).  Reject edges with fewer than
+    # min_unique_q_values distinct finite null draws.
     p_values = np.full(n_edges, np.nan, dtype=np.float64)
     for i in range(n_edges):
         valid_null = null_Q[i][np.isfinite(null_Q[i])]
-        if len(valid_null) >= min_valid_perms and np.isfinite(work.Q_obs[i]):
-            p_values[i] = (1 + np.sum(valid_null <= work.Q_obs[i])) / (len(valid_null) + 1)
+        if len(valid_null) < min_valid_perms:
+            continue
+        if not np.isfinite(work.Q_obs[i]):
+            continue
+        if len(np.unique(valid_null)) < min_unique_q_values:
+            continue
+        p_values[i] = (1 + np.sum(valid_null <= work.Q_obs[i])) / (len(valid_null) + 1)
 
     return AnchorNullResult(
         anchor_uniprot=work.anchor_uniprot,

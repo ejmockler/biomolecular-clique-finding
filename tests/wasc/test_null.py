@@ -245,6 +245,88 @@ class TestComputeAnchorNull:
             f"Q_obs=1e6 should give p ≈ 1; got {r_high.p_values[0]}"
         )
 
+    def test_min_unique_q_values_guard(self):
+        """REGRESSION (workflow wf_45fe2105-641 V1 verdict): edges whose
+        null distribution has fewer than min_unique_q_values distinct
+        values must get p=NaN.  The pathology: sparse-cell matched-bin
+        sampling can draw the same fake t' for many iterations,
+        producing a CONSTANT Q_null where the lower-tail formula is
+        deterministic.  Guard catches this regardless of n_valid_perms.
+        """
+        # Build a context where the matched-bin cell has exactly 1
+        # eligible candidate (after exclusion) — forces the sampler to
+        # pick the same protein for every permutation.
+        ctx, bins_by_anchor, _, _ = _make_test_context(n_proteins=50)
+        # Replace bins with a 1-candidate cell
+        bins_one = AnchorBins(
+            anchor_uniprot="P00",
+            protein_ids=bins_by_anchor["P00"].protein_ids,
+            deg_bin=bins_by_anchor["P00"].deg_bin,
+            miss_bin=bins_by_anchor["P00"].miss_bin,
+            corr_bin=bins_by_anchor["P00"].corr_bin,
+            cells={(1, 0, 0): ("P05",)},  # singleton cell
+            axes=("degree", "miss", "corr"),
+            _protein_to_idx=bins_by_anchor["P00"]._protein_to_idx,
+        )
+        work = AnchorWork(
+            anchor_uniprot="P00",
+            edge_ids=("P00|P01",),
+            true_targets=("P01",),
+            Q_obs=np.array([0.5]),
+            seed=42,
+        )
+        r = compute_anchor_null(
+            work, bins_one,
+            ctx.abundance_by_group, ctx.sample_index_by_group,
+            ctx.uniprot_to_row, ctx.X_cov_by_group,
+            B=100, min_valid_perms=20, min_unique_q_values=5,
+            group_order=ctx.group_order,
+        )
+        # With only 1 candidate in the cell, every permutation picks the
+        # same fake → Q_null is constant → guard flags p=NaN.
+        # Verify the null draws ARE all (nearly) identical
+        finite_null = r.null_Q[0][np.isfinite(r.null_Q[0])]
+        if len(finite_null) >= 5:
+            assert len(np.unique(finite_null)) < 5, (
+                f"Expected ≤4 unique null Q values; got {len(np.unique(finite_null))}"
+            )
+        # Guard should suppress p-value to NaN even though n_finite >= 20
+        assert np.isnan(r.p_values[0]), (
+            f"Expected p=NaN under constant-Q_null guard; got {r.p_values[0]}"
+        )
+
+    def test_min_unique_q_values_disabled_at_one(self):
+        """Setting min_unique_q_values=1 disables the guard — equivalent
+        to pre-guard behavior."""
+        ctx, bins_by_anchor, _, _ = _make_test_context(n_proteins=50)
+        bins_one = AnchorBins(
+            anchor_uniprot="P00",
+            protein_ids=bins_by_anchor["P00"].protein_ids,
+            deg_bin=bins_by_anchor["P00"].deg_bin,
+            miss_bin=bins_by_anchor["P00"].miss_bin,
+            corr_bin=bins_by_anchor["P00"].corr_bin,
+            cells={(1, 0, 0): ("P05",)},
+            axes=("degree", "miss", "corr"),
+            _protein_to_idx=bins_by_anchor["P00"]._protein_to_idx,
+        )
+        work = AnchorWork(
+            anchor_uniprot="P00",
+            edge_ids=("P00|P01",),
+            true_targets=("P01",),
+            Q_obs=np.array([0.5]),
+            seed=42,
+        )
+        r = compute_anchor_null(
+            work, bins_one,
+            ctx.abundance_by_group, ctx.sample_index_by_group,
+            ctx.uniprot_to_row, ctx.X_cov_by_group,
+            B=100, min_valid_perms=20, min_unique_q_values=1,
+            group_order=ctx.group_order,
+        )
+        # With guard disabled, p-value is computed (likely 0.01 or 1.0
+        # depending on whether Q_obs is below/above the constant Q_null)
+        assert np.isfinite(r.p_values[0])
+
     def test_reproducibility(self):
         """Same seed → identical null_Q matrix."""
         ctx, bins_by_anchor, _, _ = _make_test_context()
