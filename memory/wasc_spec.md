@@ -577,3 +577,108 @@ Reserved for a v1.1 methodology revision tagged `wasc-prereg-v1.1` if/when the p
 The v1.0.1 tag commit message explicitly stated "Analytical spec unchanged". v1.0.2 amends an analytical decision (D3). This is a deliberate semver progression: v1.0.1 corrected the input metadata; v1.0.2 corrects an empirically-inert axis. The v1.0.2 commit message records this break.
 
 *End of v1.0.2 amendment. Frozen at git tag `wasc-prereg-v1.0.2`. Decided 2026-06-02; workflow `wf_4528d33d-b02` (3 investigators + 3 brutalist verifiers, 0 REJECT, 3 MODIFY, all mods incorporated).*
+
+---
+
+## v1.0.3 Amendment — All-protein-pool as canonical primary
+
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.3`. Applies to all M2.5 prong (a)+ and M3+ compute. Supersedes the theme-restricted candidate pool in §4 (`P_a^candidate = M_T \ N_a^obs \ {a}`); promotes the build-plan all-protein-pool variant (previously labeled prong (c) sensitivity in build_plan §10) to the canonical primary substrate.
+
+All other v1.0 / v1.0.1 / v1.0.2 frozen items remain binding except as noted below.
+
+### Trigger
+
+M2.5 prong (a) label-shuffle calibration at v1.0.2's theme-restricted substrate FAILED its pre-registered Gate 2 bound under H0:
+
+  Theme-restricted (v1.0.2 canonical) + ±1-decile fallback: mean FP = 0.261 vs bound 0.120 → FAIL
+  All-protein-pool (build-plan prong c)               : mean FP = 0.107 vs bound 0.120 → PASS
+
+Two parallel brutalist workflows (`wf_45fe2105-641`, `wf_ed466540-7c8` — 14 agents total) confirmed the mechanism:
+
+1. **±1-decile fallback exonerated.** Disabling fallback (`max_relaxation=0`) only drops theme-pool FP from 0.261 to 0.251. Widening (`max_relaxation=2`) nudges to 0.265. The fallback contributes ≤ 0.014 of the 0.154-point miscalibration.
+
+2. **Sparse-cell sampling is the cause.** M_T sizes 42 (Transport), 145 (Chromatin), 190 (Splicing) over a 10×10 = 100 decile-cell grid produce per-cell occupancy median ≤ 2. β's diagnostic on Splicing M_T: 22.8% empty cells, 21.9% density=1, 53.7% with ≤2 unique fakes/99 draws. Transport (M_T=42, cell-density median 1) hits FP = 0.540 — one fake drawn for all B perms → Q_null constant → lower-tail formula deterministic.
+
+3. **V1's `min_unique_q_values` guard does NOT recover calibration alone.** K=5 default: theme-restricted FP = 0.137 (still FAIL, 576 edges suppressed). K=10: FP = 0.117 "PASS" only because n_finite collapses to 94 and the recomputed bound widens to 0.162 — bound inflation, not calibration. The guard is a defensive correctness fix for the strictly-constant Q_null pathology; it cannot rescue theme-restricted on the v1.0.2 substrate. (Workflow `wf_ed466540-7c8` returned 3/3 REJECT verdicts against any K-adoption-as-primary proposal.)
+
+4. **All-protein-pool calibrates cleanly.** Mean FP = 0.107 over 5 shuffles × B=99 (full 944/944 edges retained); production 20 × B=999 mean FP = 0.111 vs bound 0.120 → POOLED PASS at production scale (commit `c92b11c`).
+
+### No-Q-exposure attestation
+
+The v1.0.3 decision is driven solely by:
+
+- H0 label-shuffle FP-rate outcomes (synthetic null, derived from the real abundance matrix's covariance structure but NOT from the observed Cochran-Q on real-label edges).
+- Structural matrix properties: |E_WASC| = 944, M_T per-theme counts, per-cell occupancy distributions, cell-density medians.
+- The mathematical properties of the lower-tail permutation formula on constant Q_null.
+
+Real-label Q-rank values from `output/wasc/concordance_per_edge_m2_2.csv` were observed during the M2.4 full B=100 sanity smoke (commit `c92b11c`) prior to this amendment, but those observations DID NOT motivate the swap. The decision criteria (H0 calibration failure of theme-restricted; H0 calibration pass of all-protein-pool) are real-label-Q-blind. The signed decision log at `data/wasc/v1.0.3_amendment_decision_log.json` pins SHA-256 of the observed-Q artifacts to lock their content as of the amendment time.
+
+Caveat (per `wf_45fe2105-641` V2 verdict): H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The "no real-Q exposure" claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met.
+
+### Amendment §4 — All-protein-pool null substrate
+
+Replace the §4 line 192 definition
+
+    Let `P_a^candidate` = `M_T \ N_a^obs \ {a}` (measured cluster members in theme T, excluding a's true neighbors and a itself)
+
+with
+
+    Let `P_a^candidate` = `M \ N_a^obs \ {a}` where `M` is the full measured proteome (all UniProts in `abundance.index`).
+
+All other §4 text (decile axes, sampler, ±1-decile fallback, B = 9999, anchor-local pooling) is preserved.
+
+### Amendment §10 — D3
+
+D3 reads: "Null model: anchor-local, **2-axis** (degree-decile × pooled-|Pearson|-decile) matched, **substrate = full measured proteome (M)**, sampled WITHOUT replacement (§4)."
+
+### Amendment §11 — Implementation map
+
+Default `eligible_proteins=None` in `build_anchor_bins` is now the canonical setting (previously this was the "all-protein-pool prong (c) variant"). Theme-restricted (`eligible_proteins=M_T`) is preserved as an opt-in for sensitivity analyses. Orchestration scripts default `--candidate-pool all` (previously `theme`).
+
+### Amendment §12 — Sanity Gate 7
+
+The "2-axis null match audit" still reports per-anchor ±1-decile fallback rate and the descriptive |Pearson| distributions. Under all-protein-pool the fallback rate is effectively 0% (cell density ~34 candidates), so the gate is descriptive-only at the v1.0.3 substrate. Documented as such.
+
+### Theme-restricted result — DOCUMENTED FAILURE, retained as sensitivity
+
+The theme-restricted code path (`build_anchor_bins(..., eligible_proteins=M_T)`) is preserved. It is RUN as a tertiary sensitivity in the M2.5 prong (a) battery alongside the canonical all-protein-pool primary. Its FAILED calibration (mean FP = 0.261 at v1.0.2 substrate) is reported in the output of every WASC run as a recorded sensitivity outcome, not as a positive result. This documents (a) the spec freeze respected the original v1.0.2 design choice empirically and (b) the failure of that design on the AnswerALS RF-imputed substrate is itself a finding worth reporting.
+
+The structural reason: M_T sizes 42–190 over 100 decile cells produce per-cell occupancy too small for the matched-bin null to maintain exchangeability. A v1.1 re-derivation on the AnswerALS prebatch matrix (preserves missingness; would re-enable Axis 2; potentially larger M_T) may make theme-restricted calibrated; that question is reserved for `wasc-prereg-v1.1`.
+
+### Items NOT touched by v1.0.3 (explicit enumeration, prophylactic)
+
+The following remain binding (extended from v1.0.2's enumeration):
+
+- B = 9999 primary; B = 999 sensitivities; B = 99999 floor-tie rerun (D2)
+- q-threshold = 0.10 (D4)
+- Per-anchor combination = empirical Brown's (D5)
+- C2 floor = 48 (§8 three-contrast floor)
+- Claim ceiling §9 verbatim including the forbidden-language list (D8)
+- Three-contrast C1–C4 criterion (D7)
+- BY-FDR method (D4)
+- STRING five-branch decision rule including STRING-ZERO-POSITIVES (D6)
+- Donor exclusions E7 (20 external/iPSC-derived donors)
+- C9 batch collapse mapping E9
+- Mandatory sensitivities batch (Tertiary table in §10)
+- M2.5 four-pronged HARD-HALT tripwire structure (the tripwire definition itself is unchanged; only the substrate the prongs run against changes)
+- **Edge enumeration |E_WASC| = 944 with per-theme breakdown (434 / 443 / 67)** — UNCHANGED; the count + cluster-pattern primary outcome stays anchored to this denominator. All-protein-pool prong (a) reports against the full 944.
+- Lower-tail p-value convention (commit `796dc79`).
+- min_unique_q_values guard with default K=5 (commit `43e5aba`) — defensive only, inert at all-protein-pool substrate.
+
+### Prohibitions under v1.0.3
+
+- Theme-restricted prong (a) calibration outcome from v1.0.2 (`FP=0.261 FAIL`) is the binding record; no further iterations of K-sweeps, fallback redesigns, or hybrid-pool augmentations may be invoked to "rescue" theme-restricted as primary under v1.0.3. Such efforts must be re-tagged (v1.1 or later) with their own brutalist gate.
+- AnchorBins built under v1.0.2 with `eligible_proteins=M_T` retain that semantics; pickles are NOT invalidated (dataclass shape unchanged from v1.0.2 → v1.0.3).
+- The build-plan Tertiary table in §10 referenced "all-protein-pool" as a sensitivity (item #5 in the original list). That row is REMOVED from the Tertiary table (since it's now primary) and replaced with a new sensitivity row: "theme-restricted-with-known-FAILED-calibration".
+
+### Acknowledgment of v1.0.2 commit-message claim
+
+The v1.0.2 commit message implicitly asserted theme-restricted was the canonical primary. v1.0.3 amends that within the same day (2026-06-02), motivated by empirical calibration failure under the spec's own pre-registered Gate 2. The cumulative effect on "spec freeze" credibility is acknowledged: WASC has now amended an analytical decision (D3) twice in one day. The defensible framing is: each amendment was triggered by a real empirical finding under H0 that the prior version did not anticipate, and each followed the same brutalist-gated protocol. Future reviewers comparing the v1.0.1 commit-message claim of "Analytical spec unchanged" with three same-day analytical amendments will reasonably interpret "pre-registered" as the documented decision-with-decision-log, not as eternal immutability.
+
+### Pre-registered Tertiary table update (§10)
+
+Replace Tertiary item 5 ("all-protein-pool" sensitivity) with:
+
+> **Theme-restricted-with-known-FAILED-calibration sensitivity** — Re-run prong (a) with `eligible_proteins=M_T` per (anchor, theme). Reports per-theme FP rate, n_finite_p, and the surviving-edge subset's per-anchor BY-FDR. Reported as a SENSITIVITY whose result-set is interpretable only against the v1.0.2 sub-pre-registered failure baseline (FP=0.261). Not a primary inference.
+
+*End of v1.0.3 amendment. Frozen at git tag `wasc-prereg-v1.0.3`. Decided 2026-06-02; workflows `wf_45fe2105-641` (3I + 3V) + `wf_ed466540-7c8` (4S + 3V) returned 0 ENDORSE, 0 ACCEPT for any path other than (iii) all-protein-pool primary.*

@@ -1,23 +1,25 @@
-"""M2.5 prong (a) — label-shuffle null calibration smoke.
+"""M2.5 prong (a) — K=2 sweep via monkey-patch on compute_anchor_null.
 
-Small-scale wiring + calibration plausibility check.  Default: 5 shuffles
-× B=99 across all ~300 anchors.  Estimated wall-clock: ~5 min single-core
-based on M2.4 full B=100 timing (~20s for B=100 → ~20s × (99/100) per
-shuffle × 5 = ~100s).
+Runs the theme-restricted label-shuffle calibration with
+``min_unique_q_values=2`` (very lenient — just guards against fully
+CONSTANT Q_null cases, allowing edges with 2+ distinct null draws).
 
-This is NOT the production calibration (which is 20 shuffles × B=999,
-per spec Gate 2 / M2.5 prong (a)).  Smoke purpose:
+WHY K=2 (vs the K=5 default committed in null.py):
+  Workflow wf_45fe2105-641 V1 verdict identified sparse-cell sampling
+  as producing constant Q_null → deterministic lower-tail p (0.01 or 1.0).
+  K=5 is the spec; K=2 is the minimal sufficient guard if the bias is
+  PURELY from the K=1 (single-value) pathology.  If K=2 returns FP to
+  ~0.10, the bias is purely the constant-Q_null case.  If K=2 still
+  inflates FP while K=5 passes, the bias extends to near-constant
+  Q_null (cells with 2-3 candidates draw the same 2-3 values
+  repeatedly).
 
-  1. Validate the shuffle infrastructure end-to-end on real data.
-  2. Read the pooled FP rate at a budget that's tractable for iteration.
-  3. Compare against the spec Gate 2 bound:
-       mean_FP_rate ≤ 0.10 + 2·√(0.10·0.90/|edges|) ≈ 0.114 at n_edges≈1888
+Monkey-patch path: identical to the K=10 agent's approach.
+``compute_anchor_null`` is rebound on the ``sanity`` module to force
+``min_unique_q_values=2`` regardless of caller default.
 
-If pooled mean FP rate looks far from 0.10 (e.g., > 0.20), the wiring
-or calibration has a problem and the production run is blocked until
-debugged.
-
-Output: output/wasc/m2_5_prong_a_smoke/result.json
+Output: output/wasc/m2_5_prong_a_smoke_k2/result.json (separate dir to
+preserve the K=5 baseline result.json).
 """
 from __future__ import annotations
 
@@ -39,16 +41,29 @@ from cliquefinder.stats.wasc.bins import (  # noqa: E402
     build_anchor_bins,
     load_measured_degrees,
 )
+from cliquefinder.stats.wasc import null as null_mod  # noqa: E402
+from cliquefinder.stats.wasc import sanity as sanity_mod  # noqa: E402
 from cliquefinder.stats.wasc.null import AnchorWork, anchor_seed  # noqa: E402
 from cliquefinder.stats.wasc.preprocess import build_wasc_data_bundle  # noqa: E402
-from cliquefinder.stats.wasc.sanity import run_label_shuffle_calibration  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("m2.5.prong_a.smoke")
+log = logging.getLogger("m2.5.prong_a.k2")
 
 
-OUT = REPO / "output" / "wasc" / "m2_5_prong_a_smoke"
+OUT = REPO / "output" / "wasc" / "m2_5_prong_a_smoke_k2"
 OUT.mkdir(parents=True, exist_ok=True)
+
+
+K_OVERRIDE = 2
+
+
+def _patched_compute_anchor_null(*args, **kwargs):
+    """Force min_unique_q_values=K_OVERRIDE regardless of caller default."""
+    kwargs["min_unique_q_values"] = K_OVERRIDE
+    return _ORIG_COMPUTE_ANCHOR_NULL(*args, **kwargs)
+
+
+_ORIG_COMPUTE_ANCHOR_NULL = null_mod.compute_anchor_null
 
 
 def main() -> int:
@@ -57,18 +72,27 @@ def main() -> int:
     parser.add_argument("--B", type=int, default=99)
     parser.add_argument("--min-valid-perms", type=int, default=20)
     parser.add_argument("--p-threshold", type=float, default=0.10)
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Only use the first N anchors (for ultra-fast iteration)")
-    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="all",
-                        help="all: v1.0.3 canonical primary (full measured proteome). "
-                             "theme: v1.0.2 substrate — RETAINED AS SENSITIVITY "
-                             "with known FAILED calibration. "
-                             "Default: all (v1.0.3 primary).")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="theme")
+    parser.add_argument("--k", type=int, default=2,
+                        help="min_unique_q_values value to inject via monkey-patch.")
     args = parser.parse_args()
 
+    # Reassign module-level override if caller passes --k
+    global K_OVERRIDE
+    K_OVERRIDE = int(args.k)
+
+    # Patch the symbol that sanity.run_label_shuffle_calibration imported.
+    # The function `run_label_shuffle_calibration` calls `compute_anchor_null`
+    # via the name bound at module import: `from .null import compute_anchor_null`
+    # → we rebind on `sanity_mod`.
+    sanity_mod.compute_anchor_null = _patched_compute_anchor_null
+
     t0 = time.time()
-    log.info("=== M2.5 prong (a) — label-shuffle calibration smoke ===")
-    log.info(f"n_shuffles={args.n_shuffles}, B={args.B}, p_threshold={args.p_threshold}")
+    log.info("=== M2.5 prong (a) K=%d monkey-patch smoke ===", K_OVERRIDE)
+    log.info(f"n_shuffles={args.n_shuffles}, B={args.B}, "
+             f"p_threshold={args.p_threshold}, candidate_pool={args.candidate_pool}")
+    log.info(f"compute_anchor_null is forced to min_unique_q_values={K_OVERRIDE}")
 
     bundle = build_wasc_data_bundle()
     abundance = bundle.abundance
@@ -78,9 +102,6 @@ def main() -> int:
     obs_by_edge = dict(zip(obs_df["edge_id"], obs_df["Q"]))
     edges_doc = json.loads((REPO / "data" / "wasc" / "E_WASC_v1.json").read_text())
 
-    # CANONICAL-DIRECTION CONVENTION (spec §1/M1, build_plan §3):
-    # WascEdges are oriented anchor < target.  M2.2 fits each edge ONCE
-    # in canonical direction; null/Brown's must match.
     anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
     anchor_themes_set: dict[str, set[str]] = defaultdict(set)
     for e in edges_doc["edges"]:
@@ -107,9 +128,6 @@ def main() -> int:
     bins_by_anchor = {}
     for a in all_anchors:
         if args.candidate_pool == "theme":
-            # Per-anchor union of M_T across the anchor's themes (8.4% of
-            # anchors are multi-theme).  This is a single-AnchorBins
-            # approximation to the canonical per-(anchor, theme) pool.
             eligible = set().union(*[m_t[t] for t in anchor_themes_set[a]])
         else:
             eligible = None
@@ -133,7 +151,7 @@ def main() -> int:
 
     log.info("Starting calibration...")
     t_calib = time.time()
-    result = run_label_shuffle_calibration(
+    result = sanity_mod.run_label_shuffle_calibration(
         works_template=works,
         anchor_bins_by_anchor=bins_by_anchor,
         abundance=abundance,
@@ -149,7 +167,7 @@ def main() -> int:
     )
     calib_dt = time.time() - t_calib
 
-    log.info("\n=== M2.5 prong (a) smoke result ===")
+    log.info("\n=== M2.5 prong (a) K=%d smoke result ===", K_OVERRIDE)
     log.info(f"  n_shuffles completed: {result.n_shuffles}")
     log.info(f"  B per shuffle       : {result.B}")
     log.info(f"  p_threshold         : {result.p_threshold}")
@@ -161,8 +179,10 @@ def main() -> int:
     log.info(f"  total calib time    : {calib_dt:.1f}s "
              f"({calib_dt / args.n_shuffles:.1f}s per shuffle)")
 
-    # Persist
     out_doc = {
+        "config": f"theme + K={K_OVERRIDE} (monkey-patched)",
+        "min_unique_q_values": K_OVERRIDE,
+        "candidate_pool": args.candidate_pool,
         "n_shuffles_requested": args.n_shuffles,
         "n_shuffles_completed": int(result.n_shuffles),
         "B": int(result.B),
@@ -176,16 +196,11 @@ def main() -> int:
         "pooled_pass": bool(result.pooled_pass),
         "per_shuffle_n_finite_p": [int(x) for x in result.per_shuffle_n_finite_p],
         "wall_clock_seconds": float(calib_dt),
-        "extrapolated_production_minutes": float(
-            calib_dt / args.n_shuffles * 20 * (999 / args.B) / 60
-        ),
         "n_anchors": len(works),
         "n_edges_total": int(n_edges_total),
     }
     (OUT / "result.json").write_text(json.dumps(out_doc, indent=2))
     log.info(f"\nWrote {OUT / 'result.json'}")
-    log.info(f"Extrapolated production (20 shuffles × B=999): "
-             f"~{out_doc['extrapolated_production_minutes']:.1f} min single-core")
     log.info(f"Total elapsed: {time.time() - t0:.1f}s")
     return 0
 

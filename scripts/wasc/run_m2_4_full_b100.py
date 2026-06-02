@@ -70,10 +70,12 @@ def main() -> int:
                         help="Only process the first N anchors (default: all)")
     parser.add_argument("--reset-checkpoint", action="store_true",
                         help="Remove existing checkpoint before running")
-    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="theme",
-                        help="theme: spec §4 canonical (M_T per anchor's theme). "
-                             "all: build-plan prong (c) sensitivity (full proteome). "
-                             "Default: theme (canonical primary).")
+    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="all",
+                        help="all: v1.0.3 canonical primary (full measured proteome). "
+                             "theme: v1.0.2 substrate (M_T per anchor's theme) — "
+                             "RETAINED AS SENSITIVITY with known FAILED calibration "
+                             "(FP=0.261 vs bound 0.120 at v1.0.2). "
+                             "Default: all (v1.0.3 primary).")
     args = parser.parse_args()
 
     t0 = time.time()

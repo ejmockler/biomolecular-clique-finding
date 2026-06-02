@@ -1,0 +1,94 @@
+{
+  "amendment_tag": "wasc-prereg-v1.0.3",
+  "amendment_date_utc": "2026-06-02",
+  "supersedes": ["wasc-prereg-v1.0", "wasc-prereg-v1.0.1", "wasc-prereg-v1.0.2"],
+  "scope": "Swap canonical primary candidate pool from theme-restricted (M_T per (anchor, theme)) to all-protein-pool (full measured proteome). Theme-restricted retained as a sensitivity with documented FAILED calibration. |E_WASC|=944 frozen invariant preserved.",
+  "trigger": {
+    "type": "EMPIRICAL_H0_CALIBRATION_FAILURE",
+    "finding": "M2.5 prong (a) label-shuffle FP rate at v1.0.2 theme-restricted substrate = 0.261 vs spec Gate 2 bound 0.120 → FAIL. All-protein-pool variant FP = 0.107 at same substrate → PASS. ±1-decile fallback exonerated (contributes ≤ 0.014 of the 0.154-point miscalibration). Root cause: sparse-cell sampling (M_T = 42–190 over 100 decile cells) produces constant Q_null, making the lower-tail formula mechanically undefined for ~25% of edges.",
+    "investigated_in_workflows": [
+      "wf_45fe2105-641 (path-debug): 3 investigators + 3 brutalist verifiers — diagnosed sparse-cell mechanism, proposed V1 guard + β hybrid pool + γ spec amendment, returned 0 ENDORSE / 2 MODIFY / 1 REJECT against the hybrid proposal",
+      "wf_ed466540-7c8 (V1-guard-validation): 4 parallel sweep agents + synthesis + 3 brutalist verifiers — established that V1 guard alone cannot recover theme-restricted calibration at any K (K=2 FAIL, K=5 FAIL, K=10 'PASS' is bound-inflation artifact at n_finite=94/944). 3/3 REJECT against any guard-as-primary proposal."
+    ],
+    "convergent_recommendation": "Path (iii) — adopt all-protein-pool as canonical primary. Endorsed independently by V2 verdict in wf_ed466540-7c8 as the cleanest option: 'requires no spec amendment (all-protein-pool is a pre-registered tertiary sensitivity per Tertiary table in §10)'."
+  },
+  "brutalist_verdicts": {
+    "wf_45fe2105-641_verdicts": {
+      "n_total": 3, "ENDORSE": 0, "MODIFY": 2, "REJECT": 1,
+      "reject_recommended_path": "strategic retreat to v1.0.2 + 'prong (a) FAILED; primary INCONCLUSIVE' as more defensible than further amendment",
+      "modify_required_mods": [
+        "Add p-value robustness guard (V1) — implemented as defensive correctness fix (commit 43e5aba)",
+        "Persist full prong (a) result.jsons with provenance — N/A for v1.0.3 (no new prong results required beyond what's already pinned)",
+        "Replace single-point floor=10 with sweep — N/A for v1.0.3 (hybrid path rejected)",
+        "True-negative Q-asymmetry diagnostic — DEFERRED (not load-bearing for v1.0.3 decision)",
+        "Secondary uniform-PIT under H0 — DEFERRED",
+        "Reject PARTIAL→Transport-only branch — HONORED (v1.0.3 chooses uniform all-protein-pool, no per-theme conditional)"
+      ]
+    },
+    "wf_ed466540-7c8_verdicts": {
+      "n_total": 3, "ENDORSE": 0, "MODIFY": 0, "REJECT": 3,
+      "convergent_objections": [
+        "K=10 'PASS' is bound-inflation: bound widens 0.131→0.162 because n_finite collapses 944→94, not because calibration tightens",
+        "BY-FDR denominator collapses 10× under guard suppression, silently redefining inferential target away from pre-registered |E_WASC|=944",
+        "Theme balance destroyed: Transport (M_T=42) worst-hit by suppression → surviving 94 edges Transport-dominated → pre-registered three-theme cluster-pattern claim structurally unmakeable",
+        "K is post-hoc tuned (K=5 failed → jumped to K=10 because it passed): textbook first-pass-wins search over guard parameter space",
+        "Selection on guard is non-ignorable: edges in cell-starved neighborhoods (= edges the guard drops) are exactly where real biological effects would be hardest to detect",
+        "Production calibration didn't even use the guard (sanity.py:run_label_shuffle_calibration doesn't pass min_unique_q_values); only monkey-patched experiments did"
+      ],
+      "convergent_recommended_path": "(iii) Adopt all-protein-pool as canonical primary — V2 explicit recommendation."
+    }
+  },
+  "no_q_exposure_attestation": {
+    "claim": "The v1.0.3 decision is driven by H0 label-shuffle FP-rate outcomes + structural matrix properties (|E_WASC|=944, M_T sizes, per-cell occupancy distributions) + mathematical properties of the lower-tail permutation formula on constant Q_null. Real-label Q-rank values from output/wasc/concordance_per_edge_m2_2.csv were observed in the M2.4 full B=100 sanity smoke (commit c92b11c) prior to this amendment, but those observations did not motivate the swap. The all-protein-pool's H0 calibration PASS (FP=0.107) was likewise computed without consulting real-label Q-rank ordering.",
+    "caveat": "Per wf_45fe2105-641 V2 verdict: H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The 'no real-Q exposure' claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met."
+  },
+  "frozen_artifact_fingerprints_at_amendment_time": {
+    "output/wasc/concordance_per_edge_m2_2.csv": "6e026ce7930bcf504cf79da1a4dc969389c46e8092feb8dc55f7fb5d8a6bf57b",
+    "output/wasc/beta_per_edge_per_group_m2.csv": "2a6c4a392fbc16d81a3ffe6c720dccb131f1e555d83cedf830617ba8c2dcf126",
+    "data/wasc/E_WASC_v1.json": "aeef82ab6a013fe61166405fb13fcb28299d342b39b8342f2803d60f3f90df36",
+    "data/wasc/cluster_members_v1.json": "b5b2cf110ef9ea97c719bb63fc3c68347ed0c5668e14663be042e6c13012dd56",
+    "data/wasc/manifest_v1.json": "2732ce9897b1484abdf3bb287bfc1b3c3d4ae6580f7a44149517efb75bb3a19f",
+    "data/wasc/measured_degrees_v1.json": "c415b498dadb4e79a70b6fe5a88ace7f58921e8cfdcab0409d618ab460883baa",
+    "data/wasc/v1.0.2_amendment_decision_log.json": "b44e38dd702527db5fe1f4f075dca98c623b0b7315c25213c472c771e740ce89"
+  },
+  "items_NOT_modified_by_v103": [
+    "B = 9999 primary; B = 999 sensitivities; B = 99999 floor-tie rerun (D2)",
+    "q-threshold = 0.10 (D4)",
+    "Per-anchor combination = empirical Brown's (D5)",
+    "C2 floor = 48 (§8 three-contrast floor)",
+    "Claim ceiling §9 verbatim including forbidden-language list (D8)",
+    "Three-contrast C1–C4 criterion (D7)",
+    "BY-FDR method (D4)",
+    "STRING five-branch decision rule including STRING-ZERO-POSITIVES (D6)",
+    "Donor exclusions E7 (20 external/iPSC-derived donors)",
+    "C9 batch collapse mapping E9",
+    "Mandatory sensitivities batch (Tertiary table in §10) — items 1-4 + 6 unchanged; item 5 replaced (see below)",
+    "M2.5 four-pronged HARD-HALT tripwire STRUCTURE (the tripwire definition; the substrate the prongs run against changes)",
+    "Edge enumeration |E_WASC| = 944 with per-theme breakdown (434 / 443 / 67) — UNCHANGED; primary outcome stays anchored here",
+    "Lower-tail p-value convention (commit 796dc79)",
+    "min_unique_q_values guard with default K=5 (commit 43e5aba) — defensive only, inert at all-protein-pool substrate"
+  ],
+  "tertiary_table_change": {
+    "removed": "Item 5 — all-protein-pool sensitivity (since promoted to primary)",
+    "added": "Item 5 — theme-restricted-with-known-FAILED-calibration sensitivity — re-runs prong (a) with eligible_proteins=M_T per (anchor, theme); reports per-theme FP rate, n_finite_p, surviving-edge subset's per-anchor BY-FDR; interpretable only against the v1.0.2 sub-pre-registered failure baseline (FP=0.261); not a primary inference"
+  },
+  "prohibitions_under_v103": [
+    "No further iterations of K-sweeps, fallback redesigns, or hybrid-pool augmentations may be invoked to 'rescue' theme-restricted as primary under v1.0.3. Such efforts must be re-tagged (v1.1 or later) with their own brutalist gate.",
+    "AnchorBins built under v1.0.2 with eligible_proteins=M_T retain that semantics; pickles NOT invalidated (dataclass shape unchanged from v1.0.2 → v1.0.3)."
+  ],
+  "v11_future_path": {
+    "trigger_condition": "If a future re-derivation of WASC operates on the AnswerALS prebatch matrix (current v1.1 future path per v1.0.2_amendment_decision_log.json), the per-theme M_T sizes may grow (more measured proteins per cluster from less-stringent missingness filtering), and theme-restricted matched-bin sampling may regain calibration.",
+    "blockers": [
+      "Cohort harmonization (4144 × 447 prebatch vs current 3264 × 436)",
+      "Sample-ID separator reconciliation",
+      "Re-validating §2 batch-correction assumptions against pre-ComBat input",
+      "Explicit zero-as-missing recoding policy",
+      "PLUS: empirical re-calibration of theme-restricted prong (a) under v1.1 substrate — must demonstrate H0 FP recovery (≤ 0.12) before re-promoting theme-restricted to primary"
+    ]
+  },
+  "acknowledgment_of_spec_freeze_credibility": {
+    "fact": "WASC has now amended an analytical decision (D3) twice in one day (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool).",
+    "framing": "Each amendment was triggered by a real empirical finding under H0 that the prior version did not anticipate, and each followed the same brutalist-gated protocol (workflows with structured investigators + adversarial verifiers; signed decision logs with SHA-256 pins; no-Q-exposure attestations). Future reviewers should interpret 'pre-registered' here as the documented decision-with-decision-log, not as eternal immutability.",
+    "alternative_considered": "Strategic retreat — v1.0.2 + 'M2.5 prong (a) FAILED; primary INCONCLUSIVE' (wf_45fe2105-641 V2 remaining_concerns #1). Rejected because all-protein-pool was already a pre-registered tertiary sensitivity that calibrates cleanly, so promoting it to primary is a smaller spec change than declaring the entire primary outcome unmakeable."
+  }
+}
