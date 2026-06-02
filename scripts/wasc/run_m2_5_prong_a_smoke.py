@@ -59,6 +59,9 @@ def main() -> int:
     parser.add_argument("--p-threshold", type=float, default=0.10)
     parser.add_argument("--limit", type=int, default=None,
                         help="Only use the first N anchors (for ultra-fast iteration)")
+    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="theme",
+                        help="theme: spec §4 canonical (M_T per anchor's theme). "
+                             "all: build-plan prong (c) sensitivity (full proteome).")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -77,8 +80,10 @@ def main() -> int:
     # WascEdges are oriented anchor < target.  M2.2 fits each edge ONCE
     # in canonical direction; null/Brown's must match.
     anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    anchor_themes_set: dict[str, set[str]] = defaultdict(set)
     for e in edges_doc["edges"]:
         anchor_targets[e["anchor_uniprot"]].append((e["edge_id"], e["target_uniprot"]))
+        anchor_themes_set[e["anchor_uniprot"]].add(e["theme"])
 
     all_anchors = sorted(anchor_targets.keys())
     if args.limit:
@@ -88,11 +93,26 @@ def main() -> int:
     degrees = load_measured_degrees()
     uniprot_to_row = {p: i for i, p in enumerate(abundance.index)}
 
-    log.info("Building AnchorBins...")
+    log.info(f"Building AnchorBins (candidate_pool={args.candidate_pool})...")
+    if args.candidate_pool == "theme":
+        cluster_doc = json.loads((REPO / "data" / "wasc" / "cluster_members_v1.json").read_text())
+        m_t: dict[str, set[str]] = {
+            theme: set(tdata["measured_uniprots"])
+            for theme, tdata in cluster_doc["themes"].items()
+        }
+        log.info(f"  M_T sizes: {{ {', '.join(f'{t}={len(s)}' for t, s in m_t.items())} }}")
     t_bins = time.time()
     bins_by_anchor = {}
     for a in all_anchors:
-        bins_by_anchor[a] = build_anchor_bins(a, abundance, degrees)
+        if args.candidate_pool == "theme":
+            # Per-anchor union of M_T across the anchor's themes (8.4% of
+            # anchors are multi-theme).  This is a single-AnchorBins
+            # approximation to the canonical per-(anchor, theme) pool.
+            eligible = set().union(*[m_t[t] for t in anchor_themes_set[a]])
+        else:
+            eligible = None
+        bins_by_anchor[a] = build_anchor_bins(a, abundance, degrees,
+                                              eligible_proteins=eligible)
     log.info(f"  built in {time.time() - t_bins:.1f}s")
 
     works = []

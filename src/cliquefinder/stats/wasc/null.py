@@ -11,7 +11,9 @@ Per spec §4: for each anchor a, the null is anchor-local:
                            refit β̂ and SE for the fake edge (a, t'_e) in
                            every group, compute cochran_q.
 
-  Permutation p-value  p[e] = (1 + |{b : Q_null[e,b] ≥ Q_obs[e]}|) / (B + 1)
+  Permutation p-value  p[e] = (1 + |{b : Q_null[e,b] ≤ Q_obs[e]}|) / (B + 1)
+                       (LOWER-TAIL per spec §4 line 207: small Q = invariant
+                        slopes = WASC-positive ⇒ small p)
 
 Bin-empty positions contribute NaN to Q_null and are dropped from the
 denominator.  Edges with fewer than ``min_valid_perms`` (spec C2 floor = 48)
@@ -191,7 +193,7 @@ def compute_anchor_null(
     ses_buf = np.full(G, np.nan)
 
     for b in range(B):
-        sampled, _ = sample_matched_non_neighbors(
+        sampled, _, _ = sample_matched_non_neighbors(
             anchor_bins, true_targets_list, rng,
         )
         for i, fake_t in enumerate(sampled):
@@ -222,12 +224,13 @@ def compute_anchor_null(
             else:
                 n_deg_per_edge[i] += 1
 
-    # Per-edge permutation p-values
+    # Per-edge permutation p-values — LOWER-TAIL per spec §4 line 207.
+    # Small Q ⇒ invariant slopes ⇒ WASC-positive ⇒ small p.
     p_values = np.full(n_edges, np.nan, dtype=np.float64)
     for i in range(n_edges):
         valid_null = null_Q[i][np.isfinite(null_Q[i])]
         if len(valid_null) >= min_valid_perms and np.isfinite(work.Q_obs[i]):
-            p_values[i] = (1 + np.sum(valid_null >= work.Q_obs[i])) / (len(valid_null) + 1)
+            p_values[i] = (1 + np.sum(valid_null <= work.Q_obs[i])) / (len(valid_null) + 1)
 
     return AnchorNullResult(
         anchor_uniprot=work.anchor_uniprot,

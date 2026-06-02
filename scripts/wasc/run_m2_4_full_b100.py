@@ -70,11 +70,15 @@ def main() -> int:
                         help="Only process the first N anchors (default: all)")
     parser.add_argument("--reset-checkpoint", action="store_true",
                         help="Remove existing checkpoint before running")
+    parser.add_argument("--candidate-pool", choices=["theme", "all"], default="theme",
+                        help="theme: spec §4 canonical (M_T per anchor's theme). "
+                             "all: build-plan prong (c) sensitivity (full proteome). "
+                             "Default: theme (canonical primary).")
     args = parser.parse_args()
 
     t0 = time.time()
     log.info("=== M2.4 full sanity pass ===")
-    log.info(f"B={args.B}, min_valid_perms={args.min_valid_perms}")
+    log.info(f"B={args.B}, min_valid_perms={args.min_valid_perms}, candidate_pool={args.candidate_pool}")
 
     bundle = build_wasc_data_bundle()
     abundance = bundle.abundance
@@ -101,53 +105,64 @@ def main() -> int:
     # CANONICAL-DIRECTION CONVENTION (spec §1/M1, build_plan §3):
     # WascEdges are oriented anchor < target.  M2.2 fits each edge ONCE
     # in canonical direction; per-anchor null/Brown's must match.
-    anchor_targets: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    #
+    # THEME-RESTRICTED CANONICAL (spec §4 line 192): for each (anchor a,
+    # theme T), the candidate pool is `M_T \ {a} \ N_a^obs`.  Anchors
+    # with edges in multiple themes get one work unit per theme.
+    # ALL-PROTEIN-POOL PRONG-C VARIANT: ignore theme; pool = full proteome.
+    anchor_theme_targets: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for e in edges_doc["edges"]:
-        anchor_targets[e["anchor_uniprot"]].append((e["edge_id"], e["target_uniprot"]))
+        key = (e["anchor_uniprot"], e["theme"])
+        anchor_theme_targets[key].append((e["edge_id"], e["target_uniprot"]))
 
-    all_anchors = sorted(anchor_targets.keys())
+    work_keys = sorted(anchor_theme_targets.keys())
     if args.limit:
-        all_anchors = all_anchors[:args.limit]
-    log.info(f"Will process {len(all_anchors)} anchors")
+        work_keys = work_keys[:args.limit]
+    log.info(f"Will process {len(work_keys)} (anchor, theme) work units")
 
     degrees = load_measured_degrees()
 
-    # Build per-anchor bins
-    log.info("Building AnchorBins...")
-    t_bins = time.time()
-    bins_by_anchor = {}
-    cells_per_anchor = []
-    cell_size_records = []
-    for i, a in enumerate(all_anchors):
-        b = build_anchor_bins(a, abundance, degrees)
-        bins_by_anchor[a] = b
-        cells_per_anchor.append(len(b.cells))
-        sizes = [len(v) for v in b.cells.values()]
-        if sizes:
-            cell_size_records.append({
-                "anchor": a,
-                "n_cells": len(b.cells),
-                "min_cell": int(min(sizes)),
-                "median_cell": int(np.median(sizes)),
-                "max_cell": int(max(sizes)),
-            })
-        if (i + 1) % 50 == 0:
-            log.info(f"  built bins for {i + 1}/{len(all_anchors)}")
-    bin_dt = time.time() - t_bins
-    log.info(f"Bin build complete: {len(all_anchors)} anchors in {bin_dt:.1f}s "
-             f"(avg {bin_dt / len(all_anchors) * 1000:.0f}ms per anchor)")
+    # Theme cluster members M_T for theme-restricted pool
+    cluster_doc = json.loads((REPO / "data" / "wasc" / "cluster_members_v1.json").read_text())
+    m_t: dict[str, set[str]] = {
+        theme: set(tdata["measured_uniprots"])
+        for theme, tdata in cluster_doc["themes"].items()
+    }
+    log.info(f"M_T sizes: {{ {', '.join(f'{t}={len(s)}' for t, s in m_t.items())} }}")
 
-    # AnchorWorks
+    log.info("Building per-(anchor, theme) AnchorBins...")
+    t_bins = time.time()
+    bins_by_key: dict[tuple[str, str], object] = {}
+    cells_per_anchor = []
+    for i, (a, theme) in enumerate(work_keys):
+        if args.candidate_pool == "theme":
+            eligible = m_t.get(theme)
+        else:
+            eligible = None  # all-protein-pool variant
+        b = build_anchor_bins(a, abundance, degrees, eligible_proteins=eligible)
+        bins_by_key[(a, theme)] = b
+        cells_per_anchor.append(len(b.cells))
+        if (i + 1) % 50 == 0:
+            log.info(f"  built bins for {i + 1}/{len(work_keys)}")
+    bin_dt = time.time() - t_bins
+    log.info(f"Bin build complete: {len(work_keys)} units in {bin_dt:.1f}s "
+             f"(avg {bin_dt / len(work_keys) * 1000:.0f}ms per unit)")
+
     works = []
-    for a in all_anchors:
-        targets = anchor_targets[a]
+    for (a, theme) in work_keys:
+        targets = anchor_theme_targets[(a, theme)]
         edge_ids = tuple(e for (e, _) in targets)
         true_targets = tuple(t for (_, t) in targets)
         Q_obs = np.array([obs_by_edge.get(e, np.nan) for e in edge_ids], dtype=np.float64)
+        # AnchorWork keyed on the anchor only — but the seed is salted with
+        # theme so multi-theme anchors get independent permutation sequences.
         works.append(AnchorWork(
             anchor_uniprot=a, edge_ids=edge_ids, true_targets=true_targets,
             Q_obs=Q_obs,
-            seed=anchor_seed(a, global_salt=f"wasc-v1.0.2-full-b{args.B}"),
+            seed=anchor_seed(
+                a,
+                global_salt=f"wasc-v1.0.2-full-b{args.B}-pool{args.candidate_pool}-{theme}",
+            ),
         ))
 
     ctx = NullLoopContext(
@@ -159,18 +174,51 @@ def main() -> int:
         group_order=group_order,
     )
 
-    ckpt = OUT / "full_b100.jsonl"
+    ckpt = OUT / f"full_b100_pool{args.candidate_pool}.jsonl"
     if args.reset_checkpoint and ckpt.exists():
         log.warning(f"Removing pre-existing checkpoint {ckpt}")
         ckpt.unlink()
 
-    log.info(f"Running null loop on {len(works)} anchors at B={args.B}...")
-    t_run = time.time()
-    results = run_null_serial(
-        works=works, anchor_bins_by_anchor=bins_by_anchor, ctx=ctx,
-        B=args.B, min_valid_perms=args.min_valid_perms,
-        checkpoint_path=ckpt,
+    log.info(f"Running null loop on {len(works)} (anchor, theme) units at B={args.B}...")
+    # Manual loop to avoid the bins_by_anchor → str-key constraint, which
+    # would collide for multi-theme anchors.  Pair works[i] with
+    # bins_by_key[work_keys[i]] explicitly.
+    from cliquefinder.stats.wasc.null import (
+        append_checkpoint, compute_anchor_null, load_completed_anchors,
     )
+    completed_keys = set()
+    if ckpt.exists() and not args.reset_checkpoint:
+        completed_keys = load_completed_anchors(ckpt)
+    t_run = time.time()
+    results = []
+    for (work, (a, theme)) in zip(works, work_keys):
+        ck_key = f"{a}|{theme}"
+        if ck_key in completed_keys:
+            continue
+        r = compute_anchor_null(
+            work=work,
+            anchor_bins=bins_by_key[(a, theme)],
+            abundance_by_group=ctx.abundance_by_group,
+            sample_index_by_group=ctx.sample_index_by_group,
+            uniprot_to_row=ctx.uniprot_to_row,
+            X_cov_by_group=ctx.X_cov_by_group,
+            B=args.B,
+            min_n_per_group=ctx.min_n_per_group,
+            min_valid_perms=args.min_valid_perms,
+            group_order=ctx.group_order,
+        )
+        # Stamp the checkpoint key with theme so multi-theme anchors are
+        # distinguishable
+        r_serialized = {
+            "anchor": f"{r.anchor_uniprot}|{theme}",
+            "edge_ids": list(r.edge_ids),
+            "Q_obs": [float(x) if np.isfinite(x) else None for x in r.Q_obs],
+            "p_values": [float(x) if np.isfinite(x) else None for x in r.p_values],
+            "n_degenerate": [int(x) for x in r.n_degenerate_per_edge],
+        }
+        with ckpt.open("a") as fh:
+            fh.write(json.dumps(r_serialized, sort_keys=True) + "\n")
+        results.append(r)
     run_dt = time.time() - t_run
 
     # Aggregate stats

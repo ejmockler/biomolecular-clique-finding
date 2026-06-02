@@ -202,6 +202,7 @@ def build_anchor_bins(
     *,
     precomputed_corr: pd.Series | None = None,
     axes: tuple[str, ...] = DEFAULT_AXES,
+    eligible_proteins: set[str] | frozenset[str] | None = None,
 ) -> AnchorBins:
     """Build the matched-bin index for one anchor.
 
@@ -228,6 +229,19 @@ def build_anchor_bins(
         ``("degree", "corr")`` per v1.0.2 amendment.  Use
         ``("degree", "miss", "corr")`` to opt back into 3-axis behavior
         (requires ``missingness`` to be provided).
+    eligible_proteins
+        Restrict the matched-bin CANDIDATE POOL to this set of UniProts
+        (after removing the anchor itself).  ``None`` (default) means
+        "use the full proteomics matrix" — this is the all-protein-pool
+        variant (build plan prong (c) sensitivity).  The spec §4 canonical
+        primary requires this to be ``M_T`` (the theme's cluster members)
+        for an (anchor, theme) bin construction.
+
+        Note: deciles are STILL computed on the full proteome's values
+        (degree / |Pearson|), so the bin EDGES are global; only the cell
+        MEMBERSHIP is restricted.  This makes the same bin definitions
+        directly comparable between the theme-restricted primary and
+        the all-protein-pool prong (c) variant.
 
     Raises
     ------
@@ -269,10 +283,15 @@ def build_anchor_bins(
         corr_bin = np.full(len(proteins), -1, dtype=np.int8)
 
     by_axis = {"degree": deg_bin, "miss": miss_bin, "corr": corr_bin}
+    pool: set[str] | None = (
+        set(eligible_proteins) if eligible_proteins is not None else None
+    )
 
     cells: dict[tuple[int, ...], list[str]] = defaultdict(list)
     for i, p in enumerate(proteins):
         if p == anchor_uniprot:
+            continue
+        if pool is not None and p not in pool:
             continue
         parts: list[int] = []
         skip = False
@@ -305,52 +324,89 @@ def sample_matched_non_neighbors(
     true_neighbors: list[str],
     rng: np.random.Generator,
     *,
-    max_retries: int = 100,
-) -> tuple[list[str | None], int]:
-    """For each true neighbor, sample a non-neighbor from the SAME 3-axis bin.
+    relaxation_axes: tuple[str, ...] = ("corr",),
+    max_relaxation: int = 1,
+) -> tuple[list[str | None], int, list[int]]:
+    """For each true neighbor, sample a non-neighbor from the SAME bin.
 
     Excluded: anchor itself, all true neighbors, already-sampled this call.
 
-    Per spec §4 + brutalist mod 1: max_retries on bin-empty edge cases.
-    If a true-neighbor's bin has no eligible candidates after retries, the
-    output for that position is ``None`` and the caller skips this per-pair
-    sample for this permutation iteration.
+    Per spec §4 (v1.0.2): if the exact cell is empty after exclusion, fall
+    back to a widened cell by relaxing ``relaxation_axes`` by ±1 decile.
+    Default ``("corr",)`` matches the spec's "±1 decile fallback on |r|".
+    Axes NOT in ``relaxation_axes`` (e.g., ``"degree"``) are kept exact.
+
+    The widened cells are searched in order of L1 distance from the original
+    (small relaxations preferred).  Cells from all relaxation levels up to
+    ``max_relaxation`` are pooled into ONE candidate set; sampling is
+    uniform over that pool, NOT cell-by-cell.
 
     Returns
     -------
-    (sampled, n_degenerate)
-        ``sampled``: list of UniProts (one per true_neighbor, or None if
-        bin-empty after retries).
-        ``n_degenerate``: count of None entries.
+    (sampled, n_degenerate, relaxation_level_per_pos)
+        ``sampled``: list of UniProts (one per ``true_neighbors`` position,
+        or ``None`` if no eligible candidate found at any relaxation level).
+        ``n_degenerate``: count of ``None`` entries.
+        ``relaxation_level_per_pos``: per-position relaxation distance
+        used (0 = exact, 1 = ±1-axis widening, ..., -1 = degenerate).
+        Used by Sanity Gate 7 to report per-anchor fallback rate.
     """
     exclude: set[str] = set(true_neighbors) | {anchor_bins.anchor_uniprot}
     out: list[str | None] = []
+    relaxation_levels: list[int] = []
     n_degenerate = 0
+
+    # Resolve which axis indices in the bin's `axes` tuple are relaxable.
+    axis_to_index = {axis: i for i, axis in enumerate(anchor_bins.axes)}
+    relax_axis_indices = [axis_to_index[a] for a in relaxation_axes
+                          if a in axis_to_index]
+
+    def _widened_keys(orig_key: tuple[int, ...], level: int) -> list[tuple[int, ...]]:
+        """All cell keys reachable from orig_key by widening EXACTLY one
+        relax-axis by +level or -level (the canonical "L_inf shell at
+        relaxation distance level on relax_axis_indices")."""
+        if level == 0:
+            return [orig_key]
+        results: list[tuple[int, ...]] = []
+        for axis_i in relax_axis_indices:
+            for sign in (-1, 1):
+                new = list(orig_key)
+                new[axis_i] += sign * level
+                if 0 <= new[axis_i] <= 9:
+                    results.append(tuple(new))
+        return results
+
     for tn in true_neighbors:
         cell_key = anchor_bins.get_cell_key(tn)
         if cell_key is None:
             out.append(None)
+            relaxation_levels.append(-1)
             n_degenerate += 1
             continue
-        cell = anchor_bins.cells.get(cell_key, ())
-        # Filter out already-excluded
-        candidates = [p for p in cell if p not in exclude]
-        if not candidates:
-            # Bin-empty edge case.  max_retries doesn't help here because
-            # the cell is genuinely empty after exclusion; the retry policy
-            # in the spec applies to RANDOM-DRAW failures (sampling a
-            # degenerate protein), not to truly-empty cells.  Mark as
-            # degenerate.
+        chosen: str | None = None
+        level_used = -1
+        for level in range(0, max_relaxation + 1):
+            keys = _widened_keys(cell_key, level)
+            # Pool candidates from ALL keys at this level
+            pool: list[str] = []
+            for k in keys:
+                for p in anchor_bins.cells.get(k, ()):
+                    if p not in exclude:
+                        pool.append(p)
+            if pool:
+                idx = int(rng.integers(0, len(pool)))
+                chosen = pool[idx]
+                level_used = level
+                break
+        if chosen is None:
             out.append(None)
+            relaxation_levels.append(-1)
             n_degenerate += 1
-            continue
-        # Sample one uniformly without replacement
-        # (np.random.Generator.choice with replace=False on a python list)
-        idx = int(rng.integers(0, len(candidates)))
-        choice = candidates[idx]
-        out.append(choice)
-        exclude.add(choice)
-    return out, n_degenerate
+        else:
+            out.append(chosen)
+            relaxation_levels.append(level_used)
+            exclude.add(chosen)
+    return out, n_degenerate, relaxation_levels
 
 
 # ---------------------------------------------------------------------------

@@ -198,6 +198,53 @@ class TestComputeAnchorNull:
         assert r.n_degenerate_per_edge[0] == 50
         assert np.isnan(r.null_Q).all()
 
+    def test_p_value_is_lower_tail(self):
+        """REGRESSION (spec §4 line 207 / lower-tail convention):
+        small Q_obs ⇒ small p ⇒ WASC-positive.  An anchor with Q_obs
+        smaller than every null draw should yield p = 1/(B+1).  An
+        anchor with Q_obs larger than every null draw should yield
+        p = 1.0 (1 + B / (B+1) = (B+1)/(B+1))."""
+        ctx, bins_by_anchor, _, _ = _make_test_context()
+
+        # Q_obs = 0.0 (smaller than any chi2(2) sample) → p should hit
+        # the floor (1/(B+1) under min_valid_perms=10).
+        work_low = AnchorWork(
+            anchor_uniprot="P00",
+            edge_ids=("P00|P01",),
+            true_targets=("P01",),
+            Q_obs=np.array([0.0]),
+            seed=42,
+        )
+        r_low = compute_anchor_null(
+            work_low, bins_by_anchor["P00"],
+            ctx.abundance_by_group, ctx.sample_index_by_group,
+            ctx.uniprot_to_row, ctx.X_cov_by_group,
+            B=200, min_valid_perms=10, group_order=ctx.group_order,
+        )
+        # Lower-tail: very small Q_obs → very small p (close to floor)
+        assert r_low.p_values[0] <= 0.05, (
+            f"Q_obs=0 should give very small p; got {r_low.p_values[0]}"
+        )
+
+        # Q_obs = 1e6 (larger than any chi2(2) sample) → p ≈ 1
+        work_high = AnchorWork(
+            anchor_uniprot="P00",
+            edge_ids=("P00|P01",),
+            true_targets=("P01",),
+            Q_obs=np.array([1e6]),
+            seed=42,
+        )
+        r_high = compute_anchor_null(
+            work_high, bins_by_anchor["P00"],
+            ctx.abundance_by_group, ctx.sample_index_by_group,
+            ctx.uniprot_to_row, ctx.X_cov_by_group,
+            B=200, min_valid_perms=10, group_order=ctx.group_order,
+        )
+        # Lower-tail: huge Q_obs → p ≈ 1 (every null is ≤ Q_obs)
+        assert r_high.p_values[0] >= 0.95, (
+            f"Q_obs=1e6 should give p ≈ 1; got {r_high.p_values[0]}"
+        )
+
     def test_reproducibility(self):
         """Same seed → identical null_Q matrix."""
         ctx, bins_by_anchor, _, _ = _make_test_context()

@@ -153,11 +153,10 @@ def empirical_brown_per_anchor(
         n_valid = int(valid_mask.sum())
         if n_valid < 2:
             continue
-        # Rank descending: largest Q → rank 1 → smallest empirical p.
-        # rankdata returns ranks in [1, n_valid]; the empirical p of
-        # row[b] is rank_b / n_valid (right-tail).
+        # LOWER-TAIL per spec §4: small Q ⇒ small p ⇒ WASC-positive.
+        # Rank ASCENDING so smallest Q gets rank 1 → smallest empirical p.
         row_valid = row[valid_mask]
-        ranks = rankdata(-row_valid, method="average")
+        ranks = rankdata(row_valid, method="average")
         emp_p = ranks / n_valid
         emp_p = np.maximum(emp_p, max(p_floor, eps))
         minus2log[i, valid_mask] = -2.0 * np.log(emp_p)

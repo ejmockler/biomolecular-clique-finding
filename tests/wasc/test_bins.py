@@ -244,7 +244,7 @@ class TestSampleMatchedNonNeighbors:
         # leaves 2 candidates eligible after exclusion of P03.
         true_neighbors = ["P03"]
         rng = np.random.default_rng(0)
-        sampled, n_deg = sample_matched_non_neighbors(bins, true_neighbors, rng)
+        sampled, n_deg, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
         assert n_deg == 0
         assert len(sampled) == 1
         assert sampled[0] in {"P04", "P05"}  # both in same cell as P03
@@ -253,7 +253,7 @@ class TestSampleMatchedNonNeighbors:
         bins = self._make_anchor_bins()
         true_neighbors = ["P03"]
         rng = np.random.default_rng(0)
-        sampled, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
+        sampled, _, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
         assert "P00" not in sampled  # anchor
         assert "P03" not in sampled  # true neighbor
 
@@ -263,7 +263,7 @@ class TestSampleMatchedNonNeighbors:
         bins = self._make_anchor_bins()
         true_neighbors = ["P09"]
         rng = np.random.default_rng(0)
-        sampled, n_deg = sample_matched_non_neighbors(bins, true_neighbors, rng)
+        sampled, n_deg, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
         assert sampled == [None]
         assert n_deg == 1
 
@@ -272,7 +272,7 @@ class TestSampleMatchedNonNeighbors:
         bins = self._make_anchor_bins()
         true_neighbors = ["P_not_in_anything"]
         rng = np.random.default_rng(0)
-        sampled, n_deg = sample_matched_non_neighbors(bins, true_neighbors, rng)
+        sampled, n_deg, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
         assert sampled == [None]
         assert n_deg == 1
 
@@ -283,12 +283,113 @@ class TestSampleMatchedNonNeighbors:
         # Both true_neighbors in cell (2,0,0) which has {P06,P07,P08}
         true_neighbors = ["P06", "P07"]
         rng = np.random.default_rng(0)
-        sampled, n_deg = sample_matched_non_neighbors(bins, true_neighbors, rng)
+        sampled, n_deg, _ = sample_matched_non_neighbors(bins, true_neighbors, rng)
         # Only P08 is eligible (the other two are excluded); both sampler
         # positions try to draw → second one gets bin-empty
         assert sampled[0] == "P08"
         assert sampled[1] is None
         assert n_deg == 1
+
+    def test_fallback_no_op_when_exact_cell_populated(self):
+        """If the exact cell has eligible candidates, the fallback is
+        never invoked — relaxation_level should be 0 for all positions."""
+        bins = self._make_anchor_bins()
+        # P03's cell (1,0,0) has {P04, P05} after excluding P03
+        sampled, n_deg, levels = sample_matched_non_neighbors(
+            bins, ["P03"], np.random.default_rng(0),
+        )
+        assert n_deg == 0
+        assert levels == [0], f"Expected exact match, got level {levels}"
+
+    def test_fallback_widens_to_neighboring_cell(self):
+        """When the exact cell is exhausted, ±1-decile widening on a
+        relaxable axis recovers a candidate from a neighboring cell."""
+        # Build a 2-axis bin where cell (5, 5) is empty but (5, 4) and
+        # (5, 6) have candidates.  Anchor sampling tn from (5, 5) should
+        # widen to level=1 and pick from neighbors.
+        proteins = tuple(f"P{i:02d}" for i in range(10))
+        deg_bin = np.full(10, 5, dtype=np.int8)
+        corr_bin = np.array([4, 4, 5, 6, 6, 6, 4, 4, 6, 6], dtype=np.int8)
+        anchor = "P02"  # in cell (5, 5)
+        # Manual cells: (5,5)={P02}, (5,4)={P00,P01,P06,P07}, (5,6)={P03,P04,P05,P08,P09}
+        cells = {
+            (5, 4): ("P00", "P01", "P06", "P07"),
+            (5, 5): ("P02",),
+            (5, 6): ("P03", "P04", "P05", "P08", "P09"),
+        }
+        bins = AnchorBins(
+            anchor_uniprot=anchor, protein_ids=proteins,
+            deg_bin=deg_bin, miss_bin=None, corr_bin=corr_bin,
+            cells={k: tuple(p for p in v if p != anchor) for k, v in cells.items()},
+            axes=("degree", "corr"),
+            _protein_to_idx={p: i for i, p in enumerate(proteins)},
+        )
+        # tn = P02: cell (5,5) empty after excluding {anchor=P02, tn=P02};
+        # widen to ±1 corr-decile → pool = (5,4) ∪ (5,6) = 9 candidates.
+        sampled, n_deg, levels = sample_matched_non_neighbors(
+            bins, ["P02"], np.random.default_rng(0),
+        )
+        assert n_deg == 0
+        assert levels == [1], f"Expected ±1 widening, got level {levels}"
+        # Sampled protein must be from the union of (5,4) and (5,6)
+        assert sampled[0] in cells[(5, 4)] + cells[(5, 6)]
+
+    def test_fallback_keeps_degree_axis_exact(self):
+        """The relaxation axis defaults to ('corr',) — degree must stay
+        exact.  If only (degree±1, corr) cells have candidates, no
+        candidate should be returned."""
+        proteins = tuple(f"P{i:02d}" for i in range(6))
+        # Anchor in cell (5, 5).  Candidates only in cell (4, 5) or (6, 5)
+        # — different degree → fallback must NOT pick them.
+        deg_bin = np.array([4, 4, 5, 5, 6, 6], dtype=np.int8)
+        corr_bin = np.full(6, 5, dtype=np.int8)
+        cells = {
+            (4, 5): ("P00", "P01"),
+            (5, 5): ("P02", "P03"),
+            (6, 5): ("P04", "P05"),
+        }
+        bins = AnchorBins(
+            anchor_uniprot="P02", protein_ids=proteins,
+            deg_bin=deg_bin, miss_bin=None, corr_bin=corr_bin,
+            cells={k: tuple(p for p in v if p != "P02") for k, v in cells.items()},
+            axes=("degree", "corr"),
+            _protein_to_idx={p: i for i, p in enumerate(proteins)},
+        )
+        # tn = P03: cell (5,5) contains {P03} (only P03 after excluding anchor=P02);
+        # P03 itself is excluded → cell empty.  Widening on corr ±1 stays in
+        # degree bin 5 but corr 4 / 6 are empty → degenerate.
+        sampled, n_deg, levels = sample_matched_non_neighbors(
+            bins, ["P03"], np.random.default_rng(0),
+        )
+        assert sampled == [None]
+        assert n_deg == 1
+        assert levels == [-1]
+
+    def test_fallback_respects_max_relaxation(self):
+        """With max_relaxation=0, the sampler behaves as the pre-fallback
+        version (exact cell only)."""
+        proteins = tuple(f"P{i:02d}" for i in range(10))
+        deg_bin = np.full(10, 5, dtype=np.int8)
+        corr_bin = np.array([4, 5, 6, 4, 5, 6, 4, 5, 6, 4], dtype=np.int8)
+        cells = {
+            (5, 4): ("P00", "P03", "P06", "P09"),
+            (5, 5): ("P01", "P04", "P07"),
+            (5, 6): ("P02", "P05", "P08"),
+        }
+        bins = AnchorBins(
+            anchor_uniprot="P01", protein_ids=proteins,
+            deg_bin=deg_bin, miss_bin=None, corr_bin=corr_bin,
+            cells={k: tuple(p for p in v if p != "P01") for k, v in cells.items()},
+            axes=("degree", "corr"),
+            _protein_to_idx={p: i for i, p in enumerate(proteins)},
+        )
+        # tn = P04: cell (5,5) has {P04, P07} after excluding anchor=P01;
+        # excluding tn=P04 leaves {P07} → can sample exactly without fallback.
+        sampled, _, levels = sample_matched_non_neighbors(
+            bins, ["P04"], np.random.default_rng(0), max_relaxation=0,
+        )
+        assert levels == [0]
+        assert sampled[0] == "P07"
 
     def test_rng_reproducibility(self):
         """Same seed → same draw."""
@@ -312,12 +413,12 @@ class TestSampleMatchedNonNeighbors:
         )
         rng1 = np.random.default_rng(42)
         rng2 = np.random.default_rng(42)
-        s1, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng1)
-        s2, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng2)
+        s1, _, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng1)
+        s2, _, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng2)
         assert s1 == s2
         # Different seed → likely different draw on n=20 cell
         rng3 = np.random.default_rng(123)
-        s3, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng3)
+        s3, _, _ = sample_matched_non_neighbors(bins, ["X00", "X01"], rng3)
         # Not asserting inequality (low probability of same draw); just
         # asserting validity:
         assert all(s is not None for s in s3)
@@ -409,6 +510,64 @@ class TestV102AxesAmendment:
         total_3 = sum(len(v) for v in bins_3axis.cells.values())
         assert total_2 == total_3
 
+    def test_eligible_proteins_restricts_pool(self, small_abundance):
+        """`eligible_proteins` restricts the candidate pool to a subset
+        (theme-restricted primary per spec §4 / build plan prong-c
+        contrast)."""
+        degrees = {p: i for i, p in enumerate(small_abundance.index)}
+        # Pick a small theme-like set: 4 of 12 proteins
+        eligible = {"P01", "P02", "P03", "P04"}
+        bins = build_anchor_bins(
+            "P00", small_abundance, degrees,
+            eligible_proteins=eligible,
+        )
+        # All cell members must be from the eligible set (and not the anchor)
+        for cell_members in bins.cells.values():
+            for p in cell_members:
+                assert p in eligible, f"Protein {p} not in eligible set"
+                assert p != "P00"
+        # Total cell membership == |eligible| (no anchor; assumes no NaN bins)
+        total = sum(len(v) for v in bins.cells.values())
+        assert total == len(eligible)
+
+    def test_eligible_proteins_none_means_full_pool(self, small_abundance):
+        """`eligible_proteins=None` is the default (full proteome pool)
+        — the all-protein-pool prong (c) variant."""
+        degrees = {p: i for i, p in enumerate(small_abundance.index)}
+        bins_default = build_anchor_bins("P00", small_abundance, degrees)
+        bins_explicit_none = build_anchor_bins(
+            "P00", small_abundance, degrees, eligible_proteins=None,
+        )
+        assert bins_default.cells == bins_explicit_none.cells
+
+    def test_eligible_proteins_excludes_anchor_even_if_in_pool(self, small_abundance):
+        """The anchor itself is excluded even if it's in eligible_proteins."""
+        degrees = {p: i for i, p in enumerate(small_abundance.index)}
+        eligible = {"P00", "P01", "P02"}  # anchor P00 included
+        bins = build_anchor_bins(
+            "P00", small_abundance, degrees, eligible_proteins=eligible,
+        )
+        for cell_members in bins.cells.values():
+            assert "P00" not in cell_members
+
+    def test_eligible_proteins_decile_edges_are_global(self, small_abundance):
+        """Restricting the pool does NOT change the decile cutpoints
+        (computed on the full proteome).  This makes theme-restricted
+        and all-protein-pool variants directly bin-comparable."""
+        degrees = {p: i for i, p in enumerate(small_abundance.index)}
+        bins_full = build_anchor_bins("P00", small_abundance, degrees)
+        bins_restricted = build_anchor_bins(
+            "P00", small_abundance, degrees,
+            eligible_proteins={"P01", "P02", "P03"},
+        )
+        # Decile bin assignments per protein index are identical
+        np.testing.assert_array_equal(bins_full.deg_bin, bins_restricted.deg_bin)
+        np.testing.assert_array_equal(bins_full.corr_bin, bins_restricted.corr_bin)
+        # But cell membership differs (smaller in restricted)
+        total_full = sum(len(v) for v in bins_full.cells.values())
+        total_restricted = sum(len(v) for v in bins_restricted.cells.values())
+        assert total_restricted < total_full
+
     def test_2axis_identical_to_3axis_on_zero_nan_matrix(self, small_abundance):
         """ON A 0%-NAN MATRIX (the v1.0.2 trigger), 2-axis and 3-axis are
         MATHEMATICALLY IDENTICAL — the dropped axis is inert by data, not
@@ -430,8 +589,8 @@ class TestV102AxesAmendment:
         true_neighbors = ["P01", "P02", "P03"]
         rng2 = np.random.default_rng(12345)
         rng3 = np.random.default_rng(12345)
-        s2, _ = sample_matched_non_neighbors(bins_2, true_neighbors, rng2)
-        s3, _ = sample_matched_non_neighbors(bins_3, true_neighbors, rng3)
+        s2, _, _ = sample_matched_non_neighbors(bins_2, true_neighbors, rng2)
+        s3, _, _ = sample_matched_non_neighbors(bins_3, true_neighbors, rng3)
         assert s2 == s3, (
             f"2-axis vs 3-axis draws differ on 0%-NaN matrix:\n  2-axis: {s2}\n  3-axis: {s3}"
         )
