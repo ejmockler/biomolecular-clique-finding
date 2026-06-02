@@ -25,6 +25,7 @@ from cliquefinder.stats.wasc.preprocess import GroupDesign
 from cliquefinder.stats.wasc.sanity import (
     LabelShuffleResult,
     _fit_observed_q_for_works,
+    downsample_group,
     run_label_shuffle_calibration,
     shuffle_group_labels,
 )
@@ -193,6 +194,97 @@ def _make_anchor_bins_for_test():
         cells=cells, axes=("degree", "corr"),
         _protein_to_idx={p: i for i, p in enumerate(proteins)},
     )
+
+
+class TestDownsampleGroup:
+    def test_basic_downsample(self):
+        designs, abundance, _ = _make_designs_and_abundance()
+        rng = np.random.default_rng(0)
+        # SPOR original n=25; down-sample to 12
+        new_designs, sample_index, abundance_by_group = downsample_group(
+            designs, abundance, "SPORADIC", 12, rng,
+        )
+        assert len(new_designs["SPORADIC"].sample_ids) == 12
+        assert sample_index["SPORADIC"].shape == (12,)
+        assert abundance_by_group["SPORADIC"].shape[1] == 12
+        # Other groups unchanged
+        assert len(new_designs["C9ORF72"].sample_ids) == len(designs["C9ORF72"].sample_ids)
+        assert len(new_designs["CONTROL"].sample_ids) == len(designs["CONTROL"].sample_ids)
+        # Sampled donors are subset of original
+        orig_set = set(designs["SPORADIC"].sample_ids)
+        new_set = set(new_designs["SPORADIC"].sample_ids)
+        assert new_set.issubset(orig_set)
+        # No duplicates
+        assert len(new_set) == 12
+
+    def test_n_equal_orig_returns_permutation(self):
+        designs, abundance, _ = _make_designs_and_abundance()
+        rng = np.random.default_rng(0)
+        n_orig = len(designs["SPORADIC"].sample_ids)
+        new_designs, _, _ = downsample_group(
+            designs, abundance, "SPORADIC", n_orig, rng,
+        )
+        # All original donors present (just possibly in different order)
+        assert set(new_designs["SPORADIC"].sample_ids) == set(designs["SPORADIC"].sample_ids)
+
+    def test_invalid_group_raises(self):
+        designs, abundance, _ = _make_designs_and_abundance()
+        with pytest.raises(ValueError, match="not in designs"):
+            downsample_group(designs, abundance, "MADE_UP", 5,
+                             np.random.default_rng(0))
+
+    def test_invalid_n_raises(self):
+        designs, abundance, _ = _make_designs_and_abundance()
+        with pytest.raises(ValueError, match=r"must be in \[1"):
+            downsample_group(designs, abundance, "SPORADIC", 0,
+                             np.random.default_rng(0))
+        with pytest.raises(ValueError, match=r"must be in \[1"):
+            downsample_group(designs, abundance, "SPORADIC", 99999,
+                             np.random.default_rng(0))
+
+    def test_x_cov_trimmed_when_column_collapses(self):
+        """If down-sample drops all donors having a specific tissue dummy,
+        that column should be removed from X_cov."""
+        # Build a fixture where one tissue level has only 1 donor in SPOR
+        rng = np.random.default_rng(0)
+        n_sp = 20
+        cols = ["intercept", "sex_female", "age_z", "tissue_NT_Cell"]
+        X = np.zeros((n_sp, 4))
+        X[:, 0] = 1.0
+        X[:, 1] = rng.choice([0, 1], n_sp)
+        X[:, 2] = rng.standard_normal(n_sp)
+        # Only donor 0 has tissue_NT_Cell = 1
+        X[0, 3] = 1.0
+        sp_samples = [f"SP_{i:02d}" for i in range(n_sp)]
+        designs = {
+            "SPORADIC": GroupDesign("SPORADIC", sp_samples, X, cols),
+        }
+        abundance = pd.DataFrame(
+            rng.standard_normal((10, n_sp)),
+            index=[f"P{i:02d}" for i in range(10)],
+            columns=sp_samples,
+        )
+        # Force a draw that excludes donor 0 by trying many seeds
+        for seed in range(50):
+            rng = np.random.default_rng(seed)
+            new_designs, _, _ = downsample_group(
+                designs, abundance, "SPORADIC", 5, rng,
+            )
+            if "SP_00" not in new_designs["SPORADIC"].sample_ids:
+                # X_cov should have trimmed the tissue_NT_Cell column
+                assert "tissue_NT_Cell" not in new_designs["SPORADIC"].column_names
+                assert new_designs["SPORADIC"].X_cov.shape[1] == 3
+                break
+        else:
+            pytest.skip("Could not find seed that excludes SP_00 — fixture issue")
+
+    def test_reproducibility(self):
+        designs, abundance, _ = _make_designs_and_abundance()
+        rng1 = np.random.default_rng(42)
+        rng2 = np.random.default_rng(42)
+        d1, _, _ = downsample_group(designs, abundance, "SPORADIC", 10, rng1)
+        d2, _, _ = downsample_group(designs, abundance, "SPORADIC", 10, rng2)
+        assert d1["SPORADIC"].sample_ids == d2["SPORADIC"].sample_ids
 
 
 class TestRunLabelShuffleCalibration:

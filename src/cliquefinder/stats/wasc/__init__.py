@@ -39,6 +39,7 @@ from .combination import (
 )
 from .sanity import (
     LabelShuffleResult,
+    downsample_group,
     run_label_shuffle_calibration,
     shuffle_group_labels,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "run_null_serial",
     # M2.5 — calibration tripwire
     "LabelShuffleResult",
+    "downsample_group",
     "run_label_shuffle_calibration",
     "shuffle_group_labels",
     # M3 — empirical Brown's + BY-FDR

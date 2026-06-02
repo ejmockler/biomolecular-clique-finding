@@ -93,6 +93,73 @@ class LabelShuffleResult:
 # Label shuffle primitive
 # ---------------------------------------------------------------------------
 
+def downsample_group(
+    designs: dict[str, GroupDesign],
+    abundance: pd.DataFrame,
+    group_to_downsample: str,
+    new_n: int,
+    rng: np.random.Generator,
+) -> tuple[dict[str, GroupDesign], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Down-sample one group to ``new_n`` donors; other groups unchanged.
+
+    Used by M2.5 prong (b) (SPORADIC → n=25) to test whether the C9-vs-SPOR
+    contrast pattern persists at matched cohort sizes.  If it does → group
+    size is not a confound.  If it collapses → primary suspended.
+
+    The selected donors carry their original X_cov rows verbatim; X_cov
+    columns that become all-zero in the down-sampled subset are trimmed
+    (e.g., a Tissue dummy that only the dropped donors had).  Returns
+    refreshed sample-index and abundance slices for direct use in
+    :class:`NullLoopContext`.
+
+    Raises
+    ------
+    ValueError
+        If ``group_to_downsample`` is not in ``designs`` or ``new_n`` is
+        outside ``[1, original_n]``.
+    """
+    if group_to_downsample not in designs:
+        raise ValueError(
+            f"Group '{group_to_downsample}' not in designs: {list(designs)}"
+        )
+    orig = designs[group_to_downsample]
+    n_orig = len(orig.sample_ids)
+    if new_n < 1 or new_n > n_orig:
+        raise ValueError(
+            f"new_n ({new_n}) must be in [1, {n_orig}] for group "
+            f"'{group_to_downsample}'."
+        )
+
+    perm = rng.permutation(n_orig)[:new_n]
+    new_samples = [orig.sample_ids[i] for i in perm]
+    new_X = orig.X_cov[perm]
+    keep_mask = np.array([np.any(new_X[:, j] != 0) for j in range(new_X.shape[1])])
+    new_X_trimmed = new_X[:, keep_mask]
+    new_colnames = [orig.column_names[j] for j, k in enumerate(keep_mask) if k]
+
+    new_designs = dict(designs)
+    new_designs[group_to_downsample] = GroupDesign(
+        group=group_to_downsample,
+        sample_ids=new_samples,
+        X_cov=new_X_trimmed,
+        column_names=new_colnames,
+    )
+
+    col_lookup = {s: i for i, s in enumerate(abundance.columns)}
+    A = abundance.values
+    sample_index_by_group: dict[str, np.ndarray] = {}
+    abundance_by_group: dict[str, np.ndarray] = {}
+    for g in new_designs:
+        cols = np.array(
+            [col_lookup[s] for s in new_designs[g].sample_ids if s in col_lookup],
+            dtype=np.int64,
+        )
+        sample_index_by_group[g] = cols
+        abundance_by_group[g] = A[:, cols]
+
+    return new_designs, sample_index_by_group, abundance_by_group
+
+
 def shuffle_group_labels(
     designs: dict[str, GroupDesign],
     abundance: pd.DataFrame,
