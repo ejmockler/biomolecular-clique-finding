@@ -97,7 +97,7 @@
   "items_NOT_modified_by_v104": [
     "All v1.0.3 items_NOT_modified (B=9999 primary, B=999 sensitivity, B=99999 floor-tie rerun, q=0.10, Brown primary, C2=48, claim ceiling §9, three-contrast C1-C4, BY method, STRING 5-branch, donor exclusions E7, C9 batch collapse E9, mandatory sensitivities, M2.5 four-prong HARD HALT, |E_WASC|=944, lower-tail p-value, min_unique_q_values K=5)",
     "v1.0.3 prong (a) PASS verdict (all-protein-pool, mean FP=0.111)",
-    "v1.0.3 prong (b) FAIL verdict (theme-restricted, Jaccard 0.285 vs ≥0.70 bound)",
+    "v1.0.3 prong (b) FAIL verdict (all-protein-pool substrate per v1.0.3 default; Jaccard 0.285 ± 0.022 across 3 SPOR-25 seeds vs build_plan §5 L25 ≥0.70 bound)",
     "v1.0.3 canonical primary substrate (all-protein-pool)"
   ],
   "no_q_exposure_attestation": {
