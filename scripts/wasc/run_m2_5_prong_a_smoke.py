@@ -17,7 +17,15 @@ If pooled mean FP rate looks far from 0.10 (e.g., > 0.20), the wiring
 or calibration has a problem and the production run is blocked until
 debugged.
 
-Output: output/wasc/m2_5_prong_a_smoke/result.json
+Output: output/wasc/m2_5_prong_a_smoke/
+  result.{candidate_pool}_b{B}_n{n_shuffles}_seed{shuffle_seed}.json
+
+Per-config naming is mandatory (hygiene fix h1): different
+(candidate_pool, B, n_shuffles, shuffle_seed) configurations write to
+distinct files so a later sensitivity re-stamp can NEVER silently
+overwrite a primary production result.  A 'result.latest.json' pointer
+file is also written for convenience (records the path of the most
+recent run; not authoritative).
 """
 from __future__ import annotations
 
@@ -51,6 +59,37 @@ OUT = REPO / "output" / "wasc" / "m2_5_prong_a_smoke"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
+def per_config_result_filename(
+    *,
+    candidate_pool: str,
+    B: int,
+    n_shuffles: int,
+    shuffle_seed: int,
+) -> str:
+    """Compute per-config result filename (hygiene fix h1).
+
+    Different (candidate_pool, B, n_shuffles, shuffle_seed) tuples MUST
+    write to distinct files so a sensitivity re-stamp cannot silently
+    overwrite a primary production result.
+
+    Format: result.{candidate_pool}_b{B}_n{n_shuffles}_seed{shuffle_seed}.json
+    """
+    if candidate_pool not in ("theme", "all"):
+        raise ValueError(
+            f"candidate_pool must be 'theme' or 'all', got {candidate_pool!r}"
+        )
+    if B < 1 or n_shuffles < 1:
+        raise ValueError(
+            f"B and n_shuffles must be >= 1 (got B={B}, n_shuffles={n_shuffles})"
+        )
+    return (
+        f"result.{candidate_pool}"
+        f"_b{int(B)}"
+        f"_n{int(n_shuffles)}"
+        f"_seed{int(shuffle_seed)}.json"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-shuffles", type=int, default=5)
@@ -64,6 +103,10 @@ def main() -> int:
                              "theme: v1.0.2 substrate — RETAINED AS SENSITIVITY "
                              "with known FAILED calibration. "
                              "Default: all (v1.0.3 primary).")
+    parser.add_argument("--shuffle-seed", type=int, default=42,
+                        help="Master seed for label-shuffle calibration. "
+                             "Distinct seeds write to distinct output files "
+                             "(per-config naming, hygiene fix h1).")
     args = parser.parse_args()
 
     t0 = time.time()
@@ -143,7 +186,7 @@ def main() -> int:
         B=args.B,
         p_threshold=args.p_threshold,
         min_valid_perms=args.min_valid_perms,
-        shuffle_seed=42,
+        shuffle_seed=args.shuffle_seed,
         global_salt="wasc-v1.0.2-shuffle-smoke",
         verbose=True,
     )
@@ -161,8 +204,17 @@ def main() -> int:
     log.info(f"  total calib time    : {calib_dt:.1f}s "
              f"({calib_dt / args.n_shuffles:.1f}s per shuffle)")
 
-    # Persist
+    # Persist (per-config path — hygiene fix h1)
+    result_filename = per_config_result_filename(
+        candidate_pool=args.candidate_pool,
+        B=args.B,
+        n_shuffles=args.n_shuffles,
+        shuffle_seed=args.shuffle_seed,
+    )
+    out_path = OUT / result_filename
     out_doc = {
+        "candidate_pool": args.candidate_pool,
+        "shuffle_seed": int(args.shuffle_seed),
         "n_shuffles_requested": args.n_shuffles,
         "n_shuffles_completed": int(result.n_shuffles),
         "B": int(result.B),
@@ -182,8 +234,30 @@ def main() -> int:
         "n_anchors": len(works),
         "n_edges_total": int(n_edges_total),
     }
-    (OUT / "result.json").write_text(json.dumps(out_doc, indent=2))
-    log.info(f"\nWrote {OUT / 'result.json'}")
+    if out_path.exists():
+        # Per-config files MUST be immutable once written: if the same
+        # (candidate_pool, B, n_shuffles, shuffle_seed) tuple has already
+        # been recorded, refuse to overwrite.  Operator must move/delete
+        # the existing artifact explicitly.
+        raise FileExistsError(
+            f"Refusing to overwrite existing per-config artifact: {out_path}. "
+            "Per-config naming (hygiene fix h1) requires distinct configs to "
+            "produce distinct files; identical configs must not silently "
+            "re-stamp. Move or delete the existing file to re-run."
+        )
+    out_path.write_text(json.dumps(out_doc, indent=2))
+    # Non-authoritative pointer to the most recent run (records which
+    # per-config artifact was just written; safe to overwrite).
+    latest_pointer = {
+        "latest_result_path": out_path.name,
+        "candidate_pool": args.candidate_pool,
+        "B": int(args.B),
+        "n_shuffles": int(args.n_shuffles),
+        "shuffle_seed": int(args.shuffle_seed),
+    }
+    (OUT / "result.latest.json").write_text(json.dumps(latest_pointer, indent=2))
+    log.info(f"\nWrote {out_path}")
+    log.info(f"Updated pointer: {OUT / 'result.latest.json'}")
     log.info(f"Extrapolated production (20 shuffles × B=999): "
              f"~{out_doc['extrapolated_production_minutes']:.1f} min single-core")
     log.info(f"Total elapsed: {time.time() - t0:.1f}s")

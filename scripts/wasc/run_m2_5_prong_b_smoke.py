@@ -108,7 +108,41 @@ def _run_pipeline(
                 "Q_obs": float(r.Q_obs[i]) if np.isfinite(r.Q_obs[i]) else np.nan,
                 "p_raw": float(r.p_values[i]) if np.isfinite(r.p_values[i]) else np.nan,
             })
+    # ------------------------------------------------------------------
+    # !! PREEMPTS v1.1 DEFERRED DECISION items_deferred_to_v11.C5 !!
+    # ------------------------------------------------------------------
+    # The frozen WASC edge set has |E_WASC| = 944 (40 cross-theme dupes,
+    # 904 unique edge_ids; 944 − 904 = 40, verified against
+    # data/wasc/E_WASC_v1.json).  v1.0.4 decision log section
+    # `items_deferred_to_v11.C5` explicitly DEFERS the choice of which
+    # number (944 vs 904) is binding as the BY-FDR denominator.
+    #
+    # This drop_duplicates() call silently resolves that question in the
+    # 904 direction (one row per unique edge_id, then BY-FDR over those
+    # 904 raw p-values).  Per v1.0.3/v1.0.4 prohibitions we are NOT
+    # permitted to "fix" this silently — fixing-via-rescue is the very
+    # behavior the decision log forbids.  We are also not permitted to
+    # change the behavior here unilaterally (it would invalidate the
+    # already-produced prong (b) artifacts at
+    # output/wasc/m2_5_prong_b_b999/seed{42,7,99}/summary.json that
+    # report n_edges_full=904).
+    #
+    # Therefore: documented LOUD, behavior UNCHANGED.  v1.1 must
+    # explicitly reconcile the denominator decision; until then,
+    # downstream readers should treat n_edges = 904 in this script as
+    # an *implementation artifact*, NOT a frozen spec decision.
+    # ------------------------------------------------------------------
+    n_pre = len(rows)
     df = pd.DataFrame(rows).drop_duplicates(subset=["edge_id"])
+    n_post = len(df)
+    if n_pre != n_post:
+        log.warning(
+            "WARNING: deduping to %d edges (drops %d cross-theme dupes); "
+            "v1.1 must reconcile this with the canonical BY-FDR denominator "
+            "decision (currently DEFERRED per v1.0.4 decision log "
+            "items_deferred_to_v11.C5)",
+            n_post, n_pre - n_post,
+        )
     _, q = by_fdr(df["p_raw"].values, alpha=alpha)
     df["q_by"] = q
     return df

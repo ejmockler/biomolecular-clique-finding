@@ -711,7 +711,7 @@ The corrections in v1.0.4 derive from audit of the spec text + code defaults. No
 
 **C16 (LOW) — Anchor count documentation.** Spec text said "order 220-280" anchors loosely. Verified count: 203 distinct canonical anchors in `data/wasc/E_WASC_v1.json`; per-(anchor, theme) work units = 220 (17 multi-theme anchors get one unit per theme).
 
-**C17 (MEDIUM) — Perfect-H1 power statement.** At N=944, q=0.10, B=99999 (i.e., raw-p floor of 1e-5 below BY rank-1 threshold 1.43e-5): only ranks 1..69 can clear BY q ≤ 0.10 even with infinite per-edge power. Maximum testable rejections = 69 of 944. This is the structural ceiling on the primary outcome under the current pre-registered design.
+**C17 (MEDIUM) — Perfect-H1 power statement.** ⚠️ **WRONG AS WRITTEN IN v1.0.4.** Superseded by C17′ in v1.0.5 (see end of file). The v1.0.4 text claimed "at B=99999 only ranks 1..69 can clear BY q ≤ 0.10" — both sign and B mis-attributed. Correct statement: at B=99999 the empirical-p floor (1e-5) is below the BY rank-1 threshold (1.43e-5), so all 944 ranks are testable. The "69" figure derives from B=999 (sensitivity tier), where ranks 1..70 are UNTESTABLE (max 874 testable rejections). v1.0.5 reframes this as a B-feasibility table; see C17′.
 
 ### Infrastructure — locked_bounds CI gate
 
@@ -742,3 +742,52 @@ The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in th
 Three intra-day amendments to D3/D4-family decisions (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool; v1.0.4: correct BY arithmetic + Brown variance text) is a credibility stress on "pre-registered". Defensible framing: each amendment was triggered by an independent finding (v1.0.2: structural matrix property; v1.0.3: H0 calibration FAIL; v1.0.4: audit-discovered pre-existing bugs that survived 4 prior gates). The cumulative pattern reveals a deeper foundational issue: the original v1.0 spec had arithmetic and ambiguity bugs the brutalist gates did not catch because each gate scoped review to the amendment being made. v1.0.4 adds the CI infrastructure (locked_bounds + drift test) that prevents this class of bug from surviving future amendments.
 
 *End of v1.0.4 amendment. Frozen at git tag `wasc-prereg-v1.0.4`. Decided 2026-06-02; workflow `wf_4e08b440-036` (4 auditors + synthesis + 3 brutalist verifiers, 1 REJECT / 2 MODIFY; 4 rescue items deferred per V1 REJECT, 6 amendment-internal mods applied per all verdicts).*
+
+---
+
+## v1.0.5 Amendment — C17 arithmetic correction
+
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.5`. **CORRECTIONS-ONLY** (single arithmetic fix to a v1.0.4 statement that itself was a correction). Triggered by workflow `wf_81017ac0-3a8` V3 brutalist verdict, which caught that the v1.0.4 C17 perfect-H1 power statement had the sign INVERTED and the B value MISATTRIBUTED. v1.0.4's locked-bounds CI gate did not detect this because C17 was added by v1.0.4 itself; no prior tag pinned the (B → testable-rank) mapping.
+
+### Trigger
+
+Workflow `wf_81017ac0-3a8` ran a Path A publication scaffold + 3 artifact-hygiene fixes in parallel. V3 (cross-deliverable consistency reviewer) independently re-derived the BY-rank-feasibility arithmetic from scratch using `q = 0.10`, `N = 944`, `H_944 = 7.4279` (exact), and found that the v1.0.4 C17 statement "at B=99999 only ranks 1..69 can clear" is wrong in both sign and B attribution. The Path A scaffold draft propagated the wrong statement verbatim; not committing the draft prevented downstream propagation, but the v1.0.4 spec text itself remained wrong until this amendment.
+
+### No-Q-exposure attestation
+
+The C17 correction derives from pure arithmetic against the pre-registered (q, N, H_N, B) tuple. No Q values, p-values, q-values, observed FP rates, or BY-FDR tables were consulted. The fix is independent of any prong's pass/fail verdict (verified: prong (a) PASS, prong (b) FAIL, prong (d) PASS verdicts under v1.0.4 are NOT moved by this correction; the C17 number is a feasibility property of the (B, q, N) tuple, not a property of any observed run).
+
+### C17′ — Corrected B-feasibility table
+
+At `N = 944`, `q = 0.10`, `H_944 = 7.4279`, the BY rank-k raw-p threshold is `p_(k) ≤ q · k / (N · H_N) = k · 1.4261e-5`. An edge can clear BY q ≤ 0.10 at rank k only if its achievable empirical p-value (Phipson-Smyth-corrected floor `1 / (B + 1)`) is at most its rank-k threshold. The structural feasibility ceiling under perfect per-edge power is:
+
+| B | Empirical-p floor (1/(B+1)) | k_min (smallest testable rank) | Untestable ranks | Maximum testable rejections |
+|---:|---:|---:|---:|---:|
+| 999 (sensitivity tier) | 1.00e-3 | 71 | 1..70 (70 ranks) | 874 of 944 |
+| 9999 (primary) | 1.00e-4 | 8 | 1..7 (7 ranks) | 937 of 944 |
+| 99999 (floor-tie rerun) | 1.00e-5 | 1 | (none) | 944 of 944 |
+
+(Computation: `scripts/wasc/verify_by_feasibility.py` — see verification script committed alongside this amendment, or rederive: `k_min = ceil(floor / rank1_threshold)`, where `rank1_threshold = q / (N · H_N) = 1.4261e-5`.)
+
+**Interpretation**:
+- At the pre-registered primary `B = 9999`, the structural ceiling is **937 of 944 edges testable** — not 69. Ranks 1..7 are untestable from B=9999 alone.
+- At the floor-tie tertiary `B = 99999`, **all 944 edges are testable**.
+- The "69" figure in the v1.0.4 C17 text comes from B=999 sensitivity tier, where ranks 1..70 are untestable (max 874 testable); the spec text confused testable vs untestable ranks AND the B value.
+
+### Items NOT modified by v1.0.5
+
+- All v1.0.4 items_NOT_modified (B values, q=0.10, Brown's, C2=48, claim ceiling, three-contrast, BY method, STRING rule, donor exclusions, batch collapse, sensitivities, M2.5 4-prong HARD HALT structure, |E_WASC|=944, lower-tail p-value, min_unique_q_values K=5, locked_bounds_v1.json bindings except the C17 description).
+- All v1.0.4 corrections C1, C3, C7, C9, C11, C16 (verified correct under independent re-derivation; only C17 was wrong).
+- The v1.0.4 deferred-to-v1.1 items (C2 B promotion, C5 BY denominator, C8 Gate 2 metric, C12 K-sweep).
+- v1.0.4 prong verdicts: prong (a) PASS, prong (b) FAIL, prong (d) PASS — unchanged by the C17 correction (C17 is a B-feasibility property, not a prong-outcome property).
+
+### Items deferred to v1.1 (unchanged from v1.0.4 enumeration)
+
+Same as v1.0.4. v1.0.5 adds no new deferred items.
+
+### Lessons + infrastructure follow-on (non-binding, for future amendments)
+
+1. The v1.0.4 locked-bounds CI gate caught spec/code drift but cannot catch arithmetic errors in spec text on values it does not lock. To prevent C17-class bugs, v1.1 should add a `tests/wasc/test_feasibility.py` that asserts the B-vs-testable-rank table against an independent computation (`q / (N · H_N)` and `ceil(floor / rank1_threshold)`), not against text-quoted numbers.
+2. The v1.0.4 amendment introduced C17 as a "new arithmetic statement" without an independent verifier. Future amendments that introduce NEW arithmetic claims (vs correcting OLD ones) should require an extra brutalist verifier whose sole job is to re-derive the claim from first principles.
+
+*End of v1.0.5 amendment. Frozen at git tag `wasc-prereg-v1.0.5`. Decided 2026-06-04; workflow `wf_81017ac0-3a8` V3 brutalist (cross-deliverable consistency) caught the error in the v1.0.4 C17 statement; independently re-derived against locked (q, N, H_N) tuple.*
