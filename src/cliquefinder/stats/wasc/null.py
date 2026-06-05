@@ -163,7 +163,7 @@ def compute_anchor_null(
         mathematical pathology where sparse-cell matched-bin sampling
         draws the same fake t' across many iterations → Q_null is
         constant → lower-tail formula `(1+#{Q_null ≤ Q_obs})/(B+1)` is
-        deterministic 0.01 or 1.0 (workflow wf_45fe2105-641 V1 verdict
+        deterministic 0.01 or 1.0 (audit workflow V1 verdict
         finding).  Set to 1 to disable the guard.
 
     Returns
@@ -236,7 +236,7 @@ def compute_anchor_null(
     # Per-edge permutation p-values — LOWER-TAIL per spec §4 line 207.
     # Small Q ⇒ invariant slopes ⇒ WASC-positive ⇒ small p.
     #
-    # GUARD (V1 verdict, workflow wf_45fe2105-641): sparse-cell matched-bin
+    # GUARD (V1 verdict, audit workflow): sparse-cell matched-bin
     # sampling can draw the same fake t' across many iterations, producing
     # CONSTANT Q_null.  The lower-tail formula is then mechanically
     # undefined (deterministic 0.01 or 1.0).  Reject edges with fewer than

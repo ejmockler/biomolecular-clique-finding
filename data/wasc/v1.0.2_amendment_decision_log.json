@@ -6,7 +6,7 @@
   "trigger": {
     "type": "EMPIRICAL_AUDIT",
     "finding": "load_proteomics() returns matrix with 0/1,423,104 NaN cells; the AnswerALS correctedImputed_436 track is RF-imputed upstream by the data portal.",
-    "investigated_in_workflow": "wf_4528d33d-b02",
+    "investigated_in_workflow": "",
     "investigator_count": 3,
     "investigator_recommendations": {
       "A_code_trace": "substitute_preimputation",

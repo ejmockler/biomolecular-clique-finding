@@ -4,9 +4,9 @@
   "supersedes": ["wasc-prereg-v1.0", "wasc-prereg-v1.0.1", "wasc-prereg-v1.0.2", "wasc-prereg-v1.0.3", "wasc-prereg-v1.0.4"],
   "scope": "SINGLE-FIX CORRECTIONS-ONLY amendment: correct v1.0.4 C17 arithmetic (sign inverted, B mis-attributed). All other v1.0.4 corrections (C1, C3, C7, C9, C11, C16) remain binding and verified correct under independent re-derivation. No prong verdicts move.",
   "trigger": {
-    "type": "BRUTALIST_ARITHMETIC_CATCH",
+    "type": "AUDIT_ARITHMETIC_CATCH",
     "finding": "v1.0.4 C17 said 'at B=99999 only ranks 1..69 can clear BY q ≤ 0.10' — sign INVERTED and B MIS-ATTRIBUTED. Correct: at B=99999 the empirical-p floor (1e-5) is below the BY rank-1 threshold (1.43e-5) so ALL 944 ranks are testable. The '69' figure comes from B=999 (sensitivity tier) where ranks 1..70 are UNTESTABLE (max 874 testable). The v1.0.4 locked-bounds CI gate could not catch this because C17 was added by v1.0.4 itself; no prior tag pinned the (B → testable-rank) mapping.",
-    "caught_in_workflow": "wf_81017ac0-3a8 V3 brutalist verdict (cross-deliverable consistency reviewer). Re-derived from first principles using q=0.10, N=944, H_944=7.4279.",
+    "caught_in_workflow": " review verdict (cross-deliverable consistency reviewer). Re-derived from first principles using q=0.10, N=944, H_944=7.4279.",
     "propagation_prevented": "Path A publication scaffold draft propagated the wrong statement verbatim. Brutalist gate caught it; draft NOT saved to disk. The v1.0.4 spec text itself remained wrong until this amendment."
   },
   "correction_applied": {
@@ -19,7 +19,7 @@
   },
   "no_q_exposure_attestation": {
     "claim": "The C17 correction derives from pure arithmetic against the pre-registered (q, N, H_N, B) tuple. No Q values, p-values, q-values, observed FP rates, or BY-FDR tables were consulted. The fix is independent of any prong's pass/fail verdict — verified that prong (a) PASS, prong (b) FAIL, prong (d) PASS verdicts under v1.0.4 are NOT moved by this correction (C17 is a B-feasibility property, not a property of any observed run).",
-    "verifier": "wf_81017ac0-3a8 V3 brutalist; independent arithmetic re-derivation."
+    "verifier": " review; independent arithmetic re-derivation."
   },
   "frozen_artifact_fingerprints_at_amendment_time": {
     "memory/wasc_spec.md": "2e9912730304446a71d8e81cc8131d6a7d1f1a43d3b5fd943fd77d7328d585d8",
@@ -41,12 +41,12 @@
   "items_deferred_to_v11": "Same as v1.0.4 enumeration. v1.0.5 adds no new deferred items.",
   "cumulative_amendment_count_acknowledgment": {
     "fact": "WASC has now amended the analytical decision family 4 times in 3 days (v1.0.2 missingness axis on 2026-06-02; v1.0.3 candidate pool on 2026-06-02; v1.0.4 foundational audit on 2026-06-02; v1.0.5 C17 arithmetic on 2026-06-04). The v1.0.5 amendment is a correction-to-a-correction.",
-    "defensible_framing": "Each amendment was caught by an independent brutalist gate; each fix is verifiable from first principles. The discipline is honest and traceable. The accumulating count does reflect a real cost — brutalist gates are catching problems the original spec process did not — and the v1.0.5 lessons section proposes a structural fix (independent re-derivation gate for any NEW arithmetic claim in future amendments) to slow the amendment frequency.",
+    "defensible_framing": "Each amendment was caught by an independent audit gate; each fix is verifiable from first principles. The discipline is honest and traceable. The accumulating count does reflect a real cost — audit gates are catching problems the original spec process did not — and the v1.0.5 lessons section proposes a structural fix (independent re-derivation gate for any NEW arithmetic claim in future amendments) to slow the amendment frequency.",
     "alternative_considered": "Re-tag v1.0.4 with corrected C17 locally (rewriting history; tag is not pushed). Rejected because: (a) the decision log chain is itself part of the auditable record, and (b) future reviewers comparing v1.0.4 vs v1.0.5 should be able to see exactly what was wrong and what was fixed. v1.0.5 = honest paper trail."
   },
   "infrastructure_added": {
     "scripts/wasc/verify_by_feasibility.py": "Independent arithmetic computation of the C17′ table. Re-derives from (q, N) primitives; does not trust any spec text quote.",
     "tests/wasc/test_feasibility.py": "6 tests locking the C17′ table values + a regression test on the v1.0.4 wrong number. Asserts arithmetic; CI gate against future C17-class bugs.",
-    "lesson_for_future_amendments": "Any NEW arithmetic claim introduced by an amendment must be accompanied by a first-principles re-derivation script + test, NOT just a brutalist verifier looking at the proposal text. The verifier looks at the FINISHED text; the script catches drift in CI long after the amendment lands."
+    "lesson_for_future_amendments": "Any NEW arithmetic claim introduced by an amendment must be accompanied by a first-principles re-derivation script + test, NOT just a reviewer looking at the proposal text. The verifier looks at the FINISHED text; the script catches drift in CI long after the amendment lands."
   }
 }

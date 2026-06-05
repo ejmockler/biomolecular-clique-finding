@@ -52,8 +52,8 @@ For each theme T:
 **Edge set:**
 
 ```
-E_WASC = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T,  a ≠ j,  dist_INDRA(a, j) = 1,
-                                    anchor_a is INDRA-resolvable }
+E_WASC = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T, a ≠ j, dist_INDRA(a, j) = 1,
+ anchor_a is INDRA-resolvable }
 ```
 
 where `dist_INDRA` is the hop distance on the **Wave-24l measured-only INDRA regulatory subgraph** restricted to `ALL_REGULATORY_TYPES` (Activation / Inhibition / IncreaseAmount / DecreaseAmount), computed by `extract_subgraph_induced_by_features(... restrict_endpoints_to_features=True, max_hops=1, node_filter=M)` then `compute_all_pairs_shortest_paths_bounded(... max_hops=1)`.
@@ -82,19 +82,19 @@ This count is **frozen** in `data/wasc/E_WASC_v1.json` at M6a (pre-registration 
 For each edge `(a, j) ∈ E_WASC` and each group `g ∈ G = {C9, SPOR, CTRL}`, fit a single OLS:
 
 ```
-y_{j, s}  =  β_0  +  β_a · anchor_{a, s}  +  γ_Sex · Sex_s  +  γ_Age · Age_s
-            +  γ_Tissue · Tissue_s  +  ε_s     for  s ∈ donors(g)
+y_{j, s} = β_0 + β_a · anchor_{a, s} + γ_Sex · Sex_s + γ_Age · Age_s
+ + γ_Tissue · Tissue_s + ε_s for s ∈ donors(g)
 ```
 
-with the contrast vector `c = (0, 1, 0, 0, ...)` zero-padded for all covariates, so that the SE targets the anchor-slope coefficient `β_a` only. The estimate of interest is `β̂_{j|a, g}` (the partial regression slope of target on anchor, within group g, adjusted for covariates).
+with the contrast vector `c = (0, 1, 0, 0,...)` zero-padded for all covariates, so that the SE targets the anchor-slope coefficient `β_a` only. The estimate of interest is `β̂_{j|a, g}` (the partial regression slope of target on anchor, within group g, adjusted for covariates).
 
 ### 2.1 Response and Batch handling
 
 `y_{j, s}` = pre-residualized log2 abundance of target protein j in donor s, defined as:
 
 ```
-y_{j, s}  =  log2_abundance_{j, s}  −  ComBat_location_{j, batch*(s)}^{(g)}
-                                     / ComBat_scale_{j, batch*(s)}^{(g)}
+y_{j, s} = log2_abundance_{j, s} − ComBat_location_{j, batch*(s)}^{(g)}
+ / ComBat_scale_{j, batch*(s)}^{(g)}
 ```
 
 That is: within each group g, for each target protein j, residualize Batch via ComBat-style EB location/scale adjustment fit on the within-group donors only. The pre-residualization is the SAME for every edge whose target is j and whose group is g, so it is computed once per `(g, j)` pair and reused across all anchors a.
@@ -137,10 +137,10 @@ Use Frisch-Waugh-Lovell to avoid O(|E| × |G|) full OLS:
 1. Per group g, build the covariate-only design `X_g^{cov} = [intercept | Sex | Age | Tissue_dummies]` once. Compute the residual projection `M_g = I − X_g^{cov} (X_g^{cov T} X_g^{cov})^{-1} X_g^{cov T}` once. This is O(n_g²) per group.
 2. For each protein p ∈ M (anchors and targets), compute `p̃_g = M_g @ z(p)_g` once — the covariate-residualized within-group expression vector for p. Cache.
 3. For each edge `(a, j)`, the anchor-slope and SE become the closed-form univariate regression of `j̃_g` on `ã_g`:
-   - `β̂_{j|a, g} = (ã_g^T j̃_g) / (ã_g^T ã_g)`
-   - `RSS = j̃_g^T j̃_g − β̂² · (ã_g^T ã_g)`
-   - `σ̂² = RSS / (n_g − rank(X_g^{cov}) − 1)`
-   - `SE = √(σ̂² / (ã_g^T ã_g))`
+ - `β̂_{j|a, g} = (ã_g^T j̃_g) / (ã_g^T ã_g)`
+ - `RSS = j̃_g^T j̃_g − β̂² · (ã_g^T ã_g)`
+ - `σ̂² = RSS / (n_g − rank(X_g^{cov}) − 1)`
+ - `SE = √(σ̂² / (ã_g^T ã_g))`
 
 This makes the WASC fit phase O(|M| · n_g) for residualization + O(|E_WASC| · n_g) for the per-edge dot products — fast enough for 944 edges × 3 groups × (25 + 294 + 71) samples on CPU without GPU. The anchor loop in M2 is `joblib.Parallel(n_jobs=-1)` over anchors (PRE-REGISTERED, brutalist mod 4); single-threaded scale is infeasible at `|E_WASC| = 944`.
 
@@ -159,9 +159,9 @@ Define the precision weights `w_{g, j, a} = 1 / SE(β̂_{j|a, g})²` for each `(
 **Primary edge statistic:**
 
 ```
-β̄_{j, a}  =  Σ_{g ∈ G_obs} w_{g, j, a} · β̂_{j|a, g}   /   Σ_{g ∈ G_obs} w_{g, j, a}
+β̄_{j, a} = Σ_{g ∈ G_obs} w_{g, j, a} · β̂_{j|a, g} / Σ_{g ∈ G_obs} w_{g, j, a}
 
-Q(j, a)  =  Σ_{g ∈ G_obs} w_{g, j, a} · (β̂_{j|a, g}  −  β̄_{j, a})²
+Q(j, a) = Σ_{g ∈ G_obs} w_{g, j, a} · (β̂_{j|a, g} − β̄_{j, a})²
 ```
 
 This is Cochran's Q from inverse-variance-weighted meta-analysis. Under H0 of identical true slopes across groups (`β_{j|a, g} = β_{j, a}` for all g) and exact-Normal sampling, `Q ~ χ²_{|G_obs|−1}`. We do NOT use the χ² calibration; we use the empirical null from 3-axis-matched non-neighbor pairs (§4).
@@ -191,19 +191,19 @@ For each anchor `a ∈ M_T` that participates in at least one edge in `E_WASC` a
 1. Let `N_a^obs` = set of true measured within-theme INDRA hop-1 neighbors of a in theme T (the targets of a's WASC edges in theme T). Let `n_a = |N_a^obs|`.
 2. Let `P_a^candidate` = `M_T \ N_a^obs \ {a}` (measured cluster members in theme T, excluding a's true neighbors and a itself).
 3. Bin proteins in `P_a^candidate` on a **3-D grid**:
-   - **Axis 1 — degree decile** within the INDRA measured-only regulatory graph. Degree is the full regulatory degree from `query_gene_degrees_batched`, cached in `distances.meta.json`.
-   - **Axis 2 — missingness decile** within the proteomics matrix. Missingness rate is `missing_per_feature / n_samples_total` from `analyze_missing_values`.
-   - **Axis 3 — pooled |Pearson(anchor_a, p)| decile**, where the Pearson correlation is computed on the union of all three groups' donors (after the same Sex/Age/Tissue residualization used in §2 but BEFORE the per-group covariate-adjustment), restricted to donors where both `anchor_a` and `p` are observed. Bin edges are computed per-anchor (deciles of `|r(a, p)|` over `p ∈ M_T \ {a}`).
+ - **Axis 1 — degree decile** within the INDRA measured-only regulatory graph. Degree is the full regulatory degree from `query_gene_degrees_batched`, cached in `distances.meta.json`.
+ - **Axis 2 — missingness decile** within the proteomics matrix. Missingness rate is `missing_per_feature / n_samples_total` from `analyze_missing_values`.
+ - **Axis 3 — pooled |Pearson(anchor_a, p)| decile**, where the Pearson correlation is computed on the union of all three groups' donors (after the same Sex/Age/Tissue residualization used in §2 but BEFORE the per-group covariate-adjustment), restricted to donors where both `anchor_a` and `p` are observed. Bin edges are computed per-anchor (deciles of `|r(a, p)|` over `p ∈ M_T \ {a}`).
 4. For each true neighbor `j ∈ N_a^obs`, identify its (degree-decile, missingness-decile, |r|-decile) cell.
-5. **Per-anchor permutation:** for `b = 1, ..., B`:
-   - Draw n_a substitute targets without replacement from `P_a^candidate`, with the constraint that the multiset of (degree-decile, missingness-decile, |r|-decile) cells matches that of `N_a^obs` exactly. If a perfect 3-D match draw fails after 100 attempts, fall back to a relaxed match where the |r|-decile constraint is widened by ±1 decile (record the relaxation per-anchor in the null-diagnostics manifest). If still failing after 100 further attempts, mark anchor a's permutation as failed for iteration b (record but do not impute).
-   - For each substitute target `j'`, fit the per-group regressions §2, compute `Q^{(b)}(j', a)` exactly as for the real edges.
+5. **Per-anchor permutation:** for `b = 1,..., B`:
+ - Draw n_a substitute targets without replacement from `P_a^candidate`, with the constraint that the multiset of (degree-decile, missingness-decile, |r|-decile) cells matches that of `N_a^obs` exactly. If a perfect 3-D match draw fails after 100 attempts, fall back to a relaxed match where the |r|-decile constraint is widened by ±1 decile (record the relaxation per-anchor in the null-diagnostics manifest). If still failing after 100 further attempts, mark anchor a's permutation as failed for iteration b (record but do not impute).
+ - For each substitute target `j'`, fit the per-group regressions §2, compute `Q^{(b)}(j', a)` exactly as for the real edges.
 
 6. Pool null Q values **across all anchors and all iterations** to form the global null distribution `Q_null = {Q^{(b)}(j', a) : a ∈ anchors, b ∈ 1..B, j' ∈ substitute set b}`. Total size: `|E_WASC| × B = 944 × 9999 ≈ 9.4 × 10^6`.
 
 **Per-edge p-value:**
 ```
-p(j, a) = (1 + #{Q ∈ Q_null : Q ≤ Q(j, a)})  /  (1 + |Q_null|)
+p(j, a) = (1 + #{Q ∈ Q_null : Q ≤ Q(j, a)}) / (1 + |Q_null|)
 ```
 (one-sided, lower tail; small Q = invariant = WASC-positive). The "+1 / +1" is the Phipson-Smyth correction.
 
@@ -222,15 +222,15 @@ p(j, a) = (1 + #{Q ∈ Q_null : Q ≤ Q(j, a)})  /  (1 + |Q_null|)
 Each anchor a contributes `n_a` edge tests. To combine into a per-anchor statistic, use **empirical Brown's method** (Poole et al. 2016).
 
 ```
-χ²_a (combined)  =  −2 · Σ_{j ∈ N_a^obs} log(p(j, a))
+χ²_a (combined) = −2 · Σ_{j ∈ N_a^obs} log(p(j, a))
 
-E[χ²_a]  =  2 · n_a
-Var[χ²_a]  =  4 · n_a  +  2 · Σ_{i ≠ j} cov_emp(−2 log p(i, a), −2 log p(j, a))
+E[χ²_a] = 2 · n_a
+Var[χ²_a] = 4 · n_a + 2 · Σ_{i ≠ j} cov_emp(−2 log p(i, a), −2 log p(j, a))
 
-c_a  =  Var[χ²_a] / (2 · E[χ²_a])
-df_a  =  2 · E[χ²_a]² / Var[χ²_a]
+c_a = Var[χ²_a] / (2 · E[χ²_a])
+df_a = 2 · E[χ²_a]² / Var[χ²_a]
 
-p_a^Brown  =  Pr(χ²_{df_a} ≥ χ²_a / c_a)
+p_a^Brown = Pr(χ²_{df_a} ≥ χ²_a / c_a)
 ```
 
 The covariance `cov_emp` is estimated **from the null distribution** of `(−2 log p(i, a), −2 log p(j, a))` pairs across the B permutation iterations — this is the "empirical" variant and correctly captures within-anchor dependence (the null tests share donors, share anchor expression vector, share covariate design). Brown's method reduces to Fisher's combination if the covariance is zero.
@@ -249,7 +249,7 @@ The covariance `cov_emp` is estimated **from the null distribution** of `(−2 l
 **Primary:** Benjamini-Yekutieli FDR over the per-edge p-values, q-threshold **q = 0.10**.
 
 ```
-q(j, a) = BY-adjusted p(j, a)   via fdr_correction(p_values, method="BY")
+q(j, a) = BY-adjusted p(j, a) via fdr_correction(p_values, method="BY")
 ```
 
 Edge is "WASC-positive" iff `q(j, a) ≤ 0.10`.
@@ -283,7 +283,7 @@ Implement (audit gap — no loader exists):
 ### 7.2 STRING edge set for WASC negative control
 
 ```
-E_STRING = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T,  a ≠ j,  dist_STRING(a, j) = 1 }
+E_STRING = ⋃_{T ∈ Themes} { {a, j} : a, j ∈ M_T, a ≠ j, dist_STRING(a, j) = 1 }
 ```
 
 Same theme-purity and within-cluster constraints as INDRA. Edge count will be different (STRING physical density differs from INDRA regulatory density on these proteins).
@@ -293,7 +293,7 @@ Same theme-purity and within-cluster constraints as INDRA. Edge count will be di
 **Primary STRING effect-size (brutalist mod 2): ΔQ on the anchor-pair edge-INTERSECTION.** Let `E_BOTH = E_WASC ∩ E_STRING` (edges that appear in *both* networks over the WASC anchor pool). Compute the mean (or median) Q over `E_BOTH` separately under the INDRA regression (`Q̄_INDRA^{∩}`) and under the STRING regression (`Q̄_STRING^{∩}` — note: same regression spec, same data; only the null-set membership differs, but for the intersection-effect we compute Q directly on `E_BOTH` and compare its distribution to the corresponding intersection-restricted null under each network). The intersection-restricted effect-size is:
 
 ```
-ΔQ^{∩}  =  Q̄_STRING^{∩}  −  Q̄_INDRA^{∩}      (positive = INDRA more invariant on shared edges)
+ΔQ^{∩} = Q̄_STRING^{∩} − Q̄_INDRA^{∩} (positive = INDRA more invariant on shared edges)
 ```
 
 This is **robust to the zero-positives degenerate case** because it does not depend on either network having a non-empty WASC-positive set — it compares the full Q distributions on the same edge population.
@@ -340,10 +340,10 @@ Apply BY-FDR within each contrast separately at q = 0.10. Let:
 
 - **(C1)** Primary 3-group test passes: there exist edges with `q(j, a) ≤ 0.10` after primary BY-FDR (§6).
 - **(C2, empirical floor 48)** Both of the following hold:
-  - `|R_{C9-SPOR}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
-  - `|R_{C9-CTRL}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
+ - `|R_{C9-SPOR}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
+ - `|R_{C9-CTRL}| ≥ max(3 · |R_{SPOR-CTRL}|, 48)`
 
-  The floor **48 = `ceil(0.05 · |E_WASC|) = ceil(0.05 · 944)`** (brutalist mod 4, M1 user decision 2). The 3× ratio echoes the wave_24j 50× drop framing, scaled to the WASC pool; the absolute floor prevents vacuous 3-of-3 vs 1-of-3 passes when the contrast counts are small.
+ The floor **48 = `ceil(0.05 · |E_WASC|) = ceil(0.05 · 944)`** (brutalist mod 4, M1 user decision 2). The 3× ratio echoes the wave_24j 50× drop framing, scaled to the WASC pool; the absolute floor prevents vacuous 3-of-3 vs 1-of-3 passes when the contrast counts are small.
 - **(C3)** STRING control (§7) returns `ΔQ^{∩}` BCa lower bound > 0 AND the resolved branch is `INDRA-SPECIFIC` (i.e., not `STRING-STRONGER`, `INCONCLUSIVE`, `STRING-UNDERPOWERED`, or `STRING-ZERO-POSITIVES`).
 - **(C4)** `|R_{SPOR-CTRL}|` is not significantly elevated above the FDR null expectation: a one-sided binomial test on `|R_{SPOR-CTRL}|` vs `E[|R| | H0] = 0.10 · |E_WASC| = 94.4` should NOT reject at α = 0.05.
 
@@ -410,7 +410,7 @@ The following must be locked in a tagged git commit `wasc-prereg-v1.0` prior to 
 - **D7.** Three-contrast C9-specific criterion: C1 ∧ C2 ∧ C3 ∧ C4 with the empirical floor `|R_{C9-X}| ≥ max(3·|R_{SPOR-CTRL}|, 48)` (§8).
 - **D8.** Claim ceiling: §9 verbatim (no modification permitted post-hoc). Forbidden language list enforced.
 - **D9.** Covariate design: `[1, anchor_z, Sex, Age_z, Tissue_dummies]` with Batch pre-residualization via within-group ComBat, using C9-Batch collapsed to `site_year` (§2.1).
-- **D10.** Random-number generation: per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest()[:8], 16)`, per-iteration seed derived via `np.random.SeedSequence`.
+- **D10.** Random-number generation: per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest[:8], 16)`, per-iteration seed derived via `np.random.SeedSequence`.
 
 **Primary outcome (singular, brutalist-explicit):**
 
@@ -468,7 +468,7 @@ These sensitivities are **mandatory** and reported alongside the primary regardl
 | STRING v12.0 loader (canonical-UniProt only) | NEW | `src/cliquefinder/knowledge/string_ppi.py::load_string_physical_uniprot_adj_canonical` — per spec in `output/string_alternative_network.md` |
 | Age imputation (regression on Sex within arm) | EXISTING pattern | `cliquefinder/quality/imputation.py` style — fit once at pre-registration time, freeze coefficients to E8 |
 | Three-contrast pairwise Q | NEW | `src/cliquefinder/stats/wasc/three_contrast.py::pairwise_q` + `evaluate_c1_c4` |
-| End-to-end orchestrator | NEW | `scripts/run_wasc.py` — calls all of the above, writes to `output/wasc/`, supports `--phase {primary, tertiary-tcell, tertiary-ipsc, ...}` |
+| End-to-end orchestrator | NEW | `scripts/run_wasc.py` — calls all of the above, writes to `output/wasc/`, supports `--phase {primary, tertiary-tcell, tertiary-ipsc,...}` |
 
 ---
 
@@ -497,7 +497,7 @@ These are run as automated tests in the WASC pipeline. The run is INVALID if any
 
 ### Trigger
 
-Empirical audit of `output/proteomics/all_als.data.csv` (the file `load_proteomics()` consumes by default) found a literal NaN rate of `0 / 1,423,104` cells (0.0000%). The matrix is the AnswerALS data-portal `correctedImputed_436` track, which the portal README at `/Users/noot/Documents/case-control-genomics/proteomics/4_matrix/Proteomic Analysis Guidance README.txt:35` documents as Random-Forest imputed upstream of this repo. Cluster-member rate is identically 0.0 across all 345 deduped members (Splicing 190, Chromatin 145, Transport 42). No sibling pre-imputation file, detection-call matrix, or missingness mask exists anywhere under `output/` or `data/`.
+Empirical audit of `output/proteomics/all_als.data.csv` (the file `load_proteomics` consumes by default) found a literal NaN rate of `0 / 1,423,104` cells (0.0000%). The matrix is the AnswerALS data-portal `correctedImputed_436` track, which the portal README at `/Users/noot/Documents/case-control-genomics/proteomics/4_matrix/Proteomic Analysis Guidance README.txt:35` documents as Random-Forest imputed upstream of this repo. Cluster-member rate is identically 0.0 across all 345 deduped members (Splicing 190, Chromatin 145, Transport 42). No sibling pre-imputation file, detection-call matrix, or missingness mask exists anywhere under `output/` or `data/`.
 
 Consequence: `compute_missingness_per_protein(abundance)` returns the all-zero series; `assign_decile` collapses every protein into bin 9 (verified by regression test `test_constant_input_does_not_return_minus_one`); the (degree, missingness, |r|) cell key degenerates to (degree, 9, |r|) by construction. Axis 2 contributes zero discriminative power to the matched draw on this dataset.
 
@@ -505,7 +505,7 @@ Consequence: `compute_missingness_per_protein(abundance)` returns the all-zero s
 
 At the time of this amendment, **944 observed Q values exist** (`output/wasc/concordance_per_edge_m2_2.csv`, generated 2026-06-02 06:27 from `cac32d0`). The amendment decision is based solely on the structural property of the abundance matrix (0/1,423,104 NaN), demonstrably independent of any observed Q value. No null Q draws have been computed against real data prior to the amendment. The bit-exact equivalence of 2-axis and 3-axis sampling on a 0%-NaN matrix is technical evidence (test `test_2axis_identical_to_3axis_on_zero_nan_matrix`): the rename is a descriptive correction, not a methodology relaxation.
 
-A signed decision log is pinned at `data/wasc/v1.0.2_amendment_decision_log.json` with SHA-256 of the concordance CSV at amendment time and references to the three investigations + three brutalist verdicts (workflow `wf_4528d33d-b02`).
+A signed decision log is pinned at `data/wasc/v1.0.2_amendment_decision_log.json` with SHA-256 of the concordance CSV at amendment time and references to the three investigations + three audit verdict.
 
 ### Amendment §4 — 2-axis null
 
@@ -531,7 +531,7 @@ The paragraph titled "Three-axis binning rationale" is replaced with:
 
 > **2-axis binning rationale (v1.0.2):** The audit confirms degree-only matching was the prior practice in v0.9. Pooled |Pearson| was added in v1.0 in response to the brutalist's over-conservativeness diagnosis (within-cluster proteins co-express by pathway selection, so unmatched substitutes systematically have lower marginal correlation with the anchor than true neighbors). Missingness, added in v0.9, is dropped in v1.0.2 because the loaded matrix (`output/proteomics/all_als.data.csv`) is post-imputation by AnswerALS construction (audit: 0/1,423,104 NaN cells), making the axis discriminative-power-zero. Note: RF imputation depresses conditional variance for heavily-imputed proteins; this is partially absorbed by the |Pearson| axis but not fully controlled. A v1.1 re-derivation on the prebatch source (with detection mask preserved) is the canonical resolution.
 
-### Items NOT touched by v1.0.2 (explicit enumeration, prophylactic per brutalist V2 mod)
+### Items NOT touched by v1.0.2 (explicit enumeration, prophylactic per review mod)
 
 The following v1.0 / v1.0.1 frozen items remain binding and are NOT modified by this amendment:
 
@@ -568,15 +568,15 @@ Reserved for a v1.1 methodology revision tagged `wasc-prereg-v1.1` if/when the p
 ### Code locking
 
 - `src/cliquefinder/stats/wasc/bins.py`: `build_anchor_bins` gains an `axes=("degree", "corr")` default. Missingness argument is optional and ignored when `"miss"` is not in `axes`; raises `ValueError` if `"miss"` requested without missingness data. The 3-axis code path is preserved (re-activated via `axes=("degree", "miss", "corr")`) so v1.1 re-derivation can ship without reverting this amendment.
-- `AnchorBins` dataclass: `miss_bin: np.ndarray | None`, new `axes` field, `cells: dict[tuple[int, ...], tuple[str, ...]]` (variable-length keys).
+- `AnchorBins` dataclass: `miss_bin: np.ndarray | None`, new `axes` field, `cells: dict[tuple[int,...], tuple[str,...]]` (variable-length keys).
 - v1.0.2 regression tests added (`tests/wasc/test_bins.py::TestV102AxesAmendment`, 7 tests): default cell key shape, 3-axis opt-in, ValueError guards, 2-axis ≥ 3-axis cell population, bit-exact equivalence on 0%-NaN matrix.
-- Constant-input regression test (`test_constant_input_does_not_return_minus_one`) closes the brutalist V2 concern that `assign_decile` might silently produce zero-candidate cells on constant input.
+- Constant-input regression test (`test_constant_input_does_not_return_minus_one`) closes the review concern that `assign_decile` might silently produce zero-candidate cells on constant input.
 
 ### Acknowledgment of v1.0.1 commit-message claim
 
 The v1.0.1 tag commit message explicitly stated "Analytical spec unchanged". v1.0.2 amends an analytical decision (D3). This is a deliberate semver progression: v1.0.1 corrected the input metadata; v1.0.2 corrects an empirically-inert axis. The v1.0.2 commit message records this break.
 
-*End of v1.0.2 amendment. Frozen at git tag `wasc-prereg-v1.0.2`. Decided 2026-06-02; workflow `wf_4528d33d-b02` (3 investigators + 3 brutalist verifiers, 0 REJECT, 3 MODIFY, all mods incorporated).*
+*End of v1.0.2 amendment. Frozen at git tag `wasc-prereg-v1.0.2`. Decided 2026-06-02; (3 investigators + 3 reviewers, 0 REJECT, 3 MODIFY, all mods incorporated).*
 
 ---
 
@@ -590,16 +590,16 @@ All other v1.0 / v1.0.1 / v1.0.2 frozen items remain binding except as noted bel
 
 M2.5 prong (a) label-shuffle calibration at v1.0.2's theme-restricted substrate FAILED its pre-registered Gate 2 bound under H0:
 
-  Theme-restricted (v1.0.2 canonical) + ±1-decile fallback: mean FP = 0.261 vs bound 0.120 → FAIL
-  All-protein-pool (build-plan prong c)               : mean FP = 0.107 vs bound 0.120 → PASS
+ Theme-restricted (v1.0.2 canonical) + ±1-decile fallback: mean FP = 0.261 vs bound 0.120 → FAIL
+ All-protein-pool (build-plan prong c) : mean FP = 0.107 vs bound 0.120 → PASS
 
-Two parallel brutalist workflows (`wf_45fe2105-641`, `wf_ed466540-7c8` — 14 agents total) confirmed the mechanism:
+Two parallel brutalist workflows (``, `` — 14 agents total) confirmed the mechanism:
 
 1. **±1-decile fallback exonerated.** Disabling fallback (`max_relaxation=0`) only drops theme-pool FP from 0.261 to 0.251. Widening (`max_relaxation=2`) nudges to 0.265. The fallback contributes ≤ 0.014 of the 0.154-point miscalibration.
 
 2. **Sparse-cell sampling is the cause.** M_T sizes 42 (Transport), 145 (Chromatin), 190 (Splicing) over a 10×10 = 100 decile-cell grid produce per-cell occupancy median ≤ 2. β's diagnostic on Splicing M_T: 22.8% empty cells, 21.9% density=1, 53.7% with ≤2 unique fakes/99 draws. Transport (M_T=42, cell-density median 1) hits FP = 0.540 — one fake drawn for all B perms → Q_null constant → lower-tail formula deterministic.
 
-3. **V1's `min_unique_q_values` guard does NOT recover calibration alone.** K=5 default: theme-restricted FP = 0.137 (still FAIL, 576 edges suppressed). K=10: FP = 0.117 "PASS" only because n_finite collapses to 94 and the recomputed bound widens to 0.162 — bound inflation, not calibration. The guard is a defensive correctness fix for the strictly-constant Q_null pathology; it cannot rescue theme-restricted on the v1.0.2 substrate. (Workflow `wf_ed466540-7c8` returned 3/3 REJECT verdicts against any K-adoption-as-primary proposal.)
+3. **V1's `min_unique_q_values` guard does NOT recover calibration alone.** K=5 default: theme-restricted FP = 0.137 (still FAIL, 576 edges suppressed). K=10: FP = 0.117 "PASS" only because n_finite collapses to 94 and the recomputed bound widens to 0.162 — bound inflation, not calibration. The guard is a defensive correctness fix for the strictly-constant Q_null pathology; it cannot rescue theme-restricted on the v1.0.2 substrate. 
 
 4. **All-protein-pool calibrates cleanly.** Mean FP = 0.107 over 5 shuffles × B=99 (full 944/944 edges retained); production 20 × B=999 mean FP = 0.111 vs bound 0.120 → POOLED PASS at production scale (commit `c92b11c`).
 
@@ -613,17 +613,17 @@ The v1.0.3 decision is driven solely by:
 
 Real-label Q-rank values from `output/wasc/concordance_per_edge_m2_2.csv` were observed during the M2.4 full B=100 sanity smoke (commit `c92b11c`) prior to this amendment, but those observations DID NOT motivate the swap. The decision criteria (H0 calibration failure of theme-restricted; H0 calibration pass of all-protein-pool) are real-label-Q-blind. The signed decision log at `data/wasc/v1.0.3_amendment_decision_log.json` pins SHA-256 of the observed-Q artifacts to lock their content as of the amendment time.
 
-Caveat (per `wf_45fe2105-641` V2 verdict): H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The "no real-Q exposure" claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met.
+Caveat (per `` audit finding): H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The "no real-Q exposure" claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met.
 
 ### Amendment §4 — All-protein-pool null substrate
 
 Replace the §4 line 192 definition
 
-    Let `P_a^candidate` = `M_T \ N_a^obs \ {a}` (measured cluster members in theme T, excluding a's true neighbors and a itself)
+ Let `P_a^candidate` = `M_T \ N_a^obs \ {a}` (measured cluster members in theme T, excluding a's true neighbors and a itself)
 
 with
 
-    Let `P_a^candidate` = `M \ N_a^obs \ {a}` where `M` is the full measured proteome (all UniProts in `abundance.index`).
+ Let `P_a^candidate` = `M \ N_a^obs \ {a}` where `M` is the full measured proteome (all UniProts in `abundance.index`).
 
 All other §4 text (decile axes, sampler, ±1-decile fallback, B = 9999, anchor-local pooling) is preserved.
 
@@ -667,13 +667,13 @@ The following remain binding (extended from v1.0.2's enumeration):
 
 ### Prohibitions under v1.0.3
 
-- Theme-restricted prong (a) calibration outcome from v1.0.2 (`FP=0.261 FAIL`) is the binding record; no further iterations of K-sweeps, fallback redesigns, or hybrid-pool augmentations may be invoked to "rescue" theme-restricted as primary under v1.0.3. Such efforts must be re-tagged (v1.1 or later) with their own brutalist gate.
+- Theme-restricted prong (a) calibration outcome from v1.0.2 (`FP=0.261 FAIL`) is the binding record; no further iterations of K-sweeps, fallback redesigns, or hybrid-pool augmentations may be invoked to "rescue" theme-restricted as primary under v1.0.3. Such efforts must be re-tagged (v1.1 or later) with their own audit gate.
 - AnchorBins built under v1.0.2 with `eligible_proteins=M_T` retain that semantics; pickles are NOT invalidated (dataclass shape unchanged from v1.0.2 → v1.0.3).
 - The build-plan Tertiary table in §10 referenced "all-protein-pool" as a sensitivity (item #5 in the original list). That row is REMOVED from the Tertiary table (since it's now primary) and replaced with a new sensitivity row: "theme-restricted-with-known-FAILED-calibration".
 
 ### Acknowledgment of v1.0.2 commit-message claim
 
-The v1.0.2 commit message implicitly asserted theme-restricted was the canonical primary. v1.0.3 amends that within the same day (2026-06-02), motivated by empirical calibration failure under the spec's own pre-registered Gate 2. The cumulative effect on "spec freeze" credibility is acknowledged: WASC has now amended an analytical decision (D3) twice in one day. The defensible framing is: each amendment was triggered by a real empirical finding under H0 that the prior version did not anticipate, and each followed the same brutalist-gated protocol. Future reviewers comparing the v1.0.1 commit-message claim of "Analytical spec unchanged" with three same-day analytical amendments will reasonably interpret "pre-registered" as the documented decision-with-decision-log, not as eternal immutability.
+The v1.0.2 commit message implicitly asserted theme-restricted was the canonical primary. v1.0.3 amends that within the same day (2026-06-02), motivated by empirical calibration failure under the spec's own pre-registered Gate 2. The cumulative effect on "spec freeze" credibility is acknowledged: WASC has now amended an analytical decision (D3) twice in one day. The defensible framing is: each amendment was triggered by a real empirical finding under H0 that the prior version did not anticipate, and each followed the same review-gated protocol. Future reviewers comparing the v1.0.1 commit-message claim of "Analytical spec unchanged" with three same-day analytical amendments will reasonably interpret "pre-registered" as the documented decision-with-decision-log, not as eternal immutability.
 
 ### Pre-registered Tertiary table update (§10)
 
@@ -681,17 +681,17 @@ Replace Tertiary item 5 ("all-protein-pool" sensitivity) with:
 
 > **Theme-restricted-with-known-FAILED-calibration sensitivity** — Re-run prong (a) with `eligible_proteins=M_T` per (anchor, theme). Reports per-theme FP rate, n_finite_p, and the surviving-edge subset's per-anchor BY-FDR. Reported as a SENSITIVITY whose result-set is interpretable only against the v1.0.2 sub-pre-registered failure baseline (FP=0.261). Not a primary inference.
 
-*End of v1.0.3 amendment. Frozen at git tag `wasc-prereg-v1.0.3`. Decided 2026-06-02; workflows `wf_45fe2105-641` (3I + 3V) + `wf_ed466540-7c8` (4S + 3V) returned 0 ENDORSE, 0 ACCEPT for any path other than (iii) all-protein-pool primary.*
+*End of v1.0.3 amendment. Frozen at git tag `wasc-prereg-v1.0.3`. Decided 2026-06-02; workflows `` (3I + 3V) + `` (4S + 3V) returned 0 ENDORSE, 0 ACCEPT for any path other than (iii) all-protein-pool primary.*
 
 ---
 
 ## v1.0.4 Amendment — Spec corrections from foundational audit
 
-**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.4`. **CORRECTIONS-ONLY** per the discipline established by workflow `wf_4e08b440-036` (4 auditors + synthesis + 3 brutalist verifiers). Items with rescue-risk explicitly deferred to v1.1.
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.4`. **CORRECTIONS-ONLY** per the discipline established by (4 auditors + synthesis + 3 reviewers). Items with rescue-risk explicitly deferred to v1.1.
 
 ### Trigger
 
-The v1.0.3 amendment chain (4 brutalist gates: v1.0 / v1.0.1 / v1.0.2 / v1.0.3) focused on the amendments being made and treated `items_NOT_modified` as trusted. A holistic audit of the full spec + amendments + code (`wf_4e08b440-036`) found 37 issues including 3 CRITICAL and 16 HIGH-severity arithmetic / ambiguity / consistency / feasibility bugs that survived all prior gates. The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in the audit's first-draft amendment proposal; those are deferred. v1.0.4 is the residual: 7 clean corrections + CI test infrastructure.
+The v1.0.3 amendment chain (4 audit gates: v1.0 / v1.0.1 / v1.0.2 / v1.0.3) focused on the amendments being made and treated `items_NOT_modified` as trusted. A holistic audit of the full spec + amendments + code found 37 issues including 3 CRITICAL and 16 HIGH-severity arithmetic / ambiguity / consistency / feasibility bugs that survived all prior gates. The synthesis review (V1) caught 4 rescue-disguised-as-correction items in the audit's first-draft amendment proposal; those are deferred. v1.0.4 is the residual: 7 clean corrections + CI test infrastructure.
 
 ### No-Q-exposure attestation
 
@@ -703,7 +703,7 @@ The corrections in v1.0.4 derive from audit of the spec text + code defaults. No
 
 **C3 (HIGH) — Brown variance spec text.** Spec §5 line 228 wrote `Var[χ²_a] = 4 · n_a + 2 · Σ_{i ≠ j} cov_emp(...)`. The notation `Σ_{i ≠ j}` enumerates each unordered pair twice; the `2 ·` then double-counts. Correct: `Var = 4·n_a + Σ_{i ≠ j} cov_emp = 4·n_a + 2·Σ_{i<j} cov_emp`. The code at `src/cliquefinder/stats/wasc/combination.py:184-189` already implements the correct formula. v1.0.4 aligns spec text with code. No code change.
 
-**C7 (MEDIUM) — RNG formula reconciliation.** Spec §10 D10 says per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest()[:8], 16)`. Code in `src/cliquefinder/stats/wasc/null.py:anchor_seed` uses `int.from_bytes(md5(f"{global_salt}|{uniprot}").digest()[:4], "little", unsigned)`. Salt format differs (concatenation vs `|`-separated) AND the int-decoding path differs (hex prefix vs first-4-bytes little-endian). v1.0.4 reconciles to the CODE form (which is what has been producing all M2.4 / M3 / M2.5 results) and updates spec text accordingly.
+**C7 (MEDIUM) — RNG formula reconciliation.** Spec §10 D10 says per-anchor seed = `int(md5(uniprot + "wasc-v1.0").hexdigest[:8], 16)`. Code in `src/cliquefinder/stats/wasc/null.py:anchor_seed` uses `int.from_bytes(md5(f"{global_salt}|{uniprot}").digest[:4], "little", unsigned)`. Salt format differs (concatenation vs `|`-separated) AND the int-decoding path differs (hex prefix vs first-4-bytes little-endian). v1.0.4 reconciles to the CODE form (which is what has been producing all M2.4 / M3 / M2.5 results) and updates spec text accordingly.
 
 **C9 (LOW) — min_n_per_group keys.** Spec §2.3 line 122 says "≥10 for C9 and ≥15 for SPOR/CTRL". Code dict default uses keys `{"C9ORF72": 10, "SPORADIC": 15, "CONTROL": 15}`. v1.0.4 locks the canonical key names as the binding form (matches `group_order = ("C9ORF72", "SPORADIC", "CONTROL")` throughout).
 
@@ -724,9 +724,9 @@ The corrections in v1.0.4 derive from audit of the spec text + code defaults. No
 
 4/4 tests pass at amendment time. Drift in either spec OR code now fails CI loud, eliminating the silent-divergence pathology that allowed C1 + C3 to survive 4 prior gates.
 
-### Items DEFERRED to v1.1 (separate brutalist gate required)
+### Items DEFERRED to v1.1 (separate audit gate required)
 
-The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in the audit proposal. These are deferred to v1.1 per the v1.0.3 prohibitions clause:
+The synthesis review (V1) caught 4 rescue-disguised-as-correction items in the audit proposal. These are deferred to v1.1 per the v1.0.3 prohibitions clause:
 
 - **C2 deferred** — Promote B=9999 → B=99999 as primary. This eliminates v1.0.3's staged D2 design (adaptive trigger). Re-tag and re-gate.
 - **C5 deferred** — Pre-register 944 vs 904 as the BY-FDR denominator. The choice has rescue-risk (944 preserves the v1.0.3 prong (a) PASS verdict).
@@ -739,19 +739,19 @@ The synthesis brutalist (V1) caught 4 rescue-disguised-as-correction items in th
 
 ### Acknowledgment
 
-Three intra-day amendments to D3/D4-family decisions (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool; v1.0.4: correct BY arithmetic + Brown variance text) is a credibility stress on "pre-registered". Defensible framing: each amendment was triggered by an independent finding (v1.0.2: structural matrix property; v1.0.3: H0 calibration FAIL; v1.0.4: audit-discovered pre-existing bugs that survived 4 prior gates). The cumulative pattern reveals a deeper foundational issue: the original v1.0 spec had arithmetic and ambiguity bugs the brutalist gates did not catch because each gate scoped review to the amendment being made. v1.0.4 adds the CI infrastructure (locked_bounds + drift test) that prevents this class of bug from surviving future amendments.
+Three intra-day amendments to D3/D4-family decisions (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool; v1.0.4: correct BY arithmetic + Brown variance text) is a credibility stress on "pre-registered". Defensible framing: each amendment was triggered by an independent finding (v1.0.2: structural matrix property; v1.0.3: H0 calibration FAIL; v1.0.4: audit-discovered pre-existing bugs that survived 4 prior gates). The cumulative pattern reveals a deeper foundational issue: the original v1.0 spec had arithmetic and ambiguity bugs the audit gates did not catch because each gate scoped review to the amendment being made. v1.0.4 adds the CI infrastructure (locked_bounds + drift test) that prevents this class of bug from surviving future amendments.
 
-*End of v1.0.4 amendment. Frozen at git tag `wasc-prereg-v1.0.4`. Decided 2026-06-02; workflow `wf_4e08b440-036` (4 auditors + synthesis + 3 brutalist verifiers, 1 REJECT / 2 MODIFY; 4 rescue items deferred per V1 REJECT, 6 amendment-internal mods applied per all verdicts).*
+*End of v1.0.4 amendment. Frozen at git tag `wasc-prereg-v1.0.4`. Decided 2026-06-02; (4 auditors + synthesis + 3 reviewers, 1 REJECT / 2 MODIFY; 4 rescue items deferred per audit REJECT, 6 amendment-internal mods applied per all verdicts).*
 
 ---
 
 ## v1.0.5 Amendment — C17 arithmetic correction
 
-**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.5`. **CORRECTIONS-ONLY** (single arithmetic fix to a v1.0.4 statement that itself was a correction). Triggered by workflow `wf_81017ac0-3a8` V3 brutalist verdict, which caught that the v1.0.4 C17 perfect-H1 power statement had the sign INVERTED and the B value MISATTRIBUTED. v1.0.4's locked-bounds CI gate did not detect this because C17 was added by v1.0.4 itself; no prior tag pinned the (B → testable-rank) mapping.
+**Status:** AMENDMENT. Tag: `wasc-prereg-v1.0.5`. **CORRECTIONS-ONLY** (single arithmetic fix to a v1.0.4 statement that itself was a correction). Triggered by audit verdict, which caught that the v1.0.4 C17 perfect-H1 power statement had the sign INVERTED and the B value MISATTRIBUTED. v1.0.4's locked-bounds CI gate did not detect this because C17 was added by v1.0.4 itself; no prior tag pinned the (B → testable-rank) mapping.
 
 ### Trigger
 
-Workflow `wf_81017ac0-3a8` ran a Path A publication scaffold + 3 artifact-hygiene fixes in parallel. V3 (cross-deliverable consistency reviewer) independently re-derived the BY-rank-feasibility arithmetic from scratch using `q = 0.10`, `N = 944`, `H_944 = 7.4279` (exact), and found that the v1.0.4 C17 statement "at B=99999 only ranks 1..69 can clear" is wrong in both sign and B attribution. The Path A scaffold draft propagated the wrong statement verbatim; not committing the draft prevented downstream propagation, but the v1.0.4 spec text itself remained wrong until this amendment.
+Workflow `` ran a Path A publication scaffold + 3 artifact-hygiene fixes in parallel. V3 (cross-deliverable consistency reviewer) independently re-derived the BY-rank-feasibility arithmetic from scratch using `q = 0.10`, `N = 944`, `H_944 = 7.4279` (exact), and found that the v1.0.4 C17 statement "at B=99999 only ranks 1..69 can clear" is wrong in both sign and B attribution. The Path A scaffold draft propagated the wrong statement verbatim; not committing the draft prevented downstream propagation, but the v1.0.4 spec text itself remained wrong until this amendment.
 
 ### No-Q-exposure attestation
 
@@ -788,6 +788,6 @@ Same as v1.0.4. v1.0.5 adds no new deferred items.
 ### Lessons + infrastructure follow-on (non-binding, for future amendments)
 
 1. The v1.0.4 locked-bounds CI gate caught spec/code drift but cannot catch arithmetic errors in spec text on values it does not lock. To prevent C17-class bugs, v1.1 should add a `tests/wasc/test_feasibility.py` that asserts the B-vs-testable-rank table against an independent computation (`q / (N · H_N)` and `ceil(floor / rank1_threshold)`), not against text-quoted numbers.
-2. The v1.0.4 amendment introduced C17 as a "new arithmetic statement" without an independent verifier. Future amendments that introduce NEW arithmetic claims (vs correcting OLD ones) should require an extra brutalist verifier whose sole job is to re-derive the claim from first principles.
+2. The v1.0.4 amendment introduced C17 as a "new arithmetic statement" without an independent verifier. Future amendments that introduce NEW arithmetic claims (vs correcting OLD ones) should require an extra reviewer whose sole job is to re-derive the claim from first principles.
 
-*End of v1.0.5 amendment. Frozen at git tag `wasc-prereg-v1.0.5`. Decided 2026-06-04; workflow `wf_81017ac0-3a8` V3 brutalist (cross-deliverable consistency) caught the error in the v1.0.4 C17 statement; independently re-derived against locked (q, N, H_N) tuple.*
+*End of v1.0.5 amendment. Frozen at git tag `wasc-prereg-v1.0.5`. Decided 2026-06-04; V3 brutalist (cross-deliverable consistency) caught the error in the v1.0.4 C17 statement; independently re-derived against locked (q, N, H_N) tuple.*

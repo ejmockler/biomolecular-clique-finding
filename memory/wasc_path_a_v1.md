@@ -27,7 +27,7 @@ This is a v1 scaffold pinned to `wasc-prereg-v1.0.5` (commit `c9572c9`, 2026-06-
 
 ## 2. Pre-registration timeline
 
-The amendment chain is six tags spanning three calendar days. Each amendment was triggered by an independent brutalist gate and is itself a frozen artifact under git. The chain is summarized below.
+The amendment chain is six tags spanning three calendar days. Each amendment was triggered by an independent audit gate and is itself a frozen artifact under git. The chain is summarized below.
 
 | Tag | Commit | Date | Trigger | Effect |
 |---|---|---|---|---|
@@ -35,10 +35,10 @@ The amendment chain is six tags spanning three calendar days. Each amendment was
 | v1.0.1 | 7f1e10c | 2026-06-02 | Metadata audit | Pinned enriched metadata manifests (E10, E11); corrected Control n from 71 to actual 59 after pre-registered iPSC and external-donor exclusions. |
 | v1.0.2 | 4e04b79 | 2026-06-02 | Empirical matrix audit | Dropped the missingness axis from the matched-cell null. The loaded matrix is RF-imputed upstream (0 of 1,423,104 cells NaN), so the missingness decile collapses to a constant; the axis was empirically inert and the rename was a descriptive correction. Three-axis null became two-axis (degree-decile by pooled-Pearson-decile). |
 | v1.0.3 | 0a9bff0 | 2026-06-02 | M2.5 prong (a) calibration FAILED at theme-restricted substrate | Promoted the all-protein-pool null substrate (previously the "prong (c)" sensitivity in build plan §10) to the canonical primary candidate pool. Theme-restricted had failed the Gate 2 bound at mean false-positive rate 0.261 versus bound 0.120 due to sparse-cell sampling pathology (M_T sizes 42 to 190 over 100 decile cells produce per-cell occupancy median at most 2). The all-protein-pool substrate calibrated cleanly. |
-| v1.0.4 | 59e52dc | 2026-06-02 | Foundational audit `wf_4e08b440-036` | Seven clean corrections (including the CRITICAL BY rank-1 arithmetic formula in §6) plus a locked-bounds CI gate (`data/wasc/locked_bounds_v1.json` and `tests/wasc/test_locked_bounds.py`). The CI gate enforces spec text and code parity; future drift fails CI loud. Four rescue-disguised-as-correction items were deferred to v1.1 by the synthesis-brutalist V1. |
-| v1.0.5 | c9572c9 | 2026-06-04 | C17 arithmetic correction caught by `wf_81017ac0-3a8` V3 | The v1.0.4 C17 statement on B-feasibility had its sign inverted and its B value mis-attributed. The corrected C17' is a three-row table (see §4.3 below) covering the sensitivity (B=999), primary (B=9999), and floor-tie (B=99999) tiers. The cumulative six-tag chain is now a correction-to-a-correction; the discipline is honest and traceable, but the count is acknowledged as a credibility stress in the build plan acknowledgment paragraph. |
+| v1.0.4 | 59e52dc | 2026-06-02 | Foundational audit `` | Seven clean corrections (including the CRITICAL BY rank-1 arithmetic formula in §6) plus a locked-bounds CI gate (`data/wasc/locked_bounds_v1.json` and `tests/wasc/test_locked_bounds.py`). The CI gate enforces spec text and code parity; future drift fails CI loud. Four rescue-disguised-as-correction items were deferred to v1.1 by the synthesis-review. |
+| v1.0.5 | c9572c9 | 2026-06-04 | C17 arithmetic correction caught by `` V3 | The v1.0.4 C17 statement on B-feasibility had its sign inverted and its B value mis-attributed. The corrected C17' is a three-row table (see §4.3 below) covering the sensitivity (B=999), primary (B=9999), and floor-tie (B=99999) tiers. The cumulative six-tag chain is now a correction-to-a-correction; the discipline is honest and traceable, but the count is acknowledged as a credibility stress in the build plan acknowledgment paragraph. |
 
-The amendment chain reflects a deliberate discipline: every spec change is gated by an independent brutalist, every change has a decision-log JSON pinning the SHA-256 of the affected artifacts at the time of decision, and every change is a clean correction or a substrate swap, not a rescue. Decisions that carried rescue risk were deferred to v1.1.
+The amendment chain reflects a deliberate discipline: every spec change is gated by an independent audit, every change has a decision-log JSON pinning the SHA-256 of the affected artifacts at the time of decision, and every change is a clean correction or a substrate swap, not a rescue. Decisions that carried rescue risk were deferred to v1.1.
 
 ---
 
@@ -214,7 +214,7 @@ The AnswerALS portal provides the matrix as the `correctedImputed_436` track (RF
 
 ### 5.5 Amendment-chain credibility cost
 
-WASC has amended its analytical decision family across four tags in three days (v1.0.2 axis drop, v1.0.3 substrate swap, v1.0.4 corrections, v1.0.5 correction-to-a-correction). Each amendment was triggered by an independent brutalist gate and has a decision-log JSON; the chain is honest and traceable. The accumulating count is a real cost. The v1.0.5 decision log acknowledges this explicitly and proposes a structural fix (an independent re-derivation gate for any NEW arithmetic claim in future amendments) to slow the amendment frequency. The PI should weigh this when deciding whether further amendments are warranted versus pivoting (Path B) or expanding the cohort (Path C).
+WASC has amended its analytical decision family across four tags in three days (v1.0.2 axis drop, v1.0.3 substrate swap, v1.0.4 corrections, v1.0.5 correction-to-a-correction). Each amendment was triggered by an independent audit gate and has a decision-log JSON; the chain is honest and traceable. The accumulating count is a real cost. The v1.0.5 decision log acknowledges this explicitly and proposes a structural fix (an independent re-derivation gate for any NEW arithmetic claim in future amendments) to slow the amendment frequency. The PI should weigh this when deciding whether further amendments are warranted versus pivoting (Path B) or expanding the cohort (Path C).
 
 ### 5.6 No real-Q observed in primary
 
@@ -230,7 +230,7 @@ The substantive contributions of this work at tag v1.0.5 are:
 
 1. A pre-registered methodology for testing within-cluster cross-protein abundance coupling invariance, with a six-tag amendment chain, locked-bounds CI gate, and four-prong tripwire — all auditable artifacts under git.
 2. An empirical finding that n = 25 C9 cohorts are structurally underpowered for the pre-registered Jaccard-stability tripwire at B = 999 on this matrix at this contrast scale. This is itself a finding of methodological consequence: pipelines that pass label-shuffle calibration and numerical-identity tests can still fail a down-sample stability gate, and pre-registration of that gate prevents the methodology from being published in a form that papers over the asymmetry.
-3. An infrastructure deliverable: the `data/wasc/locked_bounds_v1.json` plus `tests/wasc/test_locked_bounds.py` plus `tests/wasc/test_feasibility.py` pattern is a transferable design for spec-pre-registration CI gates. The pattern caught both the spec-vs-code drift (C7 RNG formula) and the arithmetic-text bugs (C1 BY rank-1; C17 perfect-H1 power) that survived four prior brutalist gates.
+3. An infrastructure deliverable: the `data/wasc/locked_bounds_v1.json` plus `tests/wasc/test_locked_bounds.py` plus `tests/wasc/test_feasibility.py` pattern is a transferable design for spec-pre-registration CI gates. The pattern caught both the spec-vs-code drift (C7 RNG formula) and the arithmetic-text bugs (C1 BY rank-1; C17 perfect-H1 power) that survived four prior audit gates.
 
 ### 6.2 Recommended disposition — Path A — publish as INCONCLUSIVE
 
@@ -246,7 +246,7 @@ The PI may choose either of the following alternatives instead. They are present
 
 #### Alternative — Path B — methodological pivot
 
-Path B is to pivot the analysis from a per-edge BY-FDR pre-registered test to a hierarchical model whose claim ceiling is "cluster-pattern invariance" not "count of positive edges at q ≤ 0.10". The hierarchical reformulation would partial-pool slopes within anchor and within theme, with group as a random effect; the primary statistic would be the variance ratio (between-group / within-anchor) rather than per-edge Cochran-Q. The Jaccard-stability prong (b) would not apply in the same form because the per-edge selection step is replaced by a continuous posterior summary. The cost is that Path B is a new pre-registration (`wasc-prereg-v1.1` at minimum, possibly `v2.0`) with its own brutalist arc, its own calibration tripwire, and the explicit acknowledgment that the v1.0.x pre-registration was an unsuccessful path.
+Path B is to pivot the analysis from a per-edge BY-FDR pre-registered test to a hierarchical model whose claim ceiling is "cluster-pattern invariance" not "count of positive edges at q ≤ 0.10". The hierarchical reformulation would partial-pool slopes within anchor and within theme, with group as a random effect; the primary statistic would be the variance ratio (between-group / within-anchor) rather than per-edge Cochran-Q. The Jaccard-stability prong (b) would not apply in the same form because the per-edge selection step is replaced by a continuous posterior summary. The cost is that Path B is a new pre-registration (`wasc-prereg-v1.1` at minimum, possibly `v2.0`) with its own audit arc, its own calibration tripwire, and the explicit acknowledgment that the v1.0.x pre-registration was an unsuccessful path.
 
 #### Alternative — Path C — cohort expansion
 
@@ -277,7 +277,7 @@ The PI confirms (or rejects) the recommendation in §6.2 to publish as INCONCLUS
 
 ### 7.2 v1.1 deferred items — handle now or freeze permanently
 
-Four items were deferred from v1.0.4 to a hypothetical v1.1 by the synthesis-brutalist:
+Four items were deferred from v1.0.4 to a hypothetical v1.1 by the synthesis review:
 
 - **C2 (B promotion)** — promote B = 9999 → B = 99999 as primary, eliminating the staged-B design. Affects per-edge p floor; would make ranks 1..7 testable at primary (per §4.3 C17' table).
 - **C5 (BY-FDR denominator)** — pre-register 944 vs 904 as the BY-FDR denominator. The 40-edge difference is the cross-theme deduplication currently invoked silently by the prong (b) script.
@@ -300,7 +300,7 @@ Path A deliverables (§6.2) include public release of `data/wasc/` plus `scripts
 
 ### 7.5 Cite-as for the methodology contribution
 
-The methodology contribution is the six-tag amendment-chain discipline, the locked-bounds CI gate as a transferable pattern, and the four-prong tripwire as a publishable design. The PI confirms how to attribute (e.g., methodology paper authorship list, acknowledgment of the brutalist-gate process, choice of venue).
+The methodology contribution is the six-tag amendment-chain discipline, the locked-bounds CI gate as a transferable pattern, and the four-prong tripwire as a publishable design. The PI confirms how to attribute (e.g., methodology paper authorship list, acknowledgment of the audit-gate process, choice of venue).
 
 **Recommended:** target a methods venue with a substantive interest in pre-registration discipline for high-dimensional bioinformatics tests. The methodological finding (structural underpoweredness of n = 25 for pre-registered Jaccard-stability gates at this contrast scale) is the substantive contribution and the framing.
 
@@ -308,7 +308,7 @@ The methodology contribution is the six-tag amendment-chain discipline, the lock
 
 ## 8. Self-check (for PI scrutiny, not for publication)
 
-The following self-check was performed before returning this scaffold to the PI. Each item is a known prior-draft failure mode that was caught by external brutalist gates in workflow `wpvtq363k V3` against an earlier Path A scaffold; this scaffold is required to self-correct in advance.
+The following self-check was performed before returning this scaffold to the PI. Each item is a known prior-draft failure mode that was caught by external audit gates in workflow ` V3` against an earlier Path A scaffold; this scaffold is required to self-correct in advance.
 
 - **Tripwire framing.** The tripwire is described as a 4-prong STRUCTURE throughout (§3.9, §4.4, §6.1). Prong (c) is reported as "test no longer applicable / trivially satisfied" rather than as a deletion. This is consistent with v1.0.4 items_NOT_modified preserving the four-prong structure.
 - **C17' B-feasibility.** §4.3 reports the C17' table (three rows: B=999 / B=9999 / B=99999 with untestable rank counts 70 / 7 / 0). No single number like "69" or "937" is presented as a standalone "structural ceiling"; the table is the binding form.

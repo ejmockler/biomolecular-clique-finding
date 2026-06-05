@@ -2,11 +2,11 @@
   "amendment_tag": "wasc-prereg-v1.0.4",
   "amendment_date_utc": "2026-06-02",
   "supersedes": ["wasc-prereg-v1.0", "wasc-prereg-v1.0.1", "wasc-prereg-v1.0.2", "wasc-prereg-v1.0.3"],
-  "scope": "CORRECTIONS-ONLY amendment from foundational spec audit (workflow wf_4e08b440-036). Fixes 7 clean arithmetic/text/documentation bugs that survived all prior brutalist gates because gate reviews scoped to amendments-being-made and treated items_NOT_modified as trusted. Adds CI infrastructure (locked_bounds_v1.json + test_locked_bounds.py) to prevent silent spec/code drift going forward.",
+  "scope": "CORRECTIONS-ONLY amendment from foundational spec audit (audit workflow). Fixes 7 clean arithmetic/text/documentation bugs that survived all prior audit gates because gate reviews scoped to amendments-being-made and treated items_NOT_modified as trusted. Adds CI infrastructure (locked_bounds_v1.json + test_locked_bounds.py) to prevent silent spec/code drift going forward.",
   "trigger": {
     "type": "FOUNDATIONAL_AUDIT",
     "finding": "Audit of full spec + amendments + code found 37 issues (3 CRITICAL, 16 HIGH) in unchanged base text. CRITICAL examples: (1) Spec §4 L212/§6 L257 computed BY rank-1 raw-p threshold as q/H_N ≈ 0.013 (this is BH-style, not BY); correct formula q/(N·H_N) = 1.43e-5, which is 7× SMALLER than B=9999 raw-p floor 1e-4. (2) Spec §5 L228 Brown variance formula double-counts off-diagonal covariance.",
-    "investigated_in_workflow": "wf_4e08b440-036 — 4 auditors (arithmetic, ambiguity, spec-vs-code consistency, feasibility), 1 synthesis, 3 brutalist verifiers (rescue-screen, completeness, implementation-binding)",
+    "investigated_in_workflow": " — 4 auditors (arithmetic, ambiguity, spec-vs-code consistency, feasibility), 1 synthesis, 3 reviewers (rescue-screen, completeness, implementation-binding)",
     "verdict_summary": "1 REJECT (V1 rescue-screen caught 4 rescue items in synthesis proposal), 2 MODIFY (V2 amendment-internal arithmetic, V3 implementation-binding gap). All MODIFY mods applied or deferred; all 4 REJECT items deferred to v1.1."
   },
   "corrections_applied": [
@@ -76,7 +76,7 @@
     {
       "id": "C2",
       "rescue_risk_finding": "Promote B=9999 → B=99999 as primary eliminates v1.0.3 staged D2 design. Compute baseline 10× larger.",
-      "honest_path": "Re-tag wasc-prereg-v1.1 with own brutalist gate."
+      "honest_path": "Re-tag wasc-prereg-v1.1 with own audit gate."
     },
     {
       "id": "C5",
@@ -102,7 +102,7 @@
   ],
   "no_q_exposure_attestation": {
     "claim": "v1.0.4 corrections derive from audit of spec text + code defaults. No Q values, p-values, q-values, or BY-FDR tables were consulted. Each correction fixes a bug whose existence is independent of any prong's pass/fail verdict.",
-    "verifier": "wf_4e08b440-036 V1 brutalist verdict (rescue-screen): 1 REJECT caught 4 rescue items in synthesis proposal. All 4 deferred. The remaining 7 corrections passed the rescue screen."
+    "verifier": " review verdict (rescue-screen): 1 REJECT caught 4 rescue items in synthesis proposal. All 4 deferred. The remaining 7 corrections passed the rescue screen."
   },
   "frozen_artifact_fingerprints_at_amendment_time": {
     "data/wasc/locked_bounds_v1.json": "20e9ed6c40020a76984d875246b1d077433008d8ab545df915e2bbfef285855c",

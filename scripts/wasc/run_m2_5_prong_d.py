@@ -7,7 +7,7 @@ Pre-registered DoD (locked_bounds_v1.json::prong_d_FW_vs_OLS_tolerance):
     same X_cov the F-W kernel consumes in M2.2 and downstream).
 
 This script is the on-disk re-stamp of the prong-(d) computation that
-previously ran only as an inline /tmp script in workflow wuynarvdj.
+previously ran only as an inline /tmp script in workflow .
 Numbers from that earlier ad-hoc run were β abs 2.39e-10, SE rel 3.14e-10
 — this script produces a versioned, repo-rooted artifact that any later
 brutalist can locate by path alone.
@@ -221,7 +221,7 @@ def main() -> int:
     median_rel_se = float(np.median(rel_se_arr))
 
     # Pre-registered gate: BOTH metrics under 1e-8.
-    # The on-record convention (test_fit.py + workflow wuynarvdj report)
+    # The on-record convention (test_fit.py + workflow  report)
     # uses beta-absolute and SE-relative.
     pass_against_bound = bool(max_abs_beta < PRONG_D_BOUND and max_rel_se < PRONG_D_BOUND)
     # Also report the stricter SE-absolute check for completeness.

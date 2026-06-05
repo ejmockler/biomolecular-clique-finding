@@ -6,7 +6,7 @@ C17 bugs (sign inversion / B mis-attribution) from re-occurring.
 
 Per v1.0.5 amendment lessons section: future amendments that
 introduce NEW arithmetic claims (vs correcting OLD ones) should
-require an extra brutalist verifier whose sole job is to re-derive
+require an extra reviewer whose sole job is to re-derive
 the claim from first principles.  This test is the durable form
 of that gate.
 """

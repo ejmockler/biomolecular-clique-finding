@@ -246,7 +246,7 @@ class TestComputeAnchorNull:
         )
 
     def test_min_unique_q_values_guard(self):
-        """REGRESSION (workflow wf_45fe2105-641 V1 verdict): edges whose
+        """REGRESSION (audit workflow V1 verdict): edges whose
         null distribution has fewer than min_unique_q_values distinct
         values must get p=NaN.  The pathology: sparse-cell matched-bin
         sampling can draw the same fake t' for many iterations,
