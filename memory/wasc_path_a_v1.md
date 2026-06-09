@@ -25,6 +25,14 @@ This is a v1 scaffold pinned to `wasc-prereg-v1.0.5` (commit `c9572c9`, 2026-06-
 
 ---
 
+## 1.5 Position vs the Wave 24l cluster claim
+
+This scaffold sits on top of an established positive finding it does NOT re-derive. The Wave 24l per-feature slope-GSEA cluster claim — that C9-ALS proteomic perturbation concentrates in three within-cluster signatures (Splicing, Chromatin, nucleocytoplasmic Transport) — survives the methodology change to the measured-only-paths substrate (BFS adjacency restricted to edges with both endpoints in the measured-protein set; no routing through unmeasured INDRA intermediates at any hop). Bonferroni-8 confirmatory at bounded h=2: 7/8 C9-vs-Sporadic, 6/8 C9-vs-Control, 0/8 Sporadic-vs-Control. The clean negative-control leg confirms the signature is C9-mutation-specific, not shared ALS pathology and not a graph-topology artifact. The c9ctrl-collapse falsifier upheld the claim as a *local* property of regulatory neighborhoods within two hops, not a continuous gradient over the connected component (cluster vs non-cluster slope-delta Mann-Whitney p ∈ {0.42, 0.90, 0.48, 0.70} across bounded-slope quartiles). The signal is INDRA-regulatory-specific per the Wave 24k T43 STRING contrast (physical-PPI gives opposite-sign GSEA on the same proteomics |t|). Persistent project record: `memory/wave_24l_measured_only_paths.md`, `memory/wave_24k_cluster_claim_consolidated.md`, `memory/wave_24j_triangulation.md`. Committed pipeline shipped 2026-06-06 across eight commits ending at the publication-figure stack.
+
+WASC tests a different statistic on the same substrate: per-edge Cochran-Q wiring-invariance across donor groups within the cluster terms. The WASC tripwire FAIL (M2.5 prong (b) SPOR-25 down-sample Jaccard 0.285 vs ≥0.70 bound) and the Wave 24l cluster claim's survival do not invalidate each other. The honest publishable picture: a positive cluster signature with five sensitivities + Bonferroni-8 confirmatory + negative-control triangulation + INDRA-vs-STRING substrate-specificity, plus an orthogonal per-edge-resolution attempt (WASC) that ran into a cohort-power wall at n=25 C9. The Wave 24l findings are the headline; WASC is the methods-section attempt at sharper resolution.
+
+---
+
 ## 2. Pre-registration timeline
 
 The amendment chain is six tags spanning three calendar days. Each amendment was triggered by an independent audit gate and is itself a frozen artifact under git. The chain is summarized below.
