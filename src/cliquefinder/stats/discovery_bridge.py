@@ -844,6 +844,20 @@ class DiscoveryBridge:
             "Edge-quality stratification is not supported in shortest-paths mode; "
             "result.stratified will be None."
         )
+        # Wave 24l divergence: this path uses Neo4j's server-side
+        # shortestPath, which routes through any node — including
+        # unmeasured INDRA intermediates.  The landscape pipeline
+        # (compute_landscape) uses local BFS with node_filter to
+        # enforce measured-only paths.  Slopes from this method are
+        # NOT directly comparable to landscape slopes under the
+        # measured-only regime.  Use compute_landscape for any seed
+        # whose result is cited alongside landscape outputs.
+        logger.warning(
+            "run_gradient_via_shortest_paths uses with-intermediates BFS "
+            "(Cypher shortestPath through any node).  Under the wave_24l "
+            "measured-only-paths regime, prefer cliquefinder.panels.landscape "
+            "for slopes that are comparable to landscape outputs."
+        )
 
         # We query INDRA at HGNC-symbol level (the graph's native
         # vertex identity) but aggregate to UniProt-level for the
