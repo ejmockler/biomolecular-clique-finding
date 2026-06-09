@@ -1,27 +1,21 @@
-"""Full proteome landscape — every measured protein as a seed.
+"""C9-vs-CONTROL proteome landscape — control contrast for the C9-vs-SPORADIC run.
 
-The decisive run: ~3,256 measured proteins, max_hops=2, n_permutations=999,
-contrast=C9_vs_SPORADIC.  Outputs per-feature slope, p-value, shells +
-the (3,256 × 3,256) sparse distance matrix.
+Same data, same group resolver, same regulatory subgraph (re-extracted because
+manifest mismatch prevents reusing distances.npz from the C9-vs-SPORADIC run).
+Differs only in the differential statistic |t|: now contrasts C9-ALS against
+healthy controls instead of sporadic-ALS.
 
-Estimated wall time (extrapolating from the 200-feature smoke at 37.6 min):
-~2-5 hours.  Sublinear scaling expected because frontier overlap means
-later seed batches contribute few new nodes to the regulatory subgraph.
+Purpose: confirm that the C9-vs-SPORADIC gradient's *negative*-NES on
+ALS-clinical HPO terms is because those proteins are shared with sporadic.
+Under C9-vs-CONTROL, both motor-neuron-degeneration AND C9-specific machinery
+should be perturbed; ALS-clinical HPO terms should now show *positive* NES.
 
 Outputs:
-- output/landscape_proteome_measured_only/manifest.yaml
-- output/landscape_proteome_measured_only/distances.npz + distances.meta.json
-- output/landscape_proteome_measured_only/result.json
-
-After this completes, analyze with:
-    from cliquefinder.panels import LandscapeResult, analyze_landscape
-    result = LandscapeResult.load_json("output/landscape_proteome_measured_only/result.json")
-    analysis = analyze_landscape(result, q_threshold=0.05)
-    # C9orf72's UniProt accession → look up its rank in
-    # analysis.feature_results_adjusted (sorted by slope ascending)
-
-Run:
-    .venv/bin/python scripts/run_landscape_proteome.py
+- output/landscape_c9_vs_control_measured_only/manifest.yaml
+- output/landscape_c9_vs_control_measured_only/distances.npz + distances.meta.json
+- output/landscape_c9_vs_control_measured_only/checkpoint.jsonl   (Wave 24h streaming)
+- output/landscape_c9_vs_control_measured_only/inputs.json        (Wave 24h fingerprint)
+- output/landscape_c9_vs_control_measured_only/result.json
 """
 from __future__ import annotations
 
@@ -73,29 +67,29 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    log = logging.getLogger("landscape-proteome")
+    log = logging.getLogger("landscape-c9-vs-control")
 
-    out_dir = ROOT / "output/landscape_proteome_measured_only_unbounded"
+    out_dir = ROOT / "output/landscape_c9_vs_control_measured_only_unbounded"
     data_path = ROOT / "output/proteomics/all_als.data.csv"
     metadata_path = ROOT / "output/proteomics/all_als.metadata.csv"
 
     design = LandscapeDesign(
-        contrast=("C9ORF72", "SPORADIC"),
-        max_hops=None,  # wave_24l unbounded — BFS to CC completion
+        contrast=("C9ORF72", "CONTROL"),
+        max_hops=None,  # wave_24l unbounded
         n_permutations=999,
         covariates=("Sex",),
         description=(
-            "Wave 24l full proteome — every measured protein as seed, "
-            "C9_vs_SPORADIC, regulatory edges, max_hops=None (BFS to "
-            "CC completion, anchor-adaptive depth)"
+            "Wave 24l C9-vs-CONTROL — every measured protein as seed, "
+            "regulatory edges, max_hops=None (BFS to CC completion)"
         ),
     )
 
-    log.info("=== FULL PROTEOME LANDSCAPE START ===")
+    log.info("=== C9-vs-CONTROL PROTEOME LANDSCAPE START ===")
     log.info("Output dir: %s", out_dir)
     log.info("Contrast: %s vs %s", *design.contrast)
     log.info("max_hops=%s, n_permutations=%d, covariates=%s",
              design.max_hops, design.n_permutations, design.covariates)
+    log.info("checkpoint=True (Wave 24h streaming JSONL)")
 
     t_start = time.time()
     result = compute_landscape(
@@ -107,10 +101,11 @@ def main() -> None:
         output_dir=out_dir,
         rng_seed=42,
         seed_batch_size=500,
+        checkpoint=True,
     )
     total_elapsed = time.time() - t_start
 
-    log.info("=== FULL PROTEOME LANDSCAPE DONE ===")
+    log.info("=== C9-vs-CONTROL PROTEOME LANDSCAPE DONE ===")
     log.info("Wall time: %.1f min (%.1f hr)", total_elapsed / 60, total_elapsed / 3600)
     log.info(
         "Results: %d completed, %d degenerate, %d errored (of %d input features)",
@@ -120,7 +115,6 @@ def main() -> None:
         result.n_features_input,
     )
 
-    # Slope distribution summary.
     if result.per_feature:
         slopes = sorted(r.slope for r in result.per_feature)
         n = len(slopes)
@@ -130,45 +124,13 @@ def main() -> None:
             slopes[9 * n // 10], slopes[-1],
         )
 
-    # BH-FDR analysis.
     analysis = analyze_landscape(result, q_threshold=0.05)
     discoveries = [
         adj for adj in analysis.feature_results_adjusted if adj.discovery
     ]
     log.info("BH-FDR discoveries (q<0.05): %d", len(discoveries))
-    if discoveries:
-        log.info("Top 10 discoveries by slope (most negative first):")
-        for adj in discoveries[:10]:
-            log.info(
-                "  %-12s  slope=%+.4f  raw_p=%.4f  bh_q=%.4f  rank=%d",
-                adj.seed, adj.slope, adj.slope_pvalue,
-                adj.bh_qvalue, adj.rank_left_tail,
-            )
 
-    # Look up C9orf72's empirical position.
-    c9_uniprot = "Q96LT7"  # C9orf72 canonical UniProt accession
-    c9_alt = "P0DPL3"  # alt isoform (just in case)
-    c9_seeds_in_result = [
-        adj for adj in analysis.feature_results_adjusted
-        if adj.seed in (c9_uniprot, c9_alt)
-    ]
-    if c9_seeds_in_result:
-        log.info("C9orf72 in landscape:")
-        for adj in c9_seeds_in_result:
-            log.info(
-                "  %-12s  slope=%+.4f  raw_p=%.4f  bh_q=%.4f  "
-                "rank=%d / %d (left tail)",
-                adj.seed, adj.slope, adj.slope_pvalue, adj.bh_qvalue,
-                adj.rank_left_tail, len(analysis.feature_results_adjusted),
-            )
-    else:
-        log.warning(
-            "C9orf72 (UniProt %s/%s) NOT found in landscape — was it "
-            "matched in INDRA? Check distance_matrix.unmatched.",
-            c9_uniprot, c9_alt,
-        )
-
-    log.info("PROTEOME_LANDSCAPE_DONE")
+    log.info("C9_VS_CONTROL_LANDSCAPE_DONE")
 
 
 if __name__ == "__main__":
