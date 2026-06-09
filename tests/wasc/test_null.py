@@ -246,9 +246,9 @@ class TestComputeAnchorNull:
         )
 
     def test_min_unique_q_values_guard(self):
-        """REGRESSION (audit workflow V1 verdict): edges whose
-        null distribution has fewer than min_unique_q_values distinct
-        values must get p=NaN.  The pathology: sparse-cell matched-bin
+        """REGRESSION (path-debug audit): edges whose null distribution
+        has fewer than min_unique_q_values distinct values must get
+        p=NaN.  The pathology: sparse-cell matched-bin
         sampling can draw the same fake t' for many iterations,
         producing a CONSTANT Q_null where the lower-tail formula is
         deterministic.  Guard catches this regardless of n_valid_perms.

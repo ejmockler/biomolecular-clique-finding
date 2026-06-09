@@ -7,17 +7,17 @@
     "type": "EMPIRICAL_H0_CALIBRATION_FAILURE",
     "finding": "M2.5 prong (a) label-shuffle FP rate at v1.0.2 theme-restricted substrate = 0.261 vs spec Gate 2 bound 0.120 → FAIL. All-protein-pool variant FP = 0.107 at same substrate → PASS. ±1-decile fallback exonerated (contributes ≤ 0.014 of the 0.154-point miscalibration). Root cause: sparse-cell sampling (M_T = 42–190 over 100 decile cells) produces constant Q_null, making the lower-tail formula mechanically undefined for ~25% of edges.",
     "investigated_in_workflows": [
-      " (path-debug): 3 investigators + 3 reviewers — diagnosed sparse-cell mechanism, proposed V1 guard + β hybrid pool + γ spec amendment, returned 0 ENDORSE / 2 MODIFY / 1 REJECT against the hybrid proposal",
-      " (V1-guard-validation): 4 parallel sweep agents + synthesis + 3 reviewers — established that V1 guard alone cannot recover theme-restricted calibration at any K (K=2 FAIL, K=5 FAIL, K=10 'PASS' is bound-inflation artifact at n_finite=94/944). 3/3 REJECT against any guard-as-primary proposal."
+      "path-debug audit: 3 investigators + 3 reviewers diagnosed sparse-cell mechanism, proposed min_unique_q_values guard + hybrid pool + spec amendment, returned 0 ENDORSE / 2 MODIFY / 1 REJECT against the hybrid proposal",
+      "guard-validation audit: 4 parallel sweep agents + synthesis + 3 reviewers established that the min_unique_q_values guard alone cannot recover theme-restricted calibration at any K (K=2 FAIL, K=5 FAIL, K=10 'PASS' is bound-inflation artifact at n_finite=94/944). 3/3 REJECT against any guard-as-primary proposal."
     ],
-    "convergent_recommendation": "Path (iii) — adopt all-protein-pool as canonical primary. Endorsed independently by V2 verdict in  as the cleanest option: 'requires no spec amendment (all-protein-pool is a pre-registered tertiary sensitivity per Tertiary table in §10)'."
+    "convergent_recommendation": "Path (iii) — adopt all-protein-pool as canonical primary. Endorsed independently as the cleanest option: 'requires no spec amendment (all-protein-pool is a pre-registered tertiary sensitivity per Tertiary table in §10)'."
   },
-  "brutalist_verdicts": {
-    "_verdicts": {
+  "audit_verdicts": {
+    "path_debug_audit_verdicts": {
       "n_total": 3, "ENDORSE": 0, "MODIFY": 2, "REJECT": 1,
       "reject_recommended_path": "strategic retreat to v1.0.2 + 'prong (a) FAILED; primary INCONCLUSIVE' as more defensible than further amendment",
       "modify_required_mods": [
-        "Add p-value robustness guard (V1) — implemented as defensive correctness fix (commit 43e5aba)",
+        "Add p-value robustness guard — implemented as defensive correctness fix (commit 43e5aba)",
         "Persist full prong (a) result.jsons with provenance — N/A for v1.0.3 (no new prong results required beyond what's already pinned)",
         "Replace single-point floor=10 with sweep — N/A for v1.0.3 (hybrid path rejected)",
         "True-negative Q-asymmetry diagnostic — DEFERRED (not load-bearing for v1.0.3 decision)",
@@ -25,7 +25,7 @@
         "Reject PARTIAL→Transport-only branch — HONORED (v1.0.3 chooses uniform all-protein-pool, no per-theme conditional)"
       ]
     },
-    "_verdicts": {
+    "guard_validation_audit_verdicts": {
       "n_total": 3, "ENDORSE": 0, "MODIFY": 0, "REJECT": 3,
       "convergent_objections": [
         "K=10 'PASS' is bound-inflation: bound widens 0.131→0.162 because n_finite collapses 944→94, not because calibration tightens",
@@ -35,12 +35,12 @@
         "Selection on guard is non-ignorable: edges in cell-starved neighborhoods (= edges the guard drops) are exactly where real biological effects would be hardest to detect",
         "Production calibration didn't even use the guard (sanity.py:run_label_shuffle_calibration doesn't pass min_unique_q_values); only monkey-patched experiments did"
       ],
-      "convergent_recommended_path": "(iii) Adopt all-protein-pool as canonical primary — V2 explicit recommendation."
+      "convergent_recommended_path": "(iii) Adopt all-protein-pool as canonical primary — explicit reviewer recommendation."
     }
   },
   "no_q_exposure_attestation": {
     "claim": "The v1.0.3 decision is driven by H0 label-shuffle FP-rate outcomes + structural matrix properties (|E_WASC|=944, M_T sizes, per-cell occupancy distributions) + mathematical properties of the lower-tail permutation formula on constant Q_null. Real-label Q-rank values from output/wasc/concordance_per_edge_m2_2.csv were observed in the M2.4 full B=100 sanity smoke (commit c92b11c) prior to this amendment, but those observations did not motivate the swap. The all-protein-pool's H0 calibration PASS (FP=0.107) was likewise computed without consulting real-label Q-rank ordering.",
-    "caveat": "Per  V2 verdict: H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The 'no real-Q exposure' claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met."
+    "caveat": "Per audit reviewer caveat: H0 label-shuffle draws are still a function of the real abundance matrix's covariance structure (via covariate-residualization, anchor z-scoring, |Pearson|-decile assignment). The 'no real-Q exposure' claim is operationally true at the Q-rank/p-value level but does not certify zero data-dependence at the abundance-matrix-properties level. This is the same attestation standard v1.0.2 met."
   },
   "frozen_artifact_fingerprints_at_amendment_time": {
     "output/wasc/concordance_per_edge_m2_2.csv": "6e026ce7930bcf504cf79da1a4dc969389c46e8092feb8dc55f7fb5d8a6bf57b",
@@ -89,6 +89,6 @@
   "acknowledgment_of_spec_freeze_credibility": {
     "fact": "WASC has now amended an analytical decision (D3) twice in one day (v1.0.2: drop missingness axis; v1.0.3: swap candidate pool).",
     "framing": "Each amendment was triggered by a real empirical finding under H0 that the prior version did not anticipate, and each followed the same review-gated protocol (workflows with structured investigators + adversarial verifiers; signed decision logs with SHA-256 pins; no-Q-exposure attestations). Future reviewers should interpret 'pre-registered' here as the documented decision-with-decision-log, not as eternal immutability.",
-    "alternative_considered": "Strategic retreat — v1.0.2 + 'M2.5 prong (a) FAILED; primary INCONCLUSIVE' ( V2 remaining_concerns #1). Rejected because all-protein-pool was already a pre-registered tertiary sensitivity that calibrates cleanly, so promoting it to primary is a smaller spec change than declaring the entire primary outcome unmakeable."
+    "alternative_considered": "Strategic retreat — v1.0.2 + 'M2.5 prong (a) FAILED; primary INCONCLUSIVE' (audit remaining_concerns #1). Rejected because all-protein-pool was already a pre-registered tertiary sensitivity that calibrates cleanly, so promoting it to primary is a smaller spec change than declaring the entire primary outcome unmakeable."
   }
 }

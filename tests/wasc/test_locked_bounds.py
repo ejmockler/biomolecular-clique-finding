@@ -12,9 +12,9 @@ When the v1.0.4 amendment binds a value, BOTH sides are checked:
 Drift on either side fails CI loud, surfacing exactly which entry needs
 attention.
 
-This addresses the V3 verdict gap from : the
-locked_bounds JSON without an enforcement test was "documentation with a
-SHA-256."  This test IS the enforcement.
+This addresses the implementation-binding gap from the v1.0.4 foundational
+audit: the locked_bounds JSON without an enforcement test was "documentation
+with a SHA-256."  This test IS the enforcement.
 """
 from __future__ import annotations
 

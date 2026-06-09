@@ -6,7 +6,7 @@
   "trigger": {
     "type": "AUDIT_ARITHMETIC_CATCH",
     "finding": "v1.0.4 C17 said 'at B=99999 only ranks 1..69 can clear BY q ≤ 0.10' — sign INVERTED and B MIS-ATTRIBUTED. Correct: at B=99999 the empirical-p floor (1e-5) is below the BY rank-1 threshold (1.43e-5) so ALL 944 ranks are testable. The '69' figure comes from B=999 (sensitivity tier) where ranks 1..70 are UNTESTABLE (max 874 testable). The v1.0.4 locked-bounds CI gate could not catch this because C17 was added by v1.0.4 itself; no prior tag pinned the (B → testable-rank) mapping.",
-    "caught_in_workflow": " review verdict (cross-deliverable consistency reviewer). Re-derived from first principles using q=0.10, N=944, H_944=7.4279.",
+    "caught_in_workflow": "cross-deliverable consistency reviewer in the Path A scaffold audit; re-derived from first principles using q=0.10, N=944, H_944=7.4279.",
     "propagation_prevented": "Path A publication scaffold draft propagated the wrong statement verbatim. Brutalist gate caught it; draft NOT saved to disk. The v1.0.4 spec text itself remained wrong until this amendment."
   },
   "correction_applied": {
@@ -19,7 +19,7 @@
   },
   "no_q_exposure_attestation": {
     "claim": "The C17 correction derives from pure arithmetic against the pre-registered (q, N, H_N, B) tuple. No Q values, p-values, q-values, observed FP rates, or BY-FDR tables were consulted. The fix is independent of any prong's pass/fail verdict — verified that prong (a) PASS, prong (b) FAIL, prong (d) PASS verdicts under v1.0.4 are NOT moved by this correction (C17 is a B-feasibility property, not a property of any observed run).",
-    "verifier": " review; independent arithmetic re-derivation."
+    "verifier": "independent arithmetic re-derivation."
   },
   "frozen_artifact_fingerprints_at_amendment_time": {
     "memory/wasc_spec.md": "2e9912730304446a71d8e81cc8131d6a7d1f1a43d3b5fd943fd77d7328d585d8",

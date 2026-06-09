@@ -5,8 +5,8 @@ Runs the theme-restricted label-shuffle calibration with
 CONSTANT Q_null cases, allowing edges with 2+ distinct null draws).
 
 WHY K=2 (vs the K=5 default committed in null.py):
-  Workflow  V1 verdict identified sparse-cell sampling
-  as producing constant Q_null → deterministic lower-tail p (0.01 or 1.0).
+  The path-debug audit identified sparse-cell sampling as producing
+  constant Q_null → deterministic lower-tail p (0.01 or 1.0).
   K=5 is the spec; K=2 is the minimal sufficient guard if the bias is
   PURELY from the K=1 (single-value) pathology.  If K=2 returns FP to
   ~0.10, the bias is purely the constant-Q_null case.  If K=2 still
