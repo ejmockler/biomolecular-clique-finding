@@ -79,3 +79,4 @@ presentations/
 
 # Local benchmark data (large: ~450MB corpus)
 data/benchmark/
+data/string/
