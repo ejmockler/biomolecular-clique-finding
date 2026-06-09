@@ -1038,10 +1038,11 @@ def extract_local_subgraph_edges(
 def extract_subgraph_induced_by_features(
     cogex_client: Any,
     features: list[str],
-    max_hops: int = 2,
+    max_hops: int | None = 2,
     min_evidence: int = 1,
     seed_batch_size: int = 500,
     max_edges_per_batch: int = 5_000_000,
+    restrict_endpoints_to_features: bool = False,
 ) -> tuple[list[tuple[str, str, dict[str, Any]]], set[str]]:
     """Extract regulatory edges induced by ``features`` ∪ their k-hop neighbors.
 
@@ -1099,6 +1100,17 @@ def extract_subgraph_induced_by_features(
         Server-side ``LIMIT`` per query.  If a batch hits the limit,
         a ``RuntimeWarning`` is emitted — the result is incomplete and
         the caller must reduce ``seed_batch_size`` or ``max_hops``.
+    restrict_endpoints_to_features
+        If True, skip Phase 1 frontier expansion entirely and query
+        only ``(features, features)`` edges in Phase 2.  This is the
+        wave_24l "measured-only paths" extraction: paths must walk
+        through measured proteins only, so edges with unmeasured
+        endpoints are never traversed.  Cuts extraction from
+        ~frontier-expansion time (38 min for ~3,257 features) to
+        ~direct-query time (~2 min) by eliminating walks through
+        unmeasured intermediates that downstream BFS discards anyway.
+        ``max_hops`` is ignored under this mode — the BFS depth is
+        applied later in ``compute_all_pairs_shortest_paths_bounded``.
 
     Returns
     -------
@@ -1133,8 +1145,16 @@ def extract_subgraph_induced_by_features(
         Increase ``max_edges_per_batch`` or decrease
         ``seed_batch_size`` / ``max_hops``.
     """
-    if max_hops < 1:
-        raise ValueError(f"max_hops must be >= 1, got {max_hops}")
+    # max_hops=None means "BFS to CC completion" downstream; the
+    # frontier-expansion path needs an int bound, but the fast path
+    # (restrict_endpoints_to_features=True) ignores max_hops entirely.
+    if max_hops is not None and max_hops < 1:
+        raise ValueError(f"max_hops must be >= 1 or None, got {max_hops}")
+    if max_hops is None and not restrict_endpoints_to_features:
+        raise ValueError(
+            "max_hops=None requires restrict_endpoints_to_features=True "
+            "(frontier expansion needs a depth bound)."
+        )
     if seed_batch_size < 1:
         raise ValueError(
             f"seed_batch_size must be >= 1, got {seed_batch_size}"
@@ -1164,6 +1184,61 @@ def extract_subgraph_induced_by_features(
             matched_features.add(row[0])
 
     feature_set = set(features)
+
+    if restrict_endpoints_to_features:
+        # Wave 24l fast path: skip frontier expansion entirely.  BFS
+        # in compute_all_pairs_shortest_paths_bounded will route only
+        # through measured proteins, so edges with unmeasured
+        # endpoints would be dropped anyway.  Query (features, features)
+        # edges directly: one Cypher pass per source-batch with the
+        # target set passed server-side via $feature_set.
+        edge_query_measured = """
+        MATCH (a:BioEntity)-[r:indra_rel]->(b:BioEntity)
+        WHERE a.name IN $batch
+          AND b.name IN $feature_set
+          AND r.evidence_count >= $min_evidence
+          AND r.stmt_type IN $stmt_types
+        RETURN DISTINCT
+          a.name AS source_name,
+          b.name AS target_name,
+          r.evidence_count AS evidence_count,
+          r.stmt_type AS stmt_type
+        LIMIT $max_edges
+        """
+        edge_index: dict[tuple[str, str, str], int] = {}
+        feature_list = sorted(feature_set)
+        for i in range(0, len(feature_list), seed_batch_size):
+            batch = feature_list[i:i + seed_batch_size]
+            rows = cogex_client._execute_query(
+                edge_query_measured,
+                batch=batch,
+                feature_set=feature_list,
+                min_evidence=min_evidence,
+                stmt_types=list(ALL_REGULATORY_TYPES),
+                max_edges=max_edges_per_batch,
+            )
+            if rows and len(rows) >= max_edges_per_batch:
+                raise RuntimeError(
+                    f"extract_subgraph_induced_by_features hit "
+                    f"max_edges_per_batch={max_edges_per_batch} during "
+                    f"measured-pair edge extraction (batch "
+                    f"{i // seed_batch_size + 1}). The subgraph would "
+                    f"be silently truncated; refusing to continue. "
+                    f"Increase max_edges_per_batch or decrease "
+                    f"seed_batch_size."
+                )
+            for row in rows:
+                src, tgt, ec, st = row[0], row[1], row[2], row[3]
+                key = (src, tgt, st)
+                existing = edge_index.get(key)
+                if existing is None or existing < ec:
+                    edge_index[key] = ec
+        edges = [
+            (src, tgt, {"evidence_count": ec, "stmt_type": st})
+            for (src, tgt, st), ec in edge_index.items()
+        ]
+        return edges, matched_features
+
     nodes_seen: set[str] = set(features)
     frontier: set[str] = set(features)
 
@@ -1265,8 +1340,9 @@ def extract_subgraph_induced_by_features(
 def compute_all_pairs_shortest_paths_bounded(
     edges: list[tuple[str, str, dict[str, Any]]],
     source_nodes: list[str],
-    max_hops: int,
+    max_hops: int | None,
     target_filter: set[str] | None = None,
+    node_filter: set[str] | None = None,
 ) -> dict[str, dict[str, int]]:
     """All-pairs BFS over an edge list, bounded at ``max_hops``, undirected.
 
@@ -1285,26 +1361,48 @@ def compute_all_pairs_shortest_paths_bounded(
         edge is reported as ``{source: 0}`` (only itself reachable).
     max_hops
         Maximum BFS depth.  ``max_hops < 1`` raises ``ValueError``.
+        Pass ``None`` to BFS to connected-component completion (no
+        depth bound — each source reaches every node in its CC).
+        Under wave_24l this is the recommended anchor-adaptive
+        traversal: each anchor's "natural max_hops" is its CC
+        diameter, which is a property of the data rather than a
+        hyperparameter.
     target_filter
         If provided, only distances whose target is in this set are
         retained.  Used by the landscape runner to limit storage to
         ``(source × measured_features)`` pairs.  The source itself
         is always included in its own dict at distance 0.
+    node_filter
+        If provided, BFS adjacency is restricted to edges where BOTH
+        endpoints are in this set.  Paths are NOT allowed to route
+        through nodes outside this set — i.e., hop-2 from ``A`` to
+        ``C`` requires a node ``B`` with ``A-B`` and ``B-C`` both
+        present in ``edges`` AND ``B`` in ``node_filter``.  Used by
+        the landscape runner to enforce "measured-only paths"
+        traversal: hops must walk through measured proteins, not
+        through unmeasured INDRA intermediates.
 
     Returns
     -------
     Dict ``{source: {target: distance}}``.  Distance 0 for the source
-    itself; positive integers up to ``max_hops`` for reachable nodes.
+    itself; positive integers up to ``max_hops`` (or to CC diameter
+    when ``max_hops is None``) for reachable nodes.
     """
-    if max_hops < 1:
-        raise ValueError(f"max_hops must be >= 1, got {max_hops}")
+    if max_hops is not None and max_hops < 1:
+        raise ValueError(f"max_hops must be >= 1 or None, got {max_hops}")
 
     # Build undirected adjacency (set-of-neighbors per node).  Using a
-    # set drops duplicate edges and self-loops automatically.
+    # set drops duplicate edges and self-loops automatically.  When a
+    # node_filter is given, drop edges with any endpoint outside it
+    # so BFS cannot route through unmeasured intermediates.
     adjacency: dict[str, set[str]] = {}
     for src, tgt, _ in edges:
         if src == tgt:
             continue  # drop self-loops
+        if node_filter is not None and (
+            src not in node_filter or tgt not in node_filter
+        ):
+            continue
         adjacency.setdefault(src, set()).add(tgt)
         adjacency.setdefault(tgt, set()).add(src)
 
@@ -1320,7 +1418,14 @@ def compute_all_pairs_shortest_paths_bounded(
             continue
 
         frontier = {source}
-        for hop in range(1, max_hops + 1):
+        # Iterate either to fixed depth (max_hops int) or to CC
+        # completion (max_hops is None; loop exits when frontier is
+        # empty, which is bounded by CC diameter).
+        hop = 0
+        while frontier:
+            if max_hops is not None and hop >= max_hops:
+                break
+            hop += 1
             new_frontier: set[str] = set()
             for node in frontier:
                 for neighbor in adjacency[node]:

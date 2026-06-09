@@ -312,7 +312,7 @@ def run_gradient_test(
     adjacency: dict[str, list[str]],
     abs_t_stats: dict[str, float],
     seed: str,
-    max_hops: int = 6,
+    max_hops: int | None = 6,
     n_permutations: int = 1000,
     rng_seed: int | None = None,
     edge_quality: dict[str, str] | None = None,
@@ -368,11 +368,19 @@ def run_gradient_test(
     rng = np.random.default_rng(rng_seed)
 
     # 1. Hop shells: prefer precomputed; otherwise BFS adjacency.
+    # max_hops=None means "use every shell present in precomputed_shells"
+    # (anchor-adaptive depth; wave_24l).
     if precomputed_shells is not None:
         shells_sets = {
-            h: gs for h, gs in precomputed_shells.items() if 1 <= h <= max_hops
+            h: gs for h, gs in precomputed_shells.items()
+            if h >= 1 and (max_hops is None or h <= max_hops)
         }
     else:
+        if max_hops is None:
+            raise ValueError(
+                "max_hops=None requires precomputed_shells (BFS over "
+                "adjacency needs a depth bound)."
+            )
         shells_sets = compute_hop_shells(adjacency, seed, max_hops)
     if not shells_sets:
         raise ValueError(f"No neighbors found for seed '{seed}' in adjacency.")

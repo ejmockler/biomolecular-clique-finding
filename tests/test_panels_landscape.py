@@ -914,6 +914,78 @@ class TestSaveNpzWithDegrees:
         assert "graph_degrees" not in meta
 
 
+class TestPathTraversalTag:
+    """Wave 24l: distance matrices are stamped with path_traversal."""
+
+    def test_save_writes_measured_only_tag(self, tmp_path: Path):
+        from cliquefinder.panels import FeatureDistanceMatrix
+        m = FeatureDistanceMatrix.from_distance_dict(
+            distances={"A": {"A": 0}},
+            feature_names=["A"], max_hops=2,
+        )
+        path = tmp_path / "d.npz"
+        m.save_npz(path)
+        meta = json.loads((path.with_suffix(".meta.json")).read_text())
+        assert meta["path_traversal"] == "measured_only"
+
+    def test_resume_refuses_untagged_matrix(self, tmp_path: Path):
+        """An untagged matrix (pre-wave-24l artifact) must not be
+        reused during a measured-only-paths resume."""
+        from cliquefinder.panels import FeatureDistanceMatrix
+        from cliquefinder.panels.landscape import (
+            _load_or_build_distance_matrix,
+        )
+        m = FeatureDistanceMatrix.from_distance_dict(
+            distances={"A": {"A": 0, "B": 1}, "B": {"A": 1, "B": 0}},
+            feature_names=["A", "B"], max_hops=2,
+        )
+        path = tmp_path / "d.npz"
+        m.save_npz(path)
+        # Remove the path_traversal tag to simulate a stale artifact.
+        meta_path = path.with_suffix(".meta.json")
+        meta = json.loads(meta_path.read_text())
+        del meta["path_traversal"]
+        meta_path.write_text(json.dumps(meta))
+
+        with pytest.raises(
+            RuntimeError, match="path_traversal=None"
+        ):
+            _load_or_build_distance_matrix(
+                matrix_path=path, resume=True, bridge=None,
+                measured_symbols=["A", "B"],
+                measured_feature_ids=["A", "B"],
+                sym_to_feat={"A": "A", "B": "B"},
+                max_hops=2, seed_batch_size=500,
+            )
+
+    def test_resume_refuses_wrong_traversal_tag(self, tmp_path: Path):
+        from cliquefinder.panels import FeatureDistanceMatrix
+        from cliquefinder.panels.landscape import (
+            _load_or_build_distance_matrix,
+        )
+        m = FeatureDistanceMatrix.from_distance_dict(
+            distances={"A": {"A": 0, "B": 1}, "B": {"A": 1, "B": 0}},
+            feature_names=["A", "B"], max_hops=2,
+        )
+        path = tmp_path / "d.npz"
+        m.save_npz(path)
+        meta_path = path.with_suffix(".meta.json")
+        meta = json.loads(meta_path.read_text())
+        meta["path_traversal"] = "with_intermediates"
+        meta_path.write_text(json.dumps(meta))
+
+        with pytest.raises(
+            RuntimeError, match="path_traversal='with_intermediates'"
+        ):
+            _load_or_build_distance_matrix(
+                matrix_path=path, resume=True, bridge=None,
+                measured_symbols=["A", "B"],
+                measured_feature_ids=["A", "B"],
+                sym_to_feat={"A": "A", "B": "B"},
+                max_hops=2, seed_batch_size=500,
+            )
+
+
 class TestCheckpointRobustness:
     def test_invalid_utf8_trailing_dropped(self, tmp_path: Path):
         from cliquefinder.panels.landscape import _load_checkpoint

@@ -91,7 +91,7 @@ class LandscapeDesign:
     """
 
     contrast: tuple[str, str]
-    max_hops: int
+    max_hops: int | None
     n_permutations: int
     covariates: tuple[str, ...]
     description: str = ""
@@ -107,9 +107,12 @@ class LandscapeDesign:
                 f"LandscapeDesign.contrast must be a 2-tuple of distinct "
                 f"labels, got {self.contrast!r}"
             )
-        if self.max_hops < 1:
+        # max_hops=None means "BFS to CC completion" (anchor-adaptive
+        # depth, wave_24l).  Positive integer is the legacy bounded mode.
+        if self.max_hops is not None and self.max_hops < 1:
             raise ValueError(
-                f"LandscapeDesign.max_hops must be >= 1, got {self.max_hops}"
+                f"LandscapeDesign.max_hops must be >= 1 or None, "
+                f"got {self.max_hops}"
             )
         if self.n_permutations < 1:
             raise ValueError(
@@ -120,7 +123,9 @@ class LandscapeDesign:
     def to_dict(self) -> dict[str, Any]:
         return {
             "contrast": list(self.contrast),
-            "max_hops": int(self.max_hops),
+            "max_hops": (
+                int(self.max_hops) if self.max_hops is not None else None
+            ),
             "n_permutations": int(self.n_permutations),
             "covariates": list(self.covariates),
             "description": self.description,
@@ -129,9 +134,12 @@ class LandscapeDesign:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LandscapeDesign:
         contrast = data["contrast"]
+        raw_max_hops = data["max_hops"]
         return cls(
             contrast=(str(contrast[0]), str(contrast[1])),
-            max_hops=int(data["max_hops"]),
+            max_hops=(
+                int(raw_max_hops) if raw_max_hops is not None else None
+            ),
             n_permutations=int(data["n_permutations"]),
             covariates=tuple(str(c) for c in data.get("covariates", [])),
             description=str(data.get("description", "")),
@@ -193,7 +201,7 @@ class FeatureDistanceMatrix:
 
     feature_names: tuple[str, ...]
     distances: sp.csr_matrix
-    max_hops: int
+    max_hops: int | None
     unmatched: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
@@ -209,9 +217,9 @@ class FeatureDistanceMatrix:
                 f"distances shape {self.distances.shape} does not match "
                 f"len(feature_names)={n}"
             )
-        if self.max_hops < 1:
+        if self.max_hops is not None and self.max_hops < 1:
             raise ValueError(
-                f"max_hops must be >= 1, got {self.max_hops}"
+                f"max_hops must be >= 1 or None, got {self.max_hops}"
             )
 
     def index_of(self, feature: str) -> int:
@@ -297,8 +305,16 @@ class FeatureDistanceMatrix:
             raise
         meta: dict[str, Any] = {
             "feature_names": list(self.feature_names),
-            "max_hops": int(self.max_hops),
+            "max_hops": (
+                int(self.max_hops) if self.max_hops is not None else None
+            ),
             "unmatched": sorted(self.unmatched),
+            # path_traversal records whether BFS routed through
+            # unmeasured intermediates ("with_intermediates", pre-wave-24l
+            # default) or only through measured proteins ("measured_only",
+            # current).  Resume refuses to reuse a matrix whose tag
+            # doesn't match the current pipeline's expectation.
+            "path_traversal": "measured_only",
         }
         if graph_degrees is not None:
             meta["graph_degrees"] = {
@@ -312,10 +328,13 @@ class FeatureDistanceMatrix:
         distances = sp.load_npz(path).tocsr()
         with open(path.with_suffix(".meta.json")) as f:
             meta = json.load(f)
+        raw_max_hops = meta["max_hops"]
         return cls(
             feature_names=tuple(meta["feature_names"]),
             distances=distances,
-            max_hops=int(meta["max_hops"]),
+            max_hops=(
+                int(raw_max_hops) if raw_max_hops is not None else None
+            ),
             unmatched=frozenset(meta.get("unmatched", [])),
         )
 
@@ -324,7 +343,7 @@ class FeatureDistanceMatrix:
         cls,
         distances: dict[str, dict[str, int]],
         feature_names: list[str],
-        max_hops: int,
+        max_hops: int | None,
         unmatched: set[str] | None = None,
     ) -> FeatureDistanceMatrix:
         """Build from the nested-dict output of
@@ -664,7 +683,7 @@ def _build_distance_matrix(
     measured_symbols: list[str],
     measured_feature_ids: list[str],
     sym_to_feat: dict[str, str],
-    max_hops: int,
+    max_hops: int | None,
     seed_batch_size: int = 500,
 ) -> tuple[FeatureDistanceMatrix, set[str], dict[str, int], list[tuple[str, str, dict]]]:
     """Extract regulatory subgraph and build per-protein distance matrix.
@@ -698,6 +717,7 @@ def _build_distance_matrix(
         max_hops=max_hops,
         min_evidence=1,
         seed_batch_size=seed_batch_size,
+        restrict_endpoints_to_features=True,  # wave_24l measured-only
     )
     logger.info(
         "Extracted %d regulatory edges; %d/%d HGNC aliases matched "
@@ -706,14 +726,24 @@ def _build_distance_matrix(
         time.time() - t_extract,
     )
 
-    logger.info("Computing all-pairs shortest paths (bounded at h=%d)",
-                max_hops)
+    logger.info(
+        "Computing all-pairs shortest paths (%s)",
+        "BFS to CC completion" if max_hops is None
+        else f"bounded at h={max_hops}",
+    )
     t_apsp = time.time()
+    # Measured-only paths: BFS must traverse measured-protein nodes
+    # only.  Hop-N reach is restricted to proteins reachable via a
+    # chain of measured intermediates — no routing through unmeasured
+    # INDRA nodes.  This is the regulatory-cascade interpretation of
+    # the shell statistic (cf. wave_24l).
+    measured_symbol_set = set(measured_symbols)
     distances_hgnc_dict = compute_all_pairs_shortest_paths_bounded(
         edges=edges,
         source_nodes=measured_symbols,
         max_hops=max_hops,
-        target_filter=set(measured_symbols),
+        target_filter=measured_symbol_set,
+        node_filter=measured_symbol_set,
     )
     logger.info("All-pairs done (%.1fs)", time.time() - t_apsp)
 
@@ -766,7 +796,12 @@ def _build_distance_matrix(
                     continue
                 if target_fid == source_fid:
                     continue  # self-distance handled above
-                if 1 <= dist <= max_hops:
+                # Under unbounded BFS (max_hops=None) keep every
+                # reachable measured target; otherwise enforce the
+                # hop cap.
+                if dist >= 1 and (
+                    max_hops is None or dist <= max_hops
+                ):
                     existing = per_target.get(target_fid)
                     if existing is None or dist < existing:
                         per_target[target_fid] = dist
@@ -1002,7 +1037,7 @@ def _per_feature_gradient_loop(
     distance_matrix: FeatureDistanceMatrix,
     graph_degrees: dict[str, int],
     unmatched: set[str],
-    max_hops: int,
+    max_hops: int | None,
     n_permutations: int,
     rng_base: int,
     progress_every: int = 200,
@@ -1048,7 +1083,9 @@ def _per_feature_gradient_loop(
             seed_distances = distance_matrix.distances_from(seed_fid)
             shells: dict[int, set[str]] = {}
             for target, d in seed_distances.items():
-                if 1 <= d <= max_hops and target != seed_fid:
+                if d >= 1 and target != seed_fid and (
+                    max_hops is None or d <= max_hops
+                ):
                     shells.setdefault(d, set()).add(target)
             if not shells:
                 record = FailedSeed(
@@ -1521,15 +1558,38 @@ def _load_or_build_distance_matrix(
             )
         else:
             if cached.feature_names == tuple(measured_feature_ids):
+                # Verify the cached matrix was built with the current
+                # traversal mode (measured-only paths).  Refuse to mix
+                # measured-only and with-intermediates artifacts: it
+                # would silently change slope semantics across resumes.
+                meta_path = matrix_path.with_suffix(".meta.json")
+                cached_traversal: str | None = None
+                if meta_path.exists():
+                    try:
+                        with open(meta_path) as f:
+                            meta = json.load(f)
+                        cached_traversal = meta.get("path_traversal")
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        cached_traversal = None
+                if cached_traversal != "measured_only":
+                    raise RuntimeError(
+                        f"Cached distance matrix at {matrix_path} has "
+                        f"path_traversal={cached_traversal!r}, but the "
+                        f"current pipeline requires 'measured_only' "
+                        f"(measured-only paths; wave_24l).  Refusing to "
+                        f"reuse — would silently mix incompatible "
+                        f"graph semantics.  Remove the output_dir to "
+                        f"start fresh."
+                    )
                 logger.info(
                     "Resume: reusing cached distance matrix at %s "
-                    "(%d × %d, %d unmatched)",
+                    "(%d × %d, %d unmatched, path_traversal=%s)",
                     matrix_path, len(cached.feature_names),
                     len(cached.feature_names), len(cached.unmatched),
+                    cached_traversal,
                 )
                 # Try to load persisted graph degrees from the meta
                 # sidecar.  If absent (older cache), re-query INDRA.
-                meta_path = matrix_path.with_suffix(".meta.json")
                 degrees_from_meta: dict[str, int] | None = None
                 if meta_path.exists():
                     try:
