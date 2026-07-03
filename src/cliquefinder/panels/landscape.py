@@ -52,6 +52,12 @@ from cliquefinder.stats.differential import fdr_correction
 from cliquefinder.stats.perturbation_gradient import run_gradient_test
 from cliquefinder.utils.fileio import atomic_write_json, atomic_write_text
 
+from ._intensity import (
+    LOG2_TRANSFORM,
+    RAW_TRANSFORM,
+    VALID_TRANSFORMS as _VALID_TRANSFORMS,
+    apply_intensity_transform,
+)
 from .analysis import FailedSeed, PerSeedResult, ShellSummary
 from .seed_runner import GroupResolver, load_panel_inputs
 
@@ -80,6 +86,12 @@ class LandscapeDesign:
         floor of empirical p-values at ``1 / (n_permutations + 1)``.
     covariates
         Metadata columns for the design matrix.
+    transform
+        Intensity scale for the moderated-t fit: ``"log2"`` (default,
+        ``log2(x+1)``) or ``"raw"`` (linear intensities, the historical
+        default).  Recorded here so it is serialized into the manifest
+        and folded into the resume design-equality guard — resuming a
+        run under a different scale is refused, not silently mixed.
     description
         Optional free-text note.
 
@@ -94,6 +106,7 @@ class LandscapeDesign:
     max_hops: int | None
     n_permutations: int
     covariates: tuple[str, ...]
+    transform: str = LOG2_TRANSFORM
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -101,6 +114,12 @@ class LandscapeDesign:
             object.__setattr__(self, "contrast", tuple(self.contrast))
         if not isinstance(self.covariates, tuple):
             object.__setattr__(self, "covariates", tuple(self.covariates))
+
+        if self.transform not in _VALID_TRANSFORMS:
+            raise ValueError(
+                f"LandscapeDesign.transform must be one of "
+                f"{sorted(_VALID_TRANSFORMS)}, got {self.transform!r}"
+            )
 
         if len(self.contrast) != 2 or self.contrast[0] == self.contrast[1]:
             raise ValueError(
@@ -128,6 +147,7 @@ class LandscapeDesign:
             ),
             "n_permutations": int(self.n_permutations),
             "covariates": list(self.covariates),
+            "transform": str(self.transform),
             "description": self.description,
         }
 
@@ -142,6 +162,16 @@ class LandscapeDesign:
             ),
             n_permutations=int(data["n_permutations"]),
             covariates=tuple(str(c) for c in data.get("covariates", [])),
+            # Back-compat: a design serialized by THIS codebase (manifest.yaml,
+            # or compute_landscape's result.json) without a ``transform`` key
+            # predates the field, i.e. a RAW run — so default to "raw", not the
+            # constructor's "log2".  This lets the resume guard (which reads
+            # manifest.yaml) correctly refuse a log2 design against an old raw
+            # run.  NOTE: this is NOT a guarantee about hand-assembled dicts —
+            # e.g. a bolt-on emitter that copies a raw design verbatim into a
+            # genuinely-log2 file would be mislabeled here; such emitters must
+            # set "transform" in the design block themselves.
+            transform=str(data.get("transform", RAW_TRANSFORM)),
             description=str(data.get("description", "")),
         )
 
@@ -651,7 +681,14 @@ def _fit_engine_for_contrast(
     metadata: "pd.DataFrame",
     groups: dict[str, "pd.Index"],
 ):
-    """Subset + fit RotationTestEngine for one contrast.  Helper for testability."""
+    """Subset + transform + fit RotationTestEngine for one contrast.
+
+    The abundance matrix is mapped onto ``design.transform``'s scale
+    (``"log2"`` = log2(x+1), the default; ``"raw"`` = linear) *before*
+    the engine sees it — the moderated-t engine assumes its input is on
+    the modeling scale and applies no transform of its own.  Helper for
+    testability.
+    """
     from cliquefinder.stats.rotation import RotationTestEngine
 
     cond1, cond2 = design.contrast
@@ -664,6 +701,9 @@ def _fit_engine_for_contrast(
     sample_id_to_idx = {s: i for i, s in enumerate(metadata.index)}
     aligned_indices = [sample_id_to_idx[s] for s in sub_meta.index]
     sub_data = data[:, aligned_indices]
+    # log2(x+1) is element-wise, so transforming the contrast subset is
+    # identical to transforming the full matrix then subsetting.
+    sub_data = apply_intensity_transform(sub_data, design.transform)
 
     engine = RotationTestEngine(sub_data, list(feature_ids), sub_meta)
     fit_covariates = [

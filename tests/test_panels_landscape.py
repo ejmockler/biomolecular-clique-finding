@@ -15,6 +15,8 @@ import pytest
 import scipy.sparse as sp
 
 from cliquefinder.panels import (
+    LOG2_TRANSFORM,
+    RAW_TRANSFORM,
     AdjustedFeatureResult,
     FailedSeed,
     FeatureDistanceMatrix,
@@ -24,6 +26,7 @@ from cliquefinder.panels import (
     PerSeedResult,
     ShellSummary,
     analyze_landscape,
+    apply_intensity_transform,
 )
 
 
@@ -100,6 +103,161 @@ class TestLandscapeDesign:
     def test_dict_round_trip(self):
         d = _design()
         assert LandscapeDesign.from_dict(d.to_dict()) == d
+
+
+# --- Intensity transform ----------------------------------------------------
+
+
+class TestLandscapeDesignTransform:
+    def test_default_transform_is_log2(self):
+        """New designs default to log2 — the documented/correct scale."""
+        d = LandscapeDesign(
+            contrast=("a", "b"), max_hops=2, n_permutations=999,
+            covariates=(),
+        )
+        assert d.transform == LOG2_TRANSFORM == "log2"
+
+    def test_rejects_unknown_transform(self):
+        with pytest.raises(ValueError, match="transform must be one of"):
+            LandscapeDesign(
+                contrast=("a", "b"), max_hops=2, n_permutations=999,
+                covariates=(), transform="ln",
+            )
+
+    def test_transform_survives_dict_round_trip(self):
+        for tf in (LOG2_TRANSFORM, RAW_TRANSFORM):
+            d = LandscapeDesign(
+                contrast=("a", "b"), max_hops=2, n_permutations=999,
+                covariates=("Sex",), transform=tf,
+            )
+            assert LandscapeDesign.from_dict(d.to_dict()).transform == tf
+
+    def test_transform_survives_yaml_round_trip(self, tmp_path: Path):
+        d = LandscapeDesign(
+            contrast=("a", "b"), max_hops=2, n_permutations=999,
+            covariates=("Sex",), transform=RAW_TRANSFORM,
+        )
+        path = tmp_path / "manifest.yaml"
+        d.save_yaml(path)
+        assert LandscapeDesign.load_yaml(path) == d
+
+    def test_legacy_manifest_without_transform_reads_as_raw(self):
+        """Integrity-critical back-compat: a manifest written before the
+        transform field existed was a RAW run.  from_dict must NOT relabel
+        it log2 (the constructor default), or every historical result dir
+        would be silently mislabeled and the resume guard would mismatch.
+        """
+        legacy = {
+            "contrast": ["C9ORF72", "SPORADIC"],
+            "max_hops": 2,
+            "n_permutations": 999,
+            "covariates": ["Sex"],
+            "description": "pre-transform-field run",
+            # NOTE: no "transform" key
+        }
+        recovered = LandscapeDesign.from_dict(legacy)
+        assert recovered.transform == RAW_TRANSFORM == "raw"
+
+    def test_transform_change_breaks_design_equality(self):
+        """A log2 vs raw design must compare unequal so the resume guard
+        refuses to mix scales on one output_dir."""
+        common = dict(
+            contrast=("a", "b"), max_hops=2, n_permutations=999,
+            covariates=("Sex",),
+        )
+        assert (
+            LandscapeDesign(**common, transform="log2")
+            != LandscapeDesign(**common, transform="raw")
+        )
+
+
+class TestApplyIntensityTransform:
+    def test_raw_is_identity(self):
+        x = np.array([[0.0, 13.5, 5.3e10], [1.0, np.nan, 2.0]])
+        out = apply_intensity_transform(x, RAW_TRANSFORM)
+        # raw returns the same object — no copy, no change.
+        assert out is x
+
+    def test_log2_is_log2_x_plus_1(self):
+        x = np.array([[0.0, 1.0, 3.0, 5.3e10]])
+        out = apply_intensity_transform(x, LOG2_TRANSFORM)
+        np.testing.assert_allclose(out, np.log2(x + 1.0))
+
+    def test_log2_maps_zero_to_zero(self):
+        out = apply_intensity_transform(np.array([[0.0]]), LOG2_TRANSFORM)
+        assert out[0, 0] == 0.0
+
+    def test_log2_preserves_nan(self):
+        out = apply_intensity_transform(
+            np.array([[np.nan, 7.0]]), LOG2_TRANSFORM
+        )
+        assert np.isnan(out[0, 0])
+        assert np.isfinite(out[0, 1])
+
+    def test_log2_rejects_negative_input(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            apply_intensity_transform(
+                np.array([[1.0, -0.5]]), LOG2_TRANSFORM
+            )
+
+    def test_unknown_transform_raises(self):
+        with pytest.raises(ValueError, match="unknown transform"):
+            apply_intensity_transform(np.array([[1.0]]), "sqrt")
+
+
+class TestFitEngineAppliesTransform:
+    """The production fit path must apply design.transform to the matrix
+    BEFORE the moderated-t engine — this is the wiring the breakdown
+    found missing (raw intensities reached the engine despite the
+    log2 docstrings)."""
+
+    @staticmethod
+    def _inputs():
+        import pandas as pd
+        rng = np.random.default_rng(0)
+        n_feat, n_samp = 5, 12
+        data = rng.uniform(1.0, 1e6, size=(n_feat, n_samp))  # raw, positive
+        feature_ids = [f"F{i}" for i in range(n_feat)]
+        sample_ids = [f"s{i}" for i in range(n_samp)]
+        metadata = pd.DataFrame(index=sample_ids)
+        groups = {
+            "A": pd.Index(sample_ids[:6]),
+            "B": pd.Index(sample_ids[6:]),
+        }
+        return data, feature_ids, metadata, groups
+
+    @staticmethod
+    def _design(transform):
+        return LandscapeDesign(
+            contrast=("A", "B"), max_hops=2, n_permutations=999,
+            covariates=(), transform=transform,
+        )
+
+    def test_log2_design_equals_manual_log2_then_raw_fit(self):
+        from cliquefinder.panels.landscape import _fit_engine_for_contrast
+
+        data, fids, meta, groups = self._inputs()
+        eng_log2 = _fit_engine_for_contrast(
+            self._design("log2"), data, fids, meta, groups
+        )
+        eng_manual = _fit_engine_for_contrast(
+            self._design("raw"), np.log2(data + 1.0), fids, meta, groups
+        )
+        np.testing.assert_allclose(
+            eng_log2._effects.U, eng_manual._effects.U, rtol=1e-12, atol=0.0
+        )
+
+    def test_raw_and_log2_fits_differ(self):
+        from cliquefinder.panels.landscape import _fit_engine_for_contrast
+
+        data, fids, meta, groups = self._inputs()
+        eng_log2 = _fit_engine_for_contrast(
+            self._design("log2"), data, fids, meta, groups
+        )
+        eng_raw = _fit_engine_for_contrast(
+            self._design("raw"), data, fids, meta, groups
+        )
+        assert not np.allclose(eng_log2._effects.U, eng_raw._effects.U)
 
 
 # --- FeatureDistanceMatrix --------------------------------------------------

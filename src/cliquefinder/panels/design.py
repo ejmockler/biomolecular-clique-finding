@@ -31,6 +31,8 @@ import yaml
 
 from cliquefinder.utils.fileio import atomic_write_text
 
+from ._intensity import LOG2_TRANSFORM, RAW_TRANSFORM, VALID_TRANSFORMS
+
 # Reserved sentinel for the implicit target stratum.  See
 # ``cliquefinder.panels.analysis.TARGET_STRATUM_LABEL``; defined here
 # to break a circular import while keeping the constant in one place.
@@ -107,6 +109,12 @@ class PanelDesign:
         RNG seed used by ``select_panel`` to make stratum membership
         reproducible.  Stored on the design so a regenerated panel
         can be checked against the original.
+    transform
+        Intensity scale for the moderated-t fit: ``"log2"`` (default,
+        ``log2(x+1)``) or ``"raw"`` (linear, the historical default).
+        Applied before the engine via the shared ``_intensity`` helper,
+        same as the landscape path; serialized so panel manifests are
+        self-describing.
     description
         Free-text note explaining the panel's intent.  Optional.
 
@@ -123,6 +131,7 @@ class PanelDesign:
     n_permutations: int
     covariates: tuple[str, ...]
     selection_rng_seed: int
+    transform: str = LOG2_TRANSFORM
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -134,6 +143,12 @@ class PanelDesign:
             object.__setattr__(self, "contrast", tuple(self.contrast))
         if not isinstance(self.covariates, tuple):
             object.__setattr__(self, "covariates", tuple(self.covariates))
+
+        if self.transform not in VALID_TRANSFORMS:
+            raise ValueError(
+                f"PanelDesign.transform must be one of "
+                f"{sorted(VALID_TRANSFORMS)}, got {self.transform!r}"
+            )
 
         if not self.target_seed:
             raise ValueError("PanelDesign.target_seed must be non-empty")
@@ -206,6 +221,7 @@ class PanelDesign:
             "n_permutations": int(self.n_permutations),
             "covariates": list(self.covariates),
             "selection_rng_seed": int(self.selection_rng_seed),
+            "transform": str(self.transform),
             "description": self.description,
         }
 
@@ -227,6 +243,10 @@ class PanelDesign:
             n_permutations=int(data["n_permutations"]),
             covariates=tuple(str(c) for c in data.get("covariates", [])),
             selection_rng_seed=int(data["selection_rng_seed"]),
+            # Back-compat: a manifest without "transform" was written
+            # before the field existed, i.e. a RAW run — do not relabel it
+            # log2 (the constructor default).  Mirrors LandscapeDesign.
+            transform=str(data.get("transform", RAW_TRANSFORM)),
             description=str(data.get("description", "")),
         )
 

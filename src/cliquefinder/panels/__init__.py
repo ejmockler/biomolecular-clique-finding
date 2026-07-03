@@ -29,12 +29,15 @@ from .analysis import (
 )
 from .design import PanelDesign, PanelStratum
 from .landscape import (
+    LOG2_TRANSFORM,
+    RAW_TRANSFORM,
     AdjustedFeatureResult,
     FeatureDistanceMatrix,
     LandscapeAnalysis,
     LandscapeDesign,
     LandscapeResult,
     analyze_landscape,
+    apply_intensity_transform,
     compute_landscape,
 )
 from .runner import run_panel
@@ -47,6 +50,8 @@ __all__ = [
     "FailedSeed",
     "FeatureDistanceMatrix",
     "GroupResolver",
+    "LOG2_TRANSFORM",
+    "RAW_TRANSFORM",
     "LandscapeAnalysis",
     "LandscapeDesign",
     "LandscapeResult",
@@ -61,6 +66,7 @@ __all__ = [
     "TargetPosition",
     "analyze_landscape",
     "analyze_panel",
+    "apply_intensity_transform",
     "compute_landscape",
     "run_panel",
     "run_seed_gradient",

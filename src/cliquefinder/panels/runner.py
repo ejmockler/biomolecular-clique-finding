@@ -64,6 +64,7 @@ def _worker_run_seed(
     max_hops: int,
     n_permutations: int,
     rng_seed: int,
+    transform: str,
 ) -> PerSeedResult:
     """Subprocess entry point: load data, run seed, return result.
 
@@ -89,6 +90,7 @@ def _worker_run_seed(
         max_hops=max_hops,
         n_permutations=n_permutations,
         rng_seed=rng_seed,
+        transform=transform,
     )
 
 
@@ -213,6 +215,7 @@ def run_panel(
         max_hops=design.max_hops,
         n_permutations=design.n_permutations,
         rng_seed=rng_seed,
+        transform=design.transform,
     )
 
     completed: dict[str, PerSeedResult] = {}

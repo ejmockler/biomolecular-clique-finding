@@ -39,6 +39,7 @@ from typing import Protocol
 import numpy as np
 import pandas as pd
 
+from ._intensity import LOG2_TRANSFORM, apply_intensity_transform
 from .analysis import PerSeedResult, ShellSummary
 
 
@@ -71,6 +72,7 @@ def run_seed_gradient(
     max_hops: int = 2,
     n_permutations: int = 999,
     rng_seed: int = 42,
+    transform: str = LOG2_TRANSFORM,
 ) -> PerSeedResult:
     """Fit ROAST engine for one contrast and run the gradient for one seed.
 
@@ -107,6 +109,10 @@ def run_seed_gradient(
         Degree-binned label-permutation null sample size.
     rng_seed
         Permutation RNG seed.
+    transform
+        Intensity scale for the moderated-t fit: ``"log2"`` (default,
+        ``log2(x+1)``) or ``"raw"`` (linear).  Applied to the abundance
+        matrix before the engine; same helper as the landscape path.
 
     Returns
     -------
@@ -134,6 +140,9 @@ def run_seed_gradient(
     sample_id_to_idx = {s: i for i, s in enumerate(metadata.index)}
     aligned_indices = [sample_id_to_idx[s] for s in sub_meta.index]
     sub_data = data[:, aligned_indices]
+    # Map onto the modeling scale (log2(x+1) by default) before the
+    # engine — same single source of truth as the landscape path.
+    sub_data = apply_intensity_transform(sub_data, transform)
 
     # Fit ROAST engine.
     engine = RotationTestEngine(sub_data, list(feature_ids), sub_meta)

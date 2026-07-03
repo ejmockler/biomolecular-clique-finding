@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cliquefinder.panels import PanelDesign, PanelStratum
+from cliquefinder.panels import LOG2_TRANSFORM, RAW_TRANSFORM, PanelDesign, PanelStratum
 
 
 def _good_design() -> PanelDesign:
@@ -190,6 +190,40 @@ class TestPanelDesignSerialization:
         d["contrast"] = ["only_one"]
         with pytest.raises(ValueError, match="2-element sequence"):
             PanelDesign.from_dict(d)
+
+
+# --- Intensity transform ----------------------------------------------------
+
+
+class TestPanelDesignTransform:
+    def test_default_transform_is_log2(self):
+        assert _good_design().transform == LOG2_TRANSFORM == "log2"
+
+    def test_rejects_unknown_transform(self):
+        with pytest.raises(ValueError, match="transform must be one of"):
+            PanelDesign(
+                target_seed="C9orf72",
+                strata=(PanelStratum("X", ("A",)),),
+                contrast=("a", "b"), max_hops=2, n_permutations=999,
+                covariates=(), selection_rng_seed=0, transform="ln",
+            )
+
+    def test_transform_round_trips(self):
+        for tf in (LOG2_TRANSFORM, RAW_TRANSFORM):
+            d = PanelDesign(
+                target_seed="C9orf72",
+                strata=(PanelStratum("X", ("A",)),),
+                contrast=("a", "b"), max_hops=2, n_permutations=999,
+                covariates=("Sex",), selection_rng_seed=0, transform=tf,
+            )
+            assert PanelDesign.from_dict(d.to_dict()).transform == tf
+
+    def test_legacy_manifest_without_transform_reads_as_raw(self):
+        """Back-compat: a pre-transform-field manifest was a RAW run; it
+        must not be relabeled log2 (the constructor default)."""
+        legacy = _good_design().to_dict()
+        del legacy["transform"]
+        assert PanelDesign.from_dict(legacy).transform == RAW_TRANSFORM == "raw"
 
 
 # --- Frozen-ness ------------------------------------------------------------
