@@ -147,10 +147,24 @@ class TestComposedScorerWiring:
         # Mock the causal_path_scoring dependency used inside get_targets
         mock_reliability_module = MagicMock()
         mock_reliability_module.compute_edge_reliability = MagicMock(return_value=0.7)
+        # The composed-scorer path imports
+        # ``indra_belief.composed_scorer.EvidenceRecord`` inside
+        # _compute_composed_scores (discovery_bridge.py:203). That module was
+        # deleted upstream (indra-belief-model f2ad1bc), so the production
+        # ``except ImportError: return`` fallback fires in an unmocked env and
+        # score_edge is never called. Register a fake module exposing an
+        # EvidenceRecord callable (accepting the source_api/verdict/
+        # regulation_type/stmt_hash kwargs used at lines 234-239) so the
+        # import resolves and control reaches composed_scorer.score_edge.
+        mock_composed_scorer_module = MagicMock()
+        mock_composed_scorer_module.EvidenceRecord = MagicMock(
+            side_effect=lambda **kwargs: MagicMock(**kwargs)
+        )
         with patch.dict("sys.modules", {
             "causal_path_scoring": MagicMock(),
             "causal_path_scoring.core": MagicMock(),
             "causal_path_scoring.core.edge_reliability": mock_reliability_module,
+            "indra_belief.composed_scorer": mock_composed_scorer_module,
         }):
             targets = bridge.get_targets("VPS4A")
 

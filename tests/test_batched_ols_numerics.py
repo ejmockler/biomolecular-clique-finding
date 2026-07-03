@@ -264,30 +264,87 @@ class TestMLXFastPath:
 
     @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
     def test_mlx_matches_numpy_complete_data(self):
-        """MLX fast path produces near-identical results to NumPy for complete data.
+        """MLX fast path produces float32-consistent results vs the NumPy float64 path.
 
-        MLX uses float32 internally for some operations, so we allow
-        slightly looser tolerance than pure NumPy comparisons.
+        Verdict (a): the gap is GENUINE float32 precision, not a bug. Apple-Silicon
+        MLX matmul accumulates in reduced precision, so per-element relative error
+        can reach ~1e-3 while the two paths remain numerically equivalent in
+        aggregate. Measured (n_samples=30, n_features=20, seed=42; stable across
+        5 repeated MLX runs, which is non-deterministic in general):
+
+            residual_variance : corr = 0.99999997, median-ratio = 1.00003 (no bias),
+                                max|rel| = 3.2e-4  (~30x the old rtol=1e-5 → too tight)
+            log2_fc           : corr = 0.9999992,  max|rel| = 0.080 near-zero-driven
+                                (min|true log2fc| = 5.8e-3; max|abs| = 7.1e-3)
+            t_value           : corr = 0.9999993,  max|rel| = 0.080 near-zero-driven
+                                (min|true t| = 0.025; max|abs| = 3.9e-2)
+            p_value           : corr = 0.9999980,  max|abs| = 1.6e-3
+
+        The near-zero true contrasts inflate *relative* error even though the paths
+        agree in absolute terms — hence a tight rtol paired with an atol floor that
+        only bites near zero. Minimal atol needed (per assert_allclose semantics,
+        atol + rtol*|desired|) given the chosen rtols: log2_fc 4.86e-3, t_value
+        2.60e-2, p_value 1.00e-3 — the atols below sit ~1.03-1.5x above these.
+
+        HARD RULE (a): a bare loosened tolerance is scale-invariant and would mask a
+        systematic float32 regression, so the loop below also feeds a correlation +
+        median-ratio bias guard that a real regression (which shifts the whole
+        distribution) would still trip.
         """
         prob = _make_ols_problem(n_samples=30, n_features=20, nan_fraction=0.0)
         results_np = _run_numpy_reference(prob)
         results_mlx = _run_mlx_path(prob)
 
         assert len(results_np) == len(results_mlx)
+
+        # Collect converged per-feature / per-contrast values for the anti-masking
+        # aggregate guard (assembled while checking per-element tolerances).
+        rv_np, rv_mlx = [], []
+        t_np, t_mlx = [], []
+
         for j, (r_np, r_mlx) in enumerate(zip(results_np, results_mlx)):
             assert r_np.convergence == r_mlx.convergence
             if not r_np.convergence:
                 continue
+            rv_np.append(r_np.residual_variance)
+            rv_mlx.append(r_mlx.residual_variance)
+            # residual_variance is scale-invariant across features, so a plain
+            # rtol (loosened from 1e-5 to 5e-4 ≈ 1.6x the measured 3.2e-4) holds
+            # without an atol floor.
             assert_allclose(
-                r_mlx.residual_variance, r_np.residual_variance, rtol=1e-5,
+                r_mlx.residual_variance, r_np.residual_variance, rtol=5e-4,
                 err_msg=f"Feature {j} residual variance MLX vs NumPy",
             )
             for c_np, c_mlx in zip(r_np.contrasts, r_mlx.contrasts):
-                # MLX uses float32 for some intermediate operations,
-                # so tolerance must accommodate ~1e-4 relative error.
-                assert_allclose(c_mlx.log2_fc, c_np.log2_fc, rtol=5e-4, atol=1e-6)
-                assert_allclose(c_mlx.t_value, c_np.t_value, rtol=5e-4, atol=1e-5)
-                assert_allclose(c_mlx.p_value, c_np.p_value, rtol=1e-3, atol=1e-8)
+                t_np.append(c_np.t_value)
+                t_mlx.append(c_mlx.t_value)
+                # Tight rtol keeps large-signal contrasts honest; atol floor only
+                # bites for near-zero true values where float32 rel-error explodes.
+                assert_allclose(c_mlx.log2_fc, c_np.log2_fc, rtol=1e-3, atol=5e-3)
+                assert_allclose(c_mlx.t_value, c_np.t_value, rtol=1e-3, atol=3e-2)
+                assert_allclose(c_mlx.p_value, c_np.p_value, rtol=2e-3, atol=1.5e-3)
+
+        # Anti-masking aggregate guard (HARD RULE (a)): the loosened per-element
+        # tolerances above are scale-invariant, so back them with distribution-wide
+        # checks a systematic float32 regression cannot slip past.
+        rv_np = np.asarray(rv_np)
+        rv_mlx = np.asarray(rv_mlx)
+        t_np = np.asarray(t_np)
+        t_mlx = np.asarray(t_mlx)
+
+        assert np.corrcoef(rv_mlx, rv_np)[0, 1] > 0.9999, (
+            "residual_variance MLX vs NumPy correlation collapsed — "
+            "possible systematic float32 regression"
+        )
+        assert np.corrcoef(t_mlx, t_np)[0, 1] > 0.9999, (
+            "t_value MLX vs NumPy correlation collapsed — "
+            "possible systematic float32 regression"
+        )
+        rv_median_ratio = float(np.median(rv_mlx / rv_np))
+        assert 0.999 < rv_median_ratio < 1.001, (
+            f"residual_variance median-ratio {rv_median_ratio:.6f} shows a "
+            "systematic MLX bias (expected ≈1.0 for unbiased float32 error)"
+        )
 
     @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
     def test_mlx_matches_numpy_uniform_nan(self):
@@ -383,7 +440,14 @@ class TestSqueezeVarScalar:
         assert isinstance(df_total, float)
 
     def test_infinite_d0_no_shrinkage(self):
-        """When d0=inf, original variances are returned unchanged."""
+        """When d0=inf, the prior dominates completely → posterior == prior variance s0_sq (max shrinkage).
+
+        Verdict (c): the prior expectation `s2_post == sigma2` was stale. The
+        limma squeezeVar limit is s2_post = (d0*s0_sq + df*s2)/(d0+df) → s0_sq as
+        d0 → inf (the prior gets infinite weight = maximum shrinkage), and
+        df_total = d0 + df → inf. permutation_gpu.py:246-251 implements exactly
+        this, and MEMORY records the fact "d0=inf → s2_post = s0_sq".
+        """
         sigma2 = np.array([0.5, 1.0, 2.0])
         df = 10
         d0 = np.inf
@@ -391,9 +455,10 @@ class TestSqueezeVarScalar:
 
         s2_post, df_total = squeeze_var(sigma2, df, d0, s0_sq)
 
-        assert_allclose(s2_post, sigma2)
-        assert df_total == float(df)
-        # Should be a copy, not the same object
+        # Max shrinkage: every posterior variance collapses onto the prior s0_sq.
+        assert_allclose(s2_post, np.full_like(sigma2, s0_sq))
+        assert np.isinf(df_total)
+        # Should be a fresh array (np.full_like), not the input object.
         assert s2_post is not sigma2
 
     def test_high_d0_shrinks_toward_prior(self):
@@ -458,7 +523,13 @@ class TestSqueezeVarArray:
         assert_allclose(df_total_arr, df_total_loop, rtol=1e-14)
 
     def test_array_df_with_infinite_d0(self):
-        """Array df with d0=inf returns original variances and array df."""
+        """Array df with d0=inf → posterior == prior variance s0_sq (max shrinkage), array df_total is inf.
+
+        Verdict (c): same stale expectation as the scalar case. In the limma
+        d0 → inf limit the prior dominates completely, so every posterior variance
+        collapses onto s0_sq and the posterior df is inf per feature.
+        permutation_gpu.py:250 returns np.full_like(df, inf) for the array path.
+        """
         sigma2 = np.array([1.0, 2.0, 3.0])
         df = np.array([5.0, 10.0, 15.0])
         d0 = np.inf
@@ -466,9 +537,10 @@ class TestSqueezeVarArray:
 
         s2_post, df_total = squeeze_var(sigma2, df, d0, s0_sq)
 
-        assert_allclose(s2_post, sigma2)
+        # Max shrinkage: all posteriors collapse onto the prior s0_sq.
+        assert_allclose(s2_post, np.full_like(sigma2, s0_sq))
         assert isinstance(df_total, np.ndarray)
-        assert_allclose(df_total, df)
+        assert np.all(np.isinf(df_total))
 
     def test_mixed_df_values(self):
         """Features with very different df get appropriately different shrinkage."""

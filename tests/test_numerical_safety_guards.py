@@ -60,17 +60,13 @@ class TestBinomtestReplacement:
 
     def test_binomtest_result_matches_expected(self):
         """Verify binomtest produces correct p-value for known inputs."""
-        # 15 out of 20 are negative: is 75% significantly different from 50%?
-        n_negative = 15
-        n_total = 20
-        expected_result = scipy_stats.binomtest(
-            n_negative, n_total, p=0.5, alternative='two-sided'
-        )
-
-        # Run through our code path
         from cliquefinder.stats.differential import run_network_enrichment_test
 
-        # Create data where exactly 15 of 20 targets have negative t-stats
+        # Construct the data FIRST so the oracle can derive its null
+        # probability from the same background the production code uses.
+        # 15 of 20 targets are negative; the code (differential.py:1891-1894)
+        # tests that against the observed genome-wide background
+        # downregulation rate, NOT against a naive 50%.
         rng = np.random.default_rng(99)
         n_background = 80
         t_stats_targets = np.concatenate([
@@ -88,6 +84,17 @@ class TestBinomtestReplacement:
             't_statistic': t_stats,
             'is_target': is_target,
         })
+
+        # Independent hand-computed oracle: mirror the production null
+        # probability (differential.py:1888-1889) — the background
+        # downregulation rate = 34/80 = 0.425 for rng=default_rng(99).
+        n_negative = 15
+        n_total = 20
+        n_background_down = int(np.sum(t_stats_background < 0))
+        background_down_rate = n_background_down / n_background
+        expected_result = scipy_stats.binomtest(
+            n_negative, n_total, p=background_down_rate, alternative='two-sided'
+        )
 
         result = run_network_enrichment_test(
             protein_results,

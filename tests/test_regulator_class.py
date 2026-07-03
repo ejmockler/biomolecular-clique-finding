@@ -61,7 +61,8 @@ class TestRegulatorClassEnum:
         assert RegulatorClass.PHOSPHATASE.value == "phosphatase"
 
     def test_enum_members_count(self):
-        assert len(RegulatorClass) == 3
+        # 5 members: TF, KINASE, PHOSPHATASE + E3_LIGASE, RECEPTOR_KINASE (added to cogex.py).
+        assert len(RegulatorClass) == 5
 
     def test_enum_from_string(self):
         assert RegulatorClass("tf") is RegulatorClass.TF

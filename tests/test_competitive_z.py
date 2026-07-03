@@ -8,6 +8,7 @@ Tests cover:
 """
 from __future__ import annotations
 
+import types
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -209,8 +210,22 @@ class TestDiscoveryBridgeCompetitive:
         engine._effects = effects
         engine._fitted = True
 
-        # Mock data for correlation estimation
-        engine.data = rng.normal(0, 1, size=(n_genes, 20))
+        # Mock data for correlation estimation.
+        # Real ROAST contract: data is (n_genes, n_samples).
+        n_samples = 20
+        engine.data = rng.normal(0, 1, size=(n_genes, n_samples))
+
+        # Honor the real engine contract for the residual-projection path
+        # (discovery_bridge.py:414-419): RotationPrecomputed.Q2 is a real
+        # (n_samples, df_residual+1) orthonormal basis so that
+        # `target_data (k, n_samples) @ Q2 (n_samples, df+1)` -> (k, df+1),
+        # then corrcoef over the k rows. Without a real Q2, a bare MagicMock
+        # auto-attribute coerces to an empty (0,) array and the matmul at
+        # line 418 crashes. This strengthens the mock to match production;
+        # it does not bypass the tested code path.
+        df_plus_1 = 18
+        Q2 = np.linalg.qr(rng.normal(size=(n_samples, df_plus_1)))[0]
+        engine._precomputed = types.SimpleNamespace(Q2=Q2)
 
         bridge = DiscoveryBridge(
             engine, {}, use_competitive=use_competitive
