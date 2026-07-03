@@ -79,7 +79,8 @@ def main() -> None:
         max_hops=2,
         n_permutations=49,
         covariates=("Sex",),
-        description=f"Wave 24f extrapolation — {n_features} features × 49 perms",
+        transform="log2",  # explicit: matches the production default
+        description=f"Wave 24f extrapolation — {n_features} features × 49 perms, log2(x+1)",
     )
 
     log.info("=== TIMING START: %d features ===", n_features)

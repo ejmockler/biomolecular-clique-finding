@@ -55,6 +55,10 @@ def main() -> None:
     )
     parser.add_argument("--scope", default="robust",
                         choices=("robust", "all"))
+    parser.add_argument(
+        "--scale-label", default="",
+        help="Intensity scale name for the report title (e.g. 'log2(x+1)')",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -65,9 +69,15 @@ def main() -> None:
     log = logging.getLogger("compare")
 
     lines: list[str] = []
+    scale = f" ({args.scale_label} scale)" if args.scale_label else ""
     lines.append(
-        "# Wave 24l bounded h=2 vs unbounded BFS — confirmatory comparison\n"
+        f"# Bounded h=2 vs unbounded BFS — confirmatory comparison{scale}\n"
     )
+    if args.scale_label:
+        lines.append(
+            f"Intensity scale: `{args.scale_label}`  (bounded h=2 = production; "
+            "unbounded = depth sensitivity)\n"
+        )
     lines.append(f"Scope: `{args.scope}`\n")
 
     pass_counts = {}
@@ -91,8 +101,9 @@ def main() -> None:
         pass_counts[contrast] = (b_pass, u_pass)
         lines.append(f"## {contrast} — bounded {b_pass}/8 vs unbounded {u_pass}/8\n")
         cols = [
-            "cluster", "term", "NES_h2", "raw_p_h2", "bonferroni_pass_h2",
-            "NES_unb", "raw_p_unb", "bonferroni_pass_unb",
+            "cluster", "term",
+            "NES_h2", "fdr_q_full_h2", "bonferroni_pass_h2",
+            "NES_unb", "fdr_q_full_unb", "bonferroni_pass_unb",
         ]
         present_cols = [c for c in cols if c in merged.columns]
         lines.append(

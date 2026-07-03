@@ -80,7 +80,8 @@ def main() -> None:
         max_hops=2,
         n_permutations=49,
         covariates=("Sex",),
-        description="Wave 24f smoke — 50 features × 49 perms",
+        transform="log2",  # explicit: matches the production default
+        description="Wave 24f smoke — 50 features × 49 perms, log2(x+1)",
     )
 
     log.info("Running landscape on 50-feature subset")

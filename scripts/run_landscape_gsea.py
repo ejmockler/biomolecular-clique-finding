@@ -106,7 +106,11 @@ def build_scores(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--result-dir", type=Path, default=ROOT / "output/landscape_proteome")
+    parser.add_argument("--result-dir", type=Path, required=True,
+                        help="Landscape output dir containing result.json. Required "
+                             "(no default) so a bare invocation cannot silently consume "
+                             "a stale artifact on the wrong intensity scale. The "
+                             "result.json's embedded design records the transform.")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "output/landscape_gsea")
     parser.add_argument("--permutation-num", type=int, default=1000,
                         help="gseapy permutation count. p_floor = 1/N. Default 1000.")
@@ -136,6 +140,19 @@ def main() -> None:
     data = json.loads(result_path.read_text())
     pf = data["per_feature"]
     log.info("per_feature: %d", len(pf))
+
+    # Provenance: surface the intensity scale these slopes were computed on,
+    # so a raw-vs-log2 mixup is loud, not silent.  result.json from
+    # compute_landscape embeds the design (with its transform); the bolt-on
+    # log2 emitter writes a top-level "transform".  A legacy file with neither
+    # was a raw run (mirrors LandscapeDesign.from_dict's back-compat default).
+    _design = data.get("design", {}) if isinstance(data, dict) else {}
+    _transform = (
+        (_design.get("transform") if isinstance(_design, dict) else None)
+        or data.get("transform")
+        or "raw (legacy: no transform recorded)"
+    )
+    log.info("Intensity transform of input slopes: %s", _transform)
 
     if args.scope_set == "both":
         scope_names = ["robust", "all"]

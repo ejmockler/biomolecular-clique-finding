@@ -75,6 +75,10 @@ def main() -> None:
     )
     log = logging.getLogger("landscape-proteome")
 
+    # log2(x+1) is the production scale (LandscapeDesign.transform), recorded
+    # in this run's manifest.yaml and surfaced by the downstream GSEA log.
+    # To reproduce the historical raw-linear fit, set transform="raw" below
+    # (writes to this same dir; the manifest records which scale was used).
     out_dir = ROOT / "output/landscape_proteome_measured_only_unbounded"
     data_path = ROOT / "output/proteomics/all_als.data.csv"
     metadata_path = ROOT / "output/proteomics/all_als.metadata.csv"
@@ -84,10 +88,11 @@ def main() -> None:
         max_hops=None,  # wave_24l unbounded — BFS to CC completion
         n_permutations=999,
         covariates=("Sex",),
+        transform="log2",  # log2(x+1) intensities
         description=(
             "Wave 24l full proteome — every measured protein as seed, "
             "C9_vs_SPORADIC, regulatory edges, max_hops=None (BFS to "
-            "CC completion, anchor-adaptive depth)"
+            "CC completion, anchor-adaptive depth), log2(x+1) intensities"
         ),
     )
 
