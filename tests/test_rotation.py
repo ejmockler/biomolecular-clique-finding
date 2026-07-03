@@ -511,8 +511,29 @@ class TestGPUCPUEquivalence:
                 use_gpu=True,
             )
 
-            # Should be very close (float32 vs float64 tolerance)
-            assert_allclose(t_cpu, t_gpu, rtol=1e-4, atol=1e-4)
+            # GPU runs the rotation matmul + variance/t formation in float32,
+            # CPU in float64. Measured float32-vs-float64 gap on this data:
+            # moderate |t|<5 agree to ~0.01, but a few EXTREME rotated t
+            # (|t| up to ~20, where residual SS -> 0 and t = U/se explodes)
+            # diverge up to ~0.32 absolute (~1.6% relative). The old
+            # rtol/atol=1e-4 demanded float64 parity from a float32 path.
+            # The correlation check is the meaningful regression guard that a
+            # loose elementwise tolerance cannot fake (a real bug would break
+            # the near-perfect correlation, not just widen the tail).
+            t_cpu_flat = np.asarray(t_cpu).ravel()
+            t_gpu_flat = np.asarray(t_gpu).ravel()
+            assert np.corrcoef(t_cpu_flat, t_gpu_flat)[0, 1] > 0.999
+            assert_allclose(t_cpu, t_gpu, rtol=3e-2, atol=3e-2)
+
+            # Scale/bias guard: correlation is scale-INVARIANT and atol=3e-2
+            # dominates the small-|t| body, so a uniform systematic error (e.g.
+            # a GPU df off-by-one -> ~few% scale shift) would slip past both the
+            # correlation check and the elementwise tolerance. On the body
+            # (0.1 < |t| < 3, excluding the near-zero and explosion tails) the
+            # GPU/CPU median ratio must be within 1% of 1 (honest float32 ~0.999).
+            body = (np.abs(t_cpu_flat) > 0.1) & (np.abs(t_cpu_flat) < 3)
+            ratio = t_gpu_flat[body] / t_cpu_flat[body]
+            assert abs(float(np.median(ratio)) - 1.0) < 0.01
         except ImportError:
             pytest.skip("MLX not available")
 

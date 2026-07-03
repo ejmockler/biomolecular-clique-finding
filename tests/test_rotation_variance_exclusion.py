@@ -151,9 +151,23 @@ class TestGpuPrecision:
             df_residual, use_df,
         )
 
-        # For moderate effects, CPU and GPU should agree within ~1e-4
-        assert_allclose(t_cpu, t_gpu, atol=1e-3, rtol=1e-3)
-        assert_allclose(z_cpu, z_gpu, atol=1e-3, rtol=1e-3)
+        # GPU forms the rotated t/z in float32, CPU in float64. Measured
+        # float32-vs-float64 gap on this fixture is ~0.006 (moderate |t|);
+        # rho_sq=sum(U^2) lets some rotations drive residual SS -> 0, where the
+        # rotated t = U/se explodes and float32 diverges more. Tolerances are
+        # float32-justified (~a few x the observed gap), not float64 parity;
+        # the old atol/rtol=1e-3 demanded float64 agreement from a float32 path.
+        assert_allclose(t_cpu, t_gpu, atol=3e-2, rtol=3e-2)
+        assert_allclose(z_cpu, z_gpu, atol=3e-2, rtol=3e-2)
+
+        # Scale/bias guard: the elementwise tolerance alone would pass a uniform
+        # systematic error (e.g. a GPU df off-by-one -> ~few% scale shift). On
+        # the body (0.1 < |t| < 3) the GPU/CPU median ratio must be within 1% of
+        # 1 (honest float32 ~0.999), which a scale/df regression would fail.
+        tc = np.asarray(t_cpu).ravel()
+        tg = np.asarray(t_gpu).ravel()
+        body = (np.abs(tc) > 0.1) & (np.abs(tc) < 3)
+        assert abs(float(np.median(tg[body] / tc[body])) - 1.0) < 0.01
 
     def test_rotation_result_has_precision_note(self, engine_with_data):
         """RotationResult includes precision_note field."""
@@ -521,3 +535,82 @@ class TestRotationNegativeVarianceExclusion:
 
         n_invalid = int(np.sum(~valid_mask))
         assert n_invalid > 0, "Expected some rotations to be invalid on GPU path"
+
+
+class TestRotationCancellationBoundary:
+    """Coverage for the near-zero residual-SS *cancellation boundary*.
+
+    residual_ss = rho_sq - U_rot^2. By Cauchy-Schwarz U_rot^2 <= rho_sq, so
+    residual_ss >= 0 and -> 0 when a rotation nearly aligns with a gene's
+    effect. STAT-III-1 does this subtraction in float64 precisely because
+    float32 catastrophically cancels there. The other fixtures set rho_sq[0]
+    = 0.01 (STRONGLY negative residual_ss, easy to detect); these drive it
+    across zero to exercise the cancellation regime the float64 subtraction
+    exists to protect.
+
+    Note on an inherent float32 limit (not a code bug): a reduced-precision
+    GPU matmul (Apple-Silicon MLX, ~1e-3 relative) cannot resolve residual_ss
+    once it is smaller than the matmul error in U_rot, so at the EXTREME
+    boundary the float32 GPU cannot detect the near-zero negatives the float64
+    CPU detects. This is benign downstream because the t->z transform
+    saturates (z, not raw t, feeds the set statistic), asserted below.
+    """
+
+    @staticmethod
+    def _boundary_data(seed=11):
+        rng = np.random.default_rng(seed)
+        ndim, nrot, n_genes = 12, 400, 6
+        U = rng.standard_normal((n_genes, ndim))
+        rho_sq = np.sum(U ** 2, axis=1).copy()
+        # Drive gene 0 across the boundary: rho_sq just below |U0|^2, with many
+        # rotations aimed tightly along U0 so residual_ss straddles zero.
+        Ru = U[0] / np.linalg.norm(U[0])
+        perp = rng.standard_normal((nrot, ndim))
+        perp -= (perp @ Ru)[:, None] * Ru
+        perp /= np.linalg.norm(perp, axis=1, keepdims=True)
+        rho_sq[0] = float(U[0] @ U[0]) * 0.9995
+        eps = np.geomspace(1e-4, 8e-2, nrot)
+        rng.shuffle(eps)
+        R = np.sqrt(1 - eps ** 2)[:, None] * Ru + eps[:, None] * perp
+        sv = rng.uniform(0.5, 2.0, n_genes)
+        return U, rho_sq, R, sv, ndim - 1
+
+    def test_cpu_float64_detects_near_zero_negatives_and_stays_finite(self):
+        """CPU (float64) reaches the cancellation boundary: it detects the
+        near-zero NEGATIVE residual-SS rotations (marks them invalid) while
+        keeping some valid, and never emits NaN/inf t or z."""
+        U, rho_sq, R, sv, df = self._boundary_data()
+        t, z, valid = _apply_rotations_cpu(U, rho_sq, R, sv, None, df, float(df))
+        assert (~valid).sum() > 0, "boundary not exercised: no invalid rotations"
+        assert valid.sum() > 0, "fixture too aggressive: all rotations invalid"
+        assert np.isfinite(np.asarray(t)).all()
+        assert np.isfinite(np.asarray(z)).all()
+
+    def test_gpu_boundary_finite_and_downstream_z_robust(self):
+        """GPU stays finite at the boundary (the 1e-10 clamp works), and on the
+        rotations BOTH paths accept, the downstream z-scores agree with CPU
+        (corr > 0.99) even though raw t diverges — z saturation makes the
+        boundary benign. GPU/CPU validity is intentionally NOT asserted equal:
+        the float32 matmul cannot resolve the extreme near-zero negatives."""
+        pytest.importorskip('mlx.core')
+        U, rho_sq, R, sv, df = self._boundary_data()
+        tc, zc, vc = _apply_rotations_cpu(U, rho_sq, R, sv, None, df, float(df))
+        tg, zg, vg = _apply_rotations_gpu(U, rho_sq, R, sv, None, df, float(df))
+        tg = np.asarray(tg); zg = np.asarray(zg)
+        zc = np.asarray(zc)
+        assert np.isfinite(tg).all() and np.isfinite(zg).all()
+        both = np.asarray(vc) & np.asarray(vg)
+        assert both.sum() > 5, "too few jointly-valid rotations to compare"
+        assert np.corrcoef(zc[both].ravel(), zg[both].ravel())[0, 1] > 0.99
+
+    def test_gpu_residual_ss_subtraction_is_float64(self):
+        """Guard STAT-III-1: the GPU path must compute residual_ss = rho_sq -
+        U_rot^2 in float64 (a float32 subtraction catastrophically cancels at
+        the boundary). Source check so a revert to float32 is caught."""
+        import inspect
+        from cliquefinder.stats import rotation
+        src = inspect.getsource(rotation._apply_rotations_gpu)
+        assert 'STAT-III-1' in src
+        # U_rot is cast to float64 and the subtraction runs on float64 arrays.
+        assert 'dtype=np.float64' in src
+        assert 'residual_ss_np = rho_sq' in src

@@ -1272,9 +1272,15 @@ def _apply_rotations_gpu(
     -----------------------------
     MLX on Apple Silicon uses float32 arithmetic for the rotation inner loop
     (matrix multiply, variance computation, t-statistic formation).  For
-    moderate effect sizes (|t| < 5), float32 and float64 paths agree to
-    within ~1e-6.  For extreme t-statistics (|t| > 10), float32 truncation
-    can shift individual p-values by up to ~1e-4.
+    moderate effect sizes (|t| < 5) the float32 and float64 t-statistics agree
+    to ~1e-2 (absolute).  Near the residual-SS -> 0 boundary the rotated
+    t = U/se explodes, and there float32 truncation can shift an individual t
+    by a few tenths in absolute terms (still only ~1-2% relative at |t| ~ 20).
+    The two paths correlate > 0.9999 with no systematic bias; the divergence is
+    symmetric float32 rounding.  (An earlier docstring claimed ~1e-6 moderate
+    agreement, which was over-optimistic — measured over the test fixtures the
+    moderate-|t| gap is ~1e-2, and the CPU/GPU-equivalence tests use
+    float32-justified tolerances plus a correlation guard accordingly.)
 
     STAT-III-1 (Audit III): The residual SS computation (rho_sq - u*^2) is now
     performed in float64 on the CPU to prevent catastrophic cancellation.
