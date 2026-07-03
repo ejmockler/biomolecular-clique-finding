@@ -58,6 +58,7 @@ from .differential import (
     DifferentialResult,
     ProteinResult,
     fdr_correction,
+    _infer_intensity_scale,
 )
 
 
@@ -1194,6 +1195,9 @@ class PermutationTestResult:
         n_permutations: Number of permutations run
         percentile_rank: Where observed t falls in null distribution (0-100)
         is_significant: True if empirical_pvalue < threshold
+        effect_scale: Scale of the observed/null log2FC fields — 'log2', 'raw',
+            or 'inherited' (default). These are a true log2 fold change only
+            when effect_scale=='log2'.
     """
     clique_id: str
     observed_log2fc: float
@@ -1207,6 +1211,11 @@ class PermutationTestResult:
     n_permutations: int
     percentile_rank: float
     is_significant: bool = False
+    # Scale of observed_log2FC / null_log2FC_*: 'log2', 'raw', or 'inherited'
+    # (default) when the caller did not resolve the scale. These fields are a
+    # mean difference on whatever scale the input `data` was on — a true log2
+    # fold change only when effect_scale=='log2'.
+    effect_scale: str = "inherited"
 
     def to_dict(self) -> dict:
         return {
@@ -1222,6 +1231,7 @@ class PermutationTestResult:
             'n_permutations': self.n_permutations,
             'percentile_rank': self.percentile_rank,
             'is_significant': self.is_significant,
+            'effect_scale': self.effect_scale,
         }
 
 
@@ -1302,6 +1312,20 @@ def run_permutation_clique_test(
 
     # SET-TEST-5: Use modern Generator API instead of legacy np.random.seed
     rng = np.random.default_rng(random_state)
+
+    # Scale-labeling contract: the observed/null log2FC fields are a mean
+    # difference on whatever scale `data` is on. Detect it so results are not
+    # silently mislabeled as log2FC on raw linear input (AnswerALS 0..5.3e10).
+    effect_scale = _infer_intensity_scale(data)
+    if effect_scale == "raw":
+        warnings.warn(
+            "run_permutation_clique_test: input data looks like RAW linear "
+            "intensities. The observed/null log2FC fields are a RAW mean-difference, "
+            "NOT log2 fold changes (see the effect_scale field). Empirical p-values "
+            "are unaffected.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     n_features, n_samples = data.shape
 
@@ -1506,6 +1530,7 @@ def run_permutation_clique_test(
             n_permutations=len(null_stats),
             percentile_rank=percentile,
             is_significant=empirical_pval < significance_threshold,
+            effect_scale=effect_scale,
         ))
 
     # Create null distribution summary DataFrame

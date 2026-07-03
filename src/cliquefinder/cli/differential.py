@@ -1234,6 +1234,10 @@ def run_differential(args: argparse.Namespace) -> int:
                 fdr_method=args.fdr_method,
                 fdr_threshold=args.fdr_threshold,
                 n_jobs=args.workers,
+                # Respect the CLI's GPU flags (previously this path ignored them
+                # and always used the function's GPU default). Default is now the
+                # float64 CPU path; --gpu opts in, --force-cpu forces CPU.
+                use_gpu=args.gpu and not getattr(args, 'force_cpu', False),
                 verbose=True,
             )
 

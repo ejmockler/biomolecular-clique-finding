@@ -179,7 +179,15 @@ class ProteinResult:
     issue: str | None = None
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Convert to DataFrame with one row per contrast."""
+        """Convert to DataFrame with one row per contrast.
+
+        A result with NO contrasts (flagged inestimable / insufficient-data)
+        still emits ONE metadata row with contrast/statistics NaN, so flagged
+        features remain visible (with their issue + convergence=False) in the
+        aggregated frame instead of silently vanishing. Both the GPU and CPU
+        paths produce ProteinResult objects, so this keeps their frames
+        identical down to the flagged rows.
+        """
         rows = []
         for contrast in self.contrasts:
             row = contrast.to_dict()
@@ -191,7 +199,30 @@ class ProteinResult:
             row['converged'] = self.convergence
             row['issue'] = self.issue
             rows.append(row)
+        if not rows:
+            rows.append({
+                'contrast': np.nan,
+                'feature_id': self.feature_id,
+                'model_type': self.model_type.value,
+                'n_obs': self.n_observations,
+                'residual_var': self.residual_variance,
+                'subject_var': self.subject_variance,
+                'converged': self.convergence,
+                'issue': self.issue,
+            })
         return pd.DataFrame(rows)
+
+
+# Canonical column schema of DifferentialResult.to_dataframe(). Used to return
+# a stable-shaped frame when EVERY feature is flagged (all inestimable /
+# insufficient-data, so no contrast rows exist) — downstream consumers that
+# index 'significant' / 'feature_id' / 'contrast' then degrade to empty rather
+# than KeyError on the missing columns.
+_DIFFERENTIAL_DF_COLUMNS = [
+    'contrast', 'log2FC', 'SE', 'tvalue', 'df', 'pvalue', 'CI_lower', 'CI_upper',
+    'feature_id', 'model_type', 'n_obs', 'residual_var', 'subject_var',
+    'converged', 'issue', 'adj_pvalue', 'significant',
+]
 
 
 @dataclass
@@ -211,14 +242,26 @@ class DifferentialResult:
     fdr_threshold: float = 0.05
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Convert all results to a single DataFrame."""
+        """Convert all results to a single DataFrame.
+
+        Flagged features (no contrasts) appear as metadata rows with NaN
+        statistics and significant=False (see ProteinResult.to_dataframe); they
+        are excluded from FDR because a NaN contrast never matches a tested one.
+        """
         dfs = [r.to_dataframe() for r in self.results]
         if not dfs:
-            return pd.DataFrame()
+            # No results at all -> still return the canonical schema so
+            # downstream consumers (the 'significant' filter, 'feature_id'
+            # lookup) degrade to empty rows rather than KeyError.
+            out = pd.DataFrame(columns=_DIFFERENTIAL_DF_COLUMNS)
+            out['significant'] = out['significant'].astype(bool)
+            return out
 
         df = pd.concat(dfs, ignore_index=True)
 
-        # Apply FDR correction per contrast
+        # Apply FDR correction per contrast. Flagged rows carry contrast=NaN,
+        # never match a tested contrast, and so are excluded from FDR -> they
+        # land with adj_pvalue=NaN -> significant=False.
         df['adj_pvalue'] = np.nan
         for contrast in self.contrasts_tested:
             mask = df['contrast'] == contrast
@@ -234,7 +277,10 @@ class DifferentialResult:
     def significant_features(self, contrast: str | None = None) -> list[str]:
         """Get list of significant features."""
         df = self.to_dataframe()
-        if contrast:
+        # No results at all, or every feature flagged -> nothing significant.
+        if 'significant' not in df.columns or 'feature_id' not in df.columns:
+            return []
+        if contrast and 'contrast' in df.columns:
             df = df[df['contrast'] == contrast]
         return df[df['significant']]['feature_id'].unique().tolist()
 
@@ -519,6 +565,16 @@ def satterthwaite_df(
         return None
 
 
+# Issue string emitted, IDENTICALLY by the GPU batched path and the CPU
+# sequential path, when a feature's design is rank-deficient because an entire
+# condition group has zero observations (for that feature's missingness
+# pattern). The group mean — and any contrast touching it — is then inestimable,
+# so both paths flag convergence=False with empty contrasts rather than emitting
+# a degenerate pseudo-inverse coefficient (which previously diverged between the
+# two paths by many orders of magnitude).
+INESTIMABLE_GROUP_ISSUE = "Condition group has no observations (inestimable)"
+
+
 def batched_ols_gpu(
     Y: NDArray[np.float64],
     X: NDArray[np.float64],
@@ -581,17 +637,31 @@ def batched_ols_gpu(
     residual_var_np = np.full(n_features, np.nan)
     df_resid_np = np.full(n_features, np.nan, dtype=np.float64)
     n_valid_np = np.full(n_features, 0, dtype=np.float64)
+    # Features whose pattern is rank-deficient (an entire condition group has
+    # zero valid observations) -> inestimable; flagged, not fit.
+    inestimable = np.zeros(n_features, dtype=bool)
     # Store per-feature (X_g'X_g)^-1 for SE computation in contrasts
     XtX_inv_per_feature: dict[int, NDArray[np.float64]] = {}
 
-    # ── STAT-1-OPT: MLX fast path for single-pattern (common case) ───────
+    # ── STAT-1-OPT: MLX fast path for the single COMPLETE pattern ────────
+    # Restricted to fully-observed data (n_obs == n_samples): the MLX path runs
+    # in float32, so we only take it when there is NO missingness. ANY NaN —
+    # even a single pattern shared by all features — falls through to the NumPy
+    # float64 pattern loop below, which is bit-for-bit identical to the CPU
+    # sequential path. This guarantees GPU results under missing data are
+    # IDENTICAL to CPU (not merely float32-close), while complete data still
+    # gets the float32 GPU speedup.
     if len(pattern_groups) == 1 and MLX_AVAILABLE:
         pattern, all_indices = next(iter(pattern_groups.items()))
         valid = np.array(pattern, dtype=bool)
         n_obs = int(np.sum(valid))
+        X_g = X[valid, :] if n_obs > 0 else X[:0, :]
 
-        if n_obs > n_params:
-            X_g = X[valid, :]
+        # Full-rank complete data only. A rank-deficient design (an unobserved
+        # condition group) falls through to the NumPy loop, which flags it as
+        # inestimable — keeping GPU and CPU identical on that degenerate case.
+        if (n_obs == n_samples and n_obs > n_params
+                and np.linalg.matrix_rank(X_g) == n_params):
             Y_g = Y[np.ix_(valid, all_indices)]
 
             X_mx = mx.array(X_g)
@@ -644,13 +714,25 @@ def batched_ols_gpu(
         valid = np.array(pattern)  # boolean mask for valid samples
         n_obs = int(np.sum(valid))
 
+        # An entire condition group unobserved in this pattern -> dead/collinear
+        # dummy column -> rank-deficient design -> the group mean (and any
+        # contrast touching it) is inestimable. Checked BEFORE the df/rank
+        # insufficient branch and gated on n_obs>=3 so the ordering matches the
+        # CPU path exactly (n_obs<3 -> "Insufficient data"; else empty-group ->
+        # inestimable), rather than emitting a degenerate pseudo-inverse coef.
+        if n_obs >= 3 and np.linalg.matrix_rank(X[valid, :]) < n_params:
+            for idx in feature_indices:
+                n_valid_np[idx] = n_obs
+                inestimable[idx] = True
+            continue
+
         if n_obs <= n_params:
-            # Rank-deficient: mark these features but don't skip yet
-            # (they'll be caught by the insufficient-data check below)
+            # Too few observations to fit -> insufficient (caught below).
             for idx in feature_indices:
                 n_valid_np[idx] = n_obs
             continue
 
+        # n_obs > n_params and (from the check above) full rank -> fit.
         X_g = X[valid, :]  # (n_obs, n_params)
 
         # Compute (X_g'X_g)^-1 for this pattern using lstsq for stability
@@ -706,7 +788,24 @@ def batched_ols_gpu(
         df_j = max(int(df_resid_np[j]), 1) if np.isfinite(df_resid_np[j]) else 0
         n_obs_j = int(n_valid_np[j])
 
-        # Check for insufficient data
+        # Inestimable: an entire condition group had no observations for this
+        # feature's pattern (flagged in the pattern loop). Emit the SAME result
+        # the CPU path emits for this case (convergence=False, empty contrasts,
+        # shared issue string) so the two paths are identical.
+        if inestimable[j]:
+            results.append(ProteinResult(
+                feature_id=feature_id,
+                contrasts=[],
+                model_type=ModelType.FIXED,
+                n_observations=n_obs_j,
+                residual_variance=np.nan,
+                subject_variance=None,
+                convergence=False,
+                issue=INESTIMABLE_GROUP_ISSUE,
+            ))
+            continue
+
+        # Check for insufficient data (string matches the CPU path exactly)
         if n_obs_j < 3 or df_j < 1 or np.any(np.isnan(beta_j)):
             results.append(ProteinResult(
                 feature_id=feature_id,
@@ -716,7 +815,7 @@ def batched_ols_gpu(
                 residual_variance=np.nan,
                 subject_variance=None,
                 convergence=False,
-                issue="Insufficient data after removing NaN",
+                issue="Insufficient data",
             ))
             continue
 
@@ -940,6 +1039,27 @@ def fit_linear_model(
         # Create design matrix with dummy coding
         X = pd.get_dummies(df['condition'], drop_first=True, dtype=float)
         X = sm.add_constant(X)
+
+        # Inestimable if ANY condition group has zero surviving observations.
+        # This matches the GPU global-design rank deficiency EXACTLY: for a
+        # condition-only dummy design, rank(X_valid) < n_conditions <=> some
+        # group is empty. We test the group counts directly rather than the
+        # rebuilt design's rank, because get_dummies + add_constant(has_constant=
+        # 'skip') can fold an all-present-reference's all-1 dummy into the
+        # intercept (e.g. all-CASE-missing), hiding the deficiency. Full-rank
+        # designs (incl. light/heterogeneous NaN where both arms survive) pass.
+        if conditions is not None:
+            _grp_counts = df['condition'].value_counts()
+            if any(int(_grp_counts.get(_c, 0)) == 0 for _c in conditions):
+                return None, ModelType.FIXED, np.nan, None, False, INESTIMABLE_GROUP_ISSUE, None, 0, n_obs_used, 0
+
+        # Saturated model: residual df would be <= 0 (observations <= design
+        # columns) -> SE/t/p undefined, not a usable fit. Flag 'Insufficient
+        # data', matching the GPU path's n_obs<=n_params guard, rather than
+        # returning a degenerate zero-residual-df fit. (All groups are present
+        # here — empty-group cases were flagged inestimable above.)
+        if n_obs_used <= X.shape[1]:
+            return None, ModelType.FIXED, np.nan, None, False, "Insufficient data", None, 0, n_obs_used, 0
 
         model = sm.OLS(df['y'], X)
         result = model.fit()
@@ -1192,6 +1312,39 @@ def differential_analysis_single(
     )
 
 
+# Log2-transformed proteomics intensities essentially never exceed this value
+# (log2 of a 1e12 raw intensity is ≈ 40), whereas raw linear intensities routinely
+# span many orders of magnitude — AnswerALS raw intensities span 0..5.3e10. A
+# finite maximum clearly above this threshold therefore indicates RAW linear input.
+_RAW_SCALE_MAX_THRESHOLD: float = 50.0
+
+
+def _infer_intensity_scale(
+    data: NDArray[np.float64],
+    raw_threshold: float = _RAW_SCALE_MAX_THRESHOLD,
+) -> str:
+    """Infer whether an intensity matrix is on a log2 scale or a raw linear scale.
+
+    Pure, model-free heuristic (no EB/OLS math): scans the finite maximum of
+    ``data``. Log2-transformed proteomics intensities almost never exceed ~40,
+    whereas raw linear intensities span many orders of magnitude. A finite max
+    clearly above ``raw_threshold`` (default 50) is treated as raw linear input.
+
+    Args:
+        data: Intensity matrix (any shape); NaN/inf entries are ignored.
+        raw_threshold: Finite-max cutoff separating log2 from raw. Default 50.
+
+    Returns:
+        'raw' if the finite max exceeds ``raw_threshold``, else 'log2'.
+        Empty / all-non-finite input defaults to 'log2' (the historical
+        assumption) so degenerate inputs never spuriously trip the guard.
+    """
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return "log2"
+    return "raw" if float(np.max(finite)) > raw_threshold else "log2"
+
+
 def run_protein_differential(
     data: NDArray[np.float64],
     feature_ids: list[str],
@@ -1202,6 +1355,8 @@ def run_protein_differential(
     verbose: bool = False,
     covariates_df: pd.DataFrame | None = None,
     covariate_design: "CovariateDesign | None" = None,
+    *,
+    input_scale: str = "auto",
 ) -> pd.DataFrame:
     """
     Genome-wide Empirical Bayes differential expression for individual proteins.
@@ -1222,7 +1377,11 @@ def run_protein_differential(
     The EB machinery (fit_f_dist, squeeze_var) is reused from permutation_gpu.py.
 
     Args:
-        data: Protein expression matrix (n_features, n_samples) of log2 intensities.
+        data: Protein expression matrix (n_features, n_samples). The scale is
+            declared via ``input_scale`` (and recorded in the ``effect_scale``
+            output column). The contrast effect (β @ c) is a mean difference on
+            whatever scale ``data`` is on: on log2 intensities it is a log2 fold
+            change; on RAW linear intensities it is a raw mean difference.
         feature_ids: List of protein/feature identifiers.
         sample_condition: Condition labels for each sample.
         contrast: Tuple of (condition1, condition2) to test condition1 - condition2.
@@ -1238,11 +1397,26 @@ def run_protein_differential(
             design_matrix.build_covariate_design_matrix(). When provided,
             its sample_mask is used as the authoritative NaN mask instead
             of recomputing independently (M-6 consolidation).
+        input_scale: Scale-labeling contract for ``data``. One of:
+            - 'auto' (default): infer the scale from the data via
+              _infer_intensity_scale(); a raw-looking matrix emits a warning
+              and is labeled effect_scale='raw'.
+            - 'log2': assert the data is already log2-transformed. If the data
+              is unmistakably raw (finite max > 50), a ValueError is raised
+              rather than silently mislabeling a raw mean-difference as log2FC.
+            - 'raw': assert raw linear intensities; the effect is labeled
+              effect_scale='raw' and a scale-mismatch warning is emitted.
+            The default 'auto' keeps every existing caller working unchanged.
 
     Returns:
         DataFrame with columns:
         - feature_id: Protein/feature identifier
-        - log2fc: Log2 fold change (condition1 - condition2)
+        - log2fc: Contrast effect (condition1 - condition2), β @ c. This is a
+          log2 fold change ONLY when the input is on a log2 scale; on raw input
+          it is a raw mean-difference (see effect_scale). Retained for backward
+          compatibility with existing consumers.
+        - effect_size: Same numeric value as log2fc, under a scale-neutral name.
+        - effect_scale: Resolved input scale ('log2' or 'raw') for this run.
         - t_statistic: Moderated t-statistic (or standard if eb_moderation=False)
         - p_value: Two-tailed p-value
         - df: Degrees of freedom (moderated if EB, residual if standard)
@@ -1276,6 +1450,40 @@ def run_protein_differential(
 
     if len(sample_condition) != n_samples:
         raise ValueError(f"sample_condition length ({len(sample_condition)}) != n_samples ({n_samples})")
+
+    # ── Input-scale contract (scale-labeling integrity guard) ──────────────
+    # The 'log2fc'/'effect_size' column is β @ c — a mean difference on whatever
+    # scale `data` is on. On log2 intensities that IS a log2 fold change; on RAW
+    # linear intensities (AnswerALS spans 0..5.3e10) it is a raw mean difference
+    # and must NOT be silently reported as log2FC. Resolve the scale here and,
+    # for the dangerous declared-log2-but-actually-raw case, refuse loudly.
+    if input_scale not in ("auto", "log2", "raw"):
+        raise ValueError(
+            f"input_scale must be one of {{'auto', 'log2', 'raw'}}, got {input_scale!r}"
+        )
+    detected_scale = _infer_intensity_scale(data)
+    if input_scale == "auto":
+        effect_scale = detected_scale
+    else:
+        if input_scale == "log2" and detected_scale == "raw":
+            raise ValueError(
+                "input_scale='log2' was declared, but the data appears to be on a "
+                "RAW linear scale (finite max exceeds the log-intensity threshold of "
+                f"{_RAW_SCALE_MAX_THRESHOLD:g}; AnswerALS raw intensities span "
+                "0..5.3e10). Refusing to mislabel a raw mean-difference as log2FC. "
+                "Pass log2-transformed data or set input_scale='raw'."
+            )
+        effect_scale = input_scale
+    if effect_scale == "raw":
+        warnings.warn(
+            "run_protein_differential: input data looks like RAW linear "
+            f"intensities (input_scale={input_scale!r}, detected={detected_scale!r}). "
+            "The 'log2fc'/'effect_size' column is a RAW mean-difference, NOT a log2 "
+            "fold change. Sign, t-statistic, p-value and FDR are unaffected; only "
+            "the magnitude's scale label differs (see the 'effect_scale' column).",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Get conditions and validate contrast
     conditions = sorted(pd.Series(sample_condition).dropna().unique().tolist())
@@ -1501,10 +1709,16 @@ def run_protein_differential(
     # anti-conservative (e.g., t.sf(2.3, 5)=0.035 vs norm.sf(2.3)=0.011).
     p_value = 2 * scipy_stats.t.sf(np.abs(t_statistic), df_total)
 
-    # Build results DataFrame
+    # Build results DataFrame.
+    # 'log2fc' is retained (many consumers read it) but is only a true log2 fold
+    # change when effect_scale=='log2'. 'effect_size' is the same value under a
+    # scale-neutral name; 'effect_scale' records the resolved input scale so a
+    # raw mean-difference can never be silently consumed as a log2FC.
     results = pd.DataFrame({
         'feature_id': feature_ids,
         'log2fc': log2fc,
+        'effect_size': log2fc,
+        'effect_scale': effect_scale,
         't_statistic': t_statistic,
         'p_value': p_value,
         'df': df_total if not np.isscalar(df_total) else np.full(n_features, df_total),
@@ -1721,7 +1935,7 @@ def run_differential_analysis(
     sample_subject: NDArray | pd.Series | None = None,
     contrasts: dict[str, tuple[str, str]] | None = None,
     use_mixed: bool = True,
-    use_gpu: bool = True,
+    use_gpu: bool = False,
     fdr_method: str = "BH",
     fdr_threshold: float = 0.05,
     n_jobs: int = 1,
@@ -1740,7 +1954,14 @@ def run_differential_analysis(
         contrasts: Dict of contrasts to test. If None, tests all pairwise.
         use_mixed: Whether to use mixed models when subject info available.
         use_gpu: Whether to use GPU-accelerated batched OLS (when applicable).
-            Only used for fixed effects models. Requires MLX library.
+            Only used for fixed-effects models; requires MLX. **Defaults to
+            False (float64 CPU path).** The GPU path runs the batched OLS in
+            float32, whose p-values agree with float64 only to ~0.05 near
+            p~=0.5 (and whose fold-change magnitudes carry float32 noise), so
+            precision is the default and GPU is an explicit opt-in speedup for
+            large feature counts. (This is the baseline/clique differential;
+            it is NOT the gradient/cluster path, which uses the ROAST rotation
+            engine + permutation_gpu's float32->float64 RSS identity.)
         fdr_method: FDR correction method ("BH", "BY", "bonferroni").
         fdr_threshold: FDR threshold for significance.
         n_jobs: Number of parallel jobs (only for sequential mode).

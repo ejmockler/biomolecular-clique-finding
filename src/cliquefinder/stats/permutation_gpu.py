@@ -1570,6 +1570,22 @@ def run_permutation_test_gpu(
 
     n_features, n_samples = data.shape
 
+    # Scale-labeling contract: observed/null log2FC are a mean difference on
+    # whatever scale `data` is on. Detect it (lazy import avoids the
+    # differential->permutation_gpu module-load cycle) so raw linear input
+    # (AnswerALS 0..5.3e10) is not silently reported as log2FC.
+    from .differential import _infer_intensity_scale
+    effect_scale = _infer_intensity_scale(data)
+    if effect_scale == "raw":
+        warnings.warn(
+            "run_permutation_test_gpu: input data looks like RAW linear "
+            "intensities. The observed/null log2FC fields are a RAW mean-difference, "
+            "NOT log2 fold changes (see the effect_scale field). Empirical p-values "
+            "are unaffected.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Build feature index lookup
     feature_to_idx = {f: i for i, f in enumerate(feature_ids)}
 
@@ -2028,6 +2044,7 @@ def run_permutation_test_gpu(
             n_permutations=n_valid_t,
             percentile_rank=percentile,
             is_significant=empirical_pval < significance_threshold,
+            effect_scale=effect_scale,
         ))
 
     if verbose:
