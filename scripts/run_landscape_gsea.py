@@ -1,8 +1,9 @@
 """GSEA over the proteome landscape — GO + Reactome + WikiPathways + HPO.
 
 Tests whether the gradient signal (slope of mean |t| vs hop distance) is
-concentrated in pathways/phenotypes curated *independently* of INDRA's
-literature evidence.  Cross-source concordance is the robustness criterion.
+concentrated in pathway/phenotype annotations.  All resources consume the same
+samples and ranking and their terms overlap, so cross-source recurrence is
+descriptive concordance rather than independent replication.
 
 Score per anchor (depending on --score-type):
 - slope (default): score = -slope, so larger values = stronger gradient near anchor
@@ -32,19 +33,21 @@ import time
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
-from indra.databases import uniprot_client
-from indra_cogex.client.enrichment.continuous import (
-    go_gsea, reactome_gsea, wikipathways_gsea, phenotype_gsea,
+from indra.databases import uniprot_client  # noqa: E402
+from indra_cogex.client.enrichment.continuous import (  # noqa: E402
+    go_gsea,
+    phenotype_gsea,
+    reactome_gsea,
+    wikipathways_gsea,
 )
-from indra_cogex.client.neo4j_client import Neo4jClient
-
+from indra_cogex.client.neo4j_client import Neo4jClient  # noqa: E402
 
 GSEA_FNS = {
     "go": go_gsea,

@@ -1,14 +1,14 @@
-"""Wave 24l confirmatory analysis — 8 pre-registered cluster terms.
+"""Wave 24l fixed-term same-cohort consistency analysis.
 
-The 8 cluster terms were SELECTED on the old (with-intermediates) slope-GSEA
-in Wave 24i.  Under the new (measured-only-paths) regime, re-running the
-full GSEA and "discovering" the same terms is data-snooping.  This script
-implements the H5 confirmatory-vs-discovery separation:
+The eight cluster terms were selected on this cohort using the old
+with-intermediates slope-GSEA in Wave 24i, then fixed before the measured-only
+method-transfer reruns. Re-running full GSEA does not make them a new discovery.
+This script extracts an explicitly same-cohort consistency readout:
 
-  CONFIRMATORY (n=8, Bonferroni-corrected): take exactly the 8 pre-registered
-  cluster terms.  Report their NES, raw p-value, FDR q-value from the new
-  full discovery, AND apply Bonferroni-8 on the raw p-values.  This is the
-  falsifiable test of whether the cluster claim is graph-invariant.
+  FIXED TERM PANEL (n=8): report NES, raw p-value, and FDR q-value from the
+  method-transfer GSEA, and apply an eightfold raw-p threshold. Because term
+  selection used the same cohort, this is not a post-selection FWER or
+  selective-inference guarantee and does not establish graph invariance.
 
   Run after:
     1. Landscape compute for the contrast → result.json
@@ -16,7 +16,7 @@ implements the H5 confirmatory-vs-discovery separation:
 
 Outputs: <out-dir>/confirmatory_8terms_{scope}.csv  +  summary.csv
 
-8 pre-registered terms (Wave 24i selection):
+8 discovery-derived fixed terms (Wave 24i selection):
   NPC: go:0005643 nuclear pore, go:0006913 nucleocytoplasmic transport,
        reactome:R-HSA-180910 Vpr-mediated nuclear import of PICs
   Splicing: reactome:R-HSA-72172 mRNA Splicing,
@@ -42,9 +42,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 
-# Pre-registered cluster term IDs (Wave 24i selection).  Each tuple is
+# Discovery-derived cluster term IDs, fixed before method transfer. Each tuple is
 # (db, term_id, display_name, cluster).
-PREREGISTERED_TERMS: list[tuple[str, str, str, str]] = [
+FIXED_TERMS: list[tuple[str, str, str, str]] = [
     ("go",       "go:0005643",            "nuclear pore",                                    "NPC"),
     ("go",       "go:0006913",            "nucleocytoplasmic transport",                     "NPC"),
     ("reactome", "reactome:R-HSA-180910", "Vpr-mediated nuclear import of PICs",             "NPC"),
@@ -54,7 +54,7 @@ PREREGISTERED_TERMS: list[tuple[str, str, str, str]] = [
     ("go",       "go:0005694",            "chromosome",                                      "Chromatin"),
     ("go",       "go:0000785",            "chromatin",                                       "Chromatin"),
 ]
-N_TERMS = len(PREREGISTERED_TERMS)
+N_TERMS = len(FIXED_TERMS)
 BONFERRONI_ALPHA_FAMILY = 0.05
 BONFERRONI_ALPHA_PER_TEST = BONFERRONI_ALPHA_FAMILY / N_TERMS  # 0.00625
 
@@ -80,9 +80,9 @@ def load_gsea_results(
 def confirmatory_table(
     gsea_by_db: dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
-    """Build the Bonferroni-8 confirmatory table from the GSEA outputs."""
+    """Build the eightfold-threshold fixed-term table from GSEA outputs."""
     rows: list[dict] = []
-    for db, term_id, display_name, cluster in PREREGISTERED_TERMS:
+    for db, term_id, display_name, cluster in FIXED_TERMS:
         gsea = gsea_by_db.get(db)
         if gsea is None or term_id not in gsea.index:
             rows.append({
@@ -147,8 +147,9 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     log.info(
-        "Bonferroni-corrected confirmatory test over %d pre-registered "
-        "cluster terms (α_family=%.3f, α_per_test=%.5f)",
+        "Eightfold-threshold same-cohort check over %d discovery-derived "
+        "fixed terms (nominal α=%.3f, per-test threshold=%.5f; no "
+        "post-selection FWER guarantee)",
         N_TERMS, BONFERRONI_ALPHA_FAMILY, BONFERRONI_ALPHA_PER_TEST,
     )
 
