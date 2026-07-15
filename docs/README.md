@@ -8,9 +8,9 @@ System design specifications and implementation plans for core features.
 
 - [**validation_framework.md**](architecture/validation_framework.md) - Control baseline validation framework: 6-phase architecture (covariate adjustment, specificity, label permutation, matching, negative controls, orchestrator), verdict logic, dependency graph, and file map
 - [**validation_methodology_notes.md**](architecture/validation_methodology_notes.md) - Statistical methodology notes for the validation framework: 7 open issues with problem statements, code references, proposed solutions, pitfalls, and priority ranking
-- [**outlier_detection.md**](architecture/outlier_detection.md) - Adaptive outlier handling plan with adjusted-boxplot detection and MultiPassOutlierDetector implementation
-- [**cross_modal_design.md**](architecture/cross_modal_design.md) - Cross-modal analysis design for integrating multi-omics data
-- [**cogex_integration_spec.md**](architecture/cogex_integration_spec.md) - CoGEx knowledge graph integration specification
+- [**outlier_detection.md**](archive/outlier_detection.md) - Archived adaptive outlier handling plan with adjusted-boxplot detection and MultiPassOutlierDetector implementation
+- [**cross_modal_design.md**](archive/cross_modal_design.md) - Archived cross-modal analysis design for integrating multi-omics data
+- [**cogex_integration_spec.md**](archive/cogex_integration_spec.md) - Archived CoGEx knowledge graph integration specification
 
 ## User Guides
 

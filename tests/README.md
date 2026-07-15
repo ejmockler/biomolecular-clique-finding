@@ -1,233 +1,66 @@
-# Integration & Validation Test Suite
+# Test Suite
 
-## Overview
+The suite covers the production package from low-level numerical kernels to
+CLI and pipeline integration. It contains 2,200+ tests across 100+
+`test_*.py` modules. The collection command below is the source of truth as
+the suite evolves.
 
-This test suite validates all optimizations to ensure:
-1. **Numerical equivalence**: Optimized code produces identical results
-2. **Performance improvements**: Optimizations deliver expected speedup
-3. **Code quality**: Legacy code removed, API simplified
-4. **Integration**: All components work together correctly
+## Running tests
 
-## Test Organization
+Create the locked development environment and run the full suite:
 
-```
-tests/
-├── conftest.py                          # Shared fixtures and test data generators
-├── test_optimization_equivalence.py     # Numerical correctness tests
-├── test_optimization_performance.py     # Performance benchmarks
-├── test_legacy_removed.py               # Code cleanup verification
-├── test_full_pipeline.py                # End-to-end integration tests
-└── README.md                            # This file
-```
-
-## Running Tests
-
-### Quick Start
-
-Run all tests:
 ```bash
-pytest tests/ -v
+uv sync --extra dev
+uv run --no-sync pytest
 ```
 
-Run specific test suite:
+Equivalent one-shot invocation:
+
 ```bash
-pytest tests/test_optimization_equivalence.py -v
-pytest tests/test_optimization_performance.py -v -s  # -s shows progress
-pytest tests/test_legacy_removed.py -v
-pytest tests/test_full_pipeline.py -v
+uv run --extra dev pytest
 ```
 
-### Test Categories
+Useful focused commands:
 
-#### 1. Numerical Equivalence Tests (`test_optimization_equivalence.py`)
-
-**Purpose**: Verify optimizations don't change results
-
-Tests:
-- ✅ Deterministic imputation (same inputs → same outputs)
-- ✅ Parallel vs sequential (bit-identical results)
-- ✅ Weighted vs unweighted (different but valid)
-- ✅ Correlation vs Euclidean (pattern vs magnitude)
-- ✅ Median fallback works correctly
-- ✅ Radius-based produces valid results
-
-**Success Criteria**: All results within float64 precision (rtol=1e-9)
-
-#### 2. Performance Benchmarks (`test_optimization_performance.py`)
-
-**Purpose**: Measure actual speedup from optimizations
-
-Tests:
-- ⏱️ Correlation caching speedup (when implemented: expect 5-15x)
-- ⏱️ Parallelization speedup (when implemented: expect 6-8x on 8 cores)
-- ⏱️ Strategy comparison (median baseline vs KNN)
-- ⏱️ Scalability analysis (how performance scales with data size)
-
-**Success Criteria**:
-- Current: Establishes baseline performance
-- Future: Validates optimization targets
-
-**Note**: Use `-s` flag to see timing output:
 ```bash
-pytest tests/test_optimization_performance.py -v -s
+# Confirm collection and report the current test count
+uv run --no-sync pytest --collect-only -q
+
+# Exclude the explicitly marked calibration/benchmark tests
+uv run --no-sync pytest -m "not slow"
+
+# Run one module, directory, or named test
+uv run --no-sync pytest tests/test_rotation.py
+uv run --no-sync pytest tests/wasc/
+uv run --no-sync pytest tests/test_rotation.py::TestRotationEngine
 ```
 
-#### 3. Code Cleanup Verification (`test_legacy_removed.py`)
+`slow` tests are included by default. Use `-m "not slow"` only for a quicker
+development pass; run the complete suite before release or publication builds.
 
-**Purpose**: Ensure dead code removed, API simplified
+## Organization
 
-Tests:
-- ✅ Legacy strategies properly removed
-- ✅ sklearn truly optional (no hard dependency)
-- ✅ API accepts minimal parameters
-- ✅ All code paths reachable (no dead branches)
+- `conftest.py` contains shared deterministic fixtures and generators.
+- Core, I/O, and quality tests cover matrix invariants, loading, transforms,
+  outlier handling, and imputation.
+- Statistical tests cover differential models, empirical Bayes moderation,
+  ROAST, permutation engines, enrichment, graph rewiring, gradients, and
+  numerical edge cases.
+- Knowledge, CLI, and validation tests cover INDRA integration boundaries,
+  argument validation, target snapshots, matching, negative controls, and
+  report generation.
+- Panel tests cover the multi-contrast landscape runner and selection logic.
+- `wasc/` covers edge enumeration, preprocessing, FWL fits, concordance,
+  matched nulls, calibration, Brown combination, and locked feasibility bounds.
 
-**Success Criteria**: Clean, minimal API with good error messages
+Tests that require unavailable optional hardware or packages should use an
+explicit pytest skip condition. Ordinary tests must be deterministic, assert
+their outcomes directly, and avoid returning pass/fail booleans.
 
-#### 4. Full Pipeline Integration (`test_full_pipeline.py`)
+## Adding tests
 
-**Purpose**: End-to-end validation of complete workflow
-
-Tests:
-- ✅ Complete QC pipeline (detect → impute → verify)
-- ✅ Radius-based imputation pipeline
-- ✅ Median fallback pipeline
-- ✅ Non-outliers preserved
-- ✅ Empty pipeline (no outliers) handled gracefully
-
-**Success Criteria**:
-- No NaN or Inf in output
-- All outliers imputed
-- Quality flags correct
-- Non-outliers unchanged
-
-## Test Data
-
-Tests use synthetic expression matrices generated by `conftest.py`:
-
-- **Small matrix**: 100 genes × 20 samples (unit tests, ~1s)
-- **Medium matrix**: 1000 genes × 50 samples (integration tests, ~10s)
-- **Large matrix**: 5000 genes × 100 samples (performance tests, ~2-5min)
-
-Synthetic data includes:
-- Log-normal distribution (realistic for RNA-seq)
-- Correlated gene modules (biological structure)
-- Injected outliers (2% of values)
-- Sample metadata (phenotype, batch)
-
-## Expected Results
-
-### Current Implementation (Pre-Optimization)
-
-```
-NUMERICAL EQUIVALENCE: ✅ PASS
-- Deterministic imputation verified
-- Weighted vs unweighted differ (as expected)
-- Correlation vs Euclidean differ (as expected)
-- All methods produce valid results
-
-PERFORMANCE: ⚠️ BASELINE
-- Median: ~0.1s (baseline)
-- KNN correlation: ~30-60s (50-100x slower than median)
-- No caching: runs take same time
-- No parallelization: n_jobs parameter not implemented
-
-CODE QUALITY: ✅ PASS
-- Only valid strategies accepted
-- API simplified with good defaults
-- All code paths reachable
-- Good error messages
-
-INTEGRATION: ✅ PASS
-- Full pipeline successful
-- All outliers imputed
-- Quality flags correct
-- Non-outliers preserved
-```
-
-### After Optimizations (Expected)
-
-```
-NUMERICAL EQUIVALENCE: ✅ PASS
-- Same as before (must be bit-identical)
-
-PERFORMANCE: ✅ IMPROVED
-- Correlation caching: 5-15x speedup on repeat runs
-- Parallelization (8 cores): 6-8x speedup
-- Combined: 30-120x speedup overall
-- Large datasets (60K genes): minutes → seconds
-
-CODE QUALITY: ✅ PASS
-- sklearn removed (optional dependency)
-- Minimal API surface
-- Clear deprecation messages
-
-INTEGRATION: ✅ PASS
-- Same validation as before
-- Works with caching + parallelization
-```
-
-## Validation Checklist
-
-Before merging optimizations, verify:
-
-- [ ] All equivalence tests pass (numerical correctness)
-- [ ] Performance tests show expected speedup
-- [ ] Legacy code properly removed
-- [ ] Full pipeline tests pass
-- [ ] No new dependencies required (sklearn optional)
-- [ ] Error messages clear and helpful
-- [ ] Documentation updated
-
-## Troubleshooting
-
-### Tests fail with "No outliers detected"
-
-The synthetic data may not have enough outliers. This is rare but can happen.
-
-Solution: Run tests again (different random seed) or adjust outlier detection threshold in test.
-
-### Performance tests timeout
-
-Large matrix tests can take several minutes on slow hardware.
-
-Solution: Use `-k` to skip performance tests:
-```bash
-pytest tests/ -v -k "not performance"
-```
-
-Or increase timeout:
-```bash
-pytest tests/ -v --timeout=600  # 10 minute timeout
-```
-
-### Import errors
-
-Make sure the package is installed:
-```bash
-pip install -e .
-```
-
-## Adding New Tests
-
-To add a new test:
-
-1. **Equivalence test**: Add to `test_optimization_equivalence.py`
-   - Test that optimization produces same result as baseline
-   - Use `np.testing.assert_allclose` with `rtol=1e-9`
-
-2. **Performance test**: Add to `test_optimization_performance.py`
-   - Measure time with `time.time()`
-   - Compare to baseline
-   - Use `-s` flag to see output
-
-3. **Integration test**: Add to `test_full_pipeline.py`
-   - Test realistic workflow
-   - Verify all quality flags
-   - Check for NaN/Inf
-
-## References
-
-- Testing Best Practices: https://docs.pytest.org/
-- Numerical Precision: https://numpy.org/doc/stable/reference/testing.html
-- Performance Profiling: https://docs.python.org/3/library/profile.html
+Place tests beside the closest existing domain, name modules `test_*.py`, and
+prefer focused assertions over printed diagnostics. Register any new custom
+pytest marker in `pyproject.toml` before using it. For stochastic methods, use a
+fixed seed and test statistical invariants with a justified tolerance rather
+than retrying failures.

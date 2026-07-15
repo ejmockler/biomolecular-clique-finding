@@ -13,7 +13,6 @@ import pytest
 
 from cliquefinder.knowledge.cogex import CoGExClient, INDRAEdge
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -86,7 +85,7 @@ class TestFetchEvidenceForEdges:
         with patch(
             "cliquefinder.knowledge.cogex.get_statements_by_hash",
             create=True,
-        ) as mock_fetch:
+        ):
             # Patch the import inside the method
             with patch.dict(
                 "sys.modules",
