@@ -1,0 +1,749 @@
+{
+  "configuration": {
+    "covariates": [
+      "Sex"
+    ],
+    "derivation": "Landscape settings come from retained result.json and distance metadata; GSEA and fixed-term settings come from the reference scripts and wrapper invocations hashed below.",
+    "fixed_eight_term_panel": {
+      "decision_rule": "raw_p < 0.00625 and NES > 0 (strict)",
+      "family_alpha_divided_by_eight": 0.00625,
+      "selection_status": "discovery-derived on the same cohort; not a prospective preregistration, selective-inference result, or independent confirmation",
+      "term_count": 8
+    },
+    "gsea": {
+      "count_unit": "database-term rows; overlapping terms across databases are not unique or independent pathways",
+      "databases": [
+        "go",
+        "reactome",
+        "wikipathways",
+        "phenotype"
+      ],
+      "drop_top_pct": 0.0,
+      "fdr_rule": "FDR q-val < 0.05 (strict)",
+      "historical_effective_seed_boundary": "No seed argument was passed. The effective producer default and package revision were not embedded in the retained July outputs.",
+      "min_size": 1,
+      "permutation_num": 1000,
+      "reference_gseapy_1_2_1_default_seed": 123,
+      "scope": "robust",
+      "scope_definition": "hop-1 measured neighborhood size >= 20",
+      "score": "negative landscape slope",
+      "seed_argument": null,
+      "weighted_score_type": 1.0
+    },
+    "intensity_transform": "log2(x+1)",
+    "landscape_permutations": 999,
+    "landscape_rng_seed": 42,
+    "path_traversal": "measured_only"
+  },
+  "contrast_order": [
+    "C9 vs Sporadic",
+    "C9 vs Control",
+    "Sporadic vs Control"
+  ],
+  "purpose": "Offline byte-integrity and count verification for the retained canonical bounded/unbounded robust GSEA and discovery-derived fixed-eight-term outputs.",
+  "reference_implementation": {
+    "environment_files": [
+      {
+        "bytes": 3385,
+        "path": "pyproject.toml",
+        "role": "declared direct and optional dependency contract",
+        "sha256": "3d572052eb4efaff8a6024c85e18809b7fc78d2723fcfd7426589237d6810afe"
+      },
+      {
+        "bytes": 770784,
+        "path": "uv.lock",
+        "role": "frozen uv dependency graph and Git revisions",
+        "sha256": "bc78f79faa013a426d698c280a80a4325e7ed6c4a9844daf9c20e0c85cf6ba26"
+      }
+    ],
+    "relationship_to_outputs": "Reference scripts at snapshot time. Their hashes were not embedded in the July outputs, so they cannot prove the exact historical producer revision.",
+    "scripts": [
+      {
+        "bytes": 4661,
+        "path": "scripts/run_landscape_log2.py",
+        "role": "bounded log2 landscape driver",
+        "sha256": "e15d441febf1098ad28806ad6c53f8a76bb02f44bd60cdaa2eb50f4d9648af9a"
+      },
+      {
+        "bytes": 6413,
+        "path": "scripts/run_landscape_proteome.py",
+        "role": "unbounded C9-vs-Sporadic landscape driver",
+        "sha256": "7bb51acf333c523bde1b23585b9f96f659f1406e44d2c9c32ea4389b6d0f551f"
+      },
+      {
+        "bytes": 5088,
+        "path": "scripts/run_landscape_c9_vs_control.py",
+        "role": "unbounded C9-vs-Control landscape driver",
+        "sha256": "fdf1ddb496e6c454c0117626fa5a3d29540ffe5602217048b2a67efbc3bd3ad2"
+      },
+      {
+        "bytes": 4856,
+        "path": "scripts/run_landscape_sporadic_vs_control.py",
+        "role": "unbounded Sporadic-vs-Control landscape driver",
+        "sha256": "512cbcc81f741747e65f19291a2e335fd057542618fea643b9a101dcf5f661cc"
+      },
+      {
+        "bytes": 8595,
+        "path": "scripts/run_landscape_gsea.py",
+        "role": "robust GSEA producer",
+        "sha256": "eca50a21e415a2b07eab886413a996594d88ef920cc67ac45bba492f6d70fb1f"
+      },
+      {
+        "bytes": 7170,
+        "path": "scripts/analyze_landscape_confirmatory.py",
+        "role": "fixed-term CSV producer",
+        "sha256": "63247abc2fe759f83249eecca7f73a0afc3c71b5193061448785a9781614465c"
+      },
+      {
+        "bytes": 2446,
+        "path": "scripts/run_log2_downstream.sh",
+        "role": "bounded downstream orchestration",
+        "sha256": "e44568036699e8022867a24f1d916c287595ee0ba72bed5522dcef20c2f8ce75"
+      },
+      {
+        "bytes": 4102,
+        "path": "scripts/run_unbounded_downstream.sh",
+        "role": "unbounded downstream orchestration",
+        "sha256": "d014737f7e1d5a12885c28cba27e033b2a175e13d430937a0ba6f7f3f4dc9453"
+      },
+      {
+        "bytes": 18368,
+        "path": "scripts/snapshot_gsea_provenance.py",
+        "role": "offline snapshot generator and verifier",
+        "sha256": "070827615937cd27306993e4c5d0ac94ac824a2354f776be25bb607c50502d4d"
+      }
+    ]
+  },
+  "regimes": {
+    "bounded_h2": {
+      "contrasts": {
+        "C9 vs Control": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 260,
+          "fixed_eight_term_panel": {
+            "bytes": 1030,
+            "found_rows": 8,
+            "pass_count": 6,
+            "passing_term_ids": [
+              "go:0006913",
+              "reactome:R-HSA-72172",
+              "reactome:R-HSA-72203",
+              "go:0000398",
+              "go:0005694",
+              "go:0000785"
+            ],
+            "path": "output/landscape_confirmatory_c9ctrl_measured_only_log2/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "19fb6ad550b395ad73bd6bbcd912a863e76c16be47043c5a7981b608503fd098"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "C9ORF72",
+                "CONTROL"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": 2,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107835,
+              "path": "output/landscape_c9_vs_control_measured_only_log2/distances.meta.json",
+              "sha256": "6bd3e4f8883718b1453c7ca74181aa6a90686658f7c7635b93ea03c7e6af5d74"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 10,
+              "valid_gradients": 3117
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_c9_vs_control_measured_only_log2/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 1907713,
+              "path": "output/landscape_c9_vs_control_measured_only_log2/result.json",
+              "sha256": "a7eeee47ea07181f3835818b20c890c3421cc47a244ce0220d2e2fac9462992e"
+            },
+            "run_manifest": {
+              "bytes": 239,
+              "path": "output/landscape_c9_vs_control_measured_only_log2/manifest.yaml",
+              "sha256": "1ebb7fe1fef6a5340eab2c0ad2d40180c22e8fd01d990bdfbb0c6072c1f495e5"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 916421,
+              "fdr_q_lt_0_05": 157,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_log2/robust_go.csv",
+              "rows": 7165,
+              "sha256": "0f1b641815e677be4af8e91537c6053b376ef080fda77362cbec7181133143cd"
+            },
+            "phenotype": {
+              "bytes": 618624,
+              "fdr_q_lt_0_05": 26,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_log2/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "ef460eff72593eaa2f7bc5fd2cff2fd43939261eac8add65cc473c504d36aca1"
+            },
+            "reactome": {
+              "bytes": 277593,
+              "fdr_q_lt_0_05": 64,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_log2/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "c73b880b17ffe581155681ed49edc1143a1036798221f97573133f65736ce21e"
+            },
+            "wikipathways": {
+              "bytes": 95660,
+              "fdr_q_lt_0_05": 13,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_log2/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "1f3a35d8ab53ead3de44011a1c339b50be523123b330180f9fd8262c456e8a0a"
+            }
+          }
+        },
+        "C9 vs Sporadic": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 284,
+          "fixed_eight_term_panel": {
+            "bytes": 1017,
+            "found_rows": 8,
+            "pass_count": 8,
+            "passing_term_ids": [
+              "go:0005643",
+              "go:0006913",
+              "reactome:R-HSA-180910",
+              "reactome:R-HSA-72172",
+              "reactome:R-HSA-72203",
+              "go:0000398",
+              "go:0005694",
+              "go:0000785"
+            ],
+            "path": "output/landscape_confirmatory_c9spor_measured_only_log2/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "a2fc6caf2e8ea59a6b2f8bc38b7bf50f0921f4dede332440013fae2650ac2ae5"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "C9ORF72",
+                "SPORADIC"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": 2,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107835,
+              "path": "output/landscape_proteome_measured_only_log2/distances.meta.json",
+              "sha256": "6bd3e4f8883718b1453c7ca74181aa6a90686658f7c7635b93ea03c7e6af5d74"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 10,
+              "valid_gradients": 3117
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_proteome_measured_only_log2/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 1907495,
+              "path": "output/landscape_proteome_measured_only_log2/result.json",
+              "sha256": "84c97b32e931e9c51d9c5f0cfb7bf5299e18da0bb31d1972b9e5ddfebfcf1995"
+            },
+            "run_manifest": {
+              "bytes": 241,
+              "path": "output/landscape_proteome_measured_only_log2/manifest.yaml",
+              "sha256": "5491cd4d2a8050a22e2504d8c65b5407886c70eb055ffdb4c1a245ae9d2fdd13"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 900636,
+              "fdr_q_lt_0_05": 161,
+              "path": "output/landscape_gsea_c9spor_measured_only_log2/robust_go.csv",
+              "rows": 7165,
+              "sha256": "85cad92f22641d137def5996cc6e5319003dab4f014c66077e40fdd9b3d1e925"
+            },
+            "phenotype": {
+              "bytes": 611085,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_c9spor_measured_only_log2/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "031cde69f7cd9f224dcbe1c6f7078844446ec71a4c7e0262a2a625544dca438a"
+            },
+            "reactome": {
+              "bytes": 277016,
+              "fdr_q_lt_0_05": 114,
+              "path": "output/landscape_gsea_c9spor_measured_only_log2/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "23ee6c44a4980207af3680972f35ec06974c2d2c2bfbfbc627de526fcb168b75"
+            },
+            "wikipathways": {
+              "bytes": 99296,
+              "fdr_q_lt_0_05": 9,
+              "path": "output/landscape_gsea_c9spor_measured_only_log2/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "9c4518e9cb96e69522c904fccc857135840443f8a9fa4216affef45acad07955"
+            }
+          }
+        },
+        "Sporadic vs Control": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 0,
+          "fixed_eight_term_panel": {
+            "bytes": 1091,
+            "found_rows": 8,
+            "pass_count": 0,
+            "passing_term_ids": [],
+            "path": "output/landscape_confirmatory_spctrl_measured_only_log2/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "482b715c13315877c0d90488a8bf6786a953063f295d0429e93f948cf3e74fb1"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "SPORADIC",
+                "CONTROL"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": 2,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107835,
+              "path": "output/landscape_sporadic_vs_control_measured_only_log2/distances.meta.json",
+              "sha256": "6bd3e4f8883718b1453c7ca74181aa6a90686658f7c7635b93ea03c7e6af5d74"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 10,
+              "valid_gradients": 3117
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_sporadic_vs_control_measured_only_log2/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 1909846,
+              "path": "output/landscape_sporadic_vs_control_measured_only_log2/result.json",
+              "sha256": "c9a88d456275b52157bcc2f80f119df5ff93dc0ddccd4f1468ff5954b74abb8e"
+            },
+            "run_manifest": {
+              "bytes": 241,
+              "path": "output/landscape_sporadic_vs_control_measured_only_log2/manifest.yaml",
+              "sha256": "71bcbcbdb806cf9323d447ef7bd3c450c8f0a5cee99d32d8c86b4fbfb376c9e2"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 839957,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_spctrl_measured_only_log2/robust_go.csv",
+              "rows": 7165,
+              "sha256": "5959697d646cfb7c7738556e34b66213443da41dc57cf6aa995bf6f55346343f"
+            },
+            "phenotype": {
+              "bytes": 587838,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_spctrl_measured_only_log2/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "6442d6267979f95b3fffa53f08714a7c7106fd38da567b7423fcca5f26325931"
+            },
+            "reactome": {
+              "bytes": 264063,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_spctrl_measured_only_log2/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "3737490147906834d9c5efe8a062f363a967d50c171193d42590b0f975e28900"
+            },
+            "wikipathways": {
+              "bytes": 93046,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_spctrl_measured_only_log2/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "3186d05fe2e41fbc28bb7b5ca08a63832381231658850c8eee7aa474dc397b22"
+            }
+          }
+        }
+      },
+      "fdr_q_lt_0_05_summed_database_term_row_pattern": [
+        284,
+        260,
+        0
+      ],
+      "fixed_eight_term_pass_pattern": [
+        8,
+        6,
+        0
+      ],
+      "max_hops": 2
+    },
+    "unbounded": {
+      "contrasts": {
+        "C9 vs Control": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 99,
+          "fixed_eight_term_panel": {
+            "bytes": 1039,
+            "found_rows": 8,
+            "pass_count": 0,
+            "passing_term_ids": [],
+            "path": "output/landscape_confirmatory_c9ctrl_measured_only_unbounded/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "b066cde1eee85cf1b7e2463a57761692bc495552f847e47f3cfb19abea7c006d"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "C9ORF72",
+                "CONTROL"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": null,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107838,
+              "path": "output/landscape_c9_vs_control_measured_only_unbounded/distances.meta.json",
+              "sha256": "ee6e63ee1f5df320736652a233424a9bb2674a66a4fd22c11d6518141c28f0a9"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 2,
+              "valid_gradients": 3125
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_c9_vs_control_measured_only_unbounded/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 2937805,
+              "path": "output/landscape_c9_vs_control_measured_only_unbounded/result.json",
+              "sha256": "6698773c0921cfeb5690008b3c050398118175dfa8c5e74fe5c57663cbb53a86"
+            },
+            "run_manifest": {
+              "bytes": 259,
+              "path": "output/landscape_c9_vs_control_measured_only_unbounded/manifest.yaml",
+              "sha256": "07770f2be339213e7b4f1476bb0eea06b65442faa941c261a90541002444f3b2"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 917794,
+              "fdr_q_lt_0_05": 38,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_unbounded/robust_go.csv",
+              "rows": 7165,
+              "sha256": "1e4ba65e4f9ab605315f4c5fef62888aed1327a34bf0183a9dbb54804934b470"
+            },
+            "phenotype": {
+              "bytes": 641960,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_unbounded/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "41bc0d13015856aa64f15e068944b994022f0e5fa40d51d47eb44baf12f49f68"
+            },
+            "reactome": {
+              "bytes": 276900,
+              "fdr_q_lt_0_05": 42,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_unbounded/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "acfc2915740ffc44a6d1c3a6518139735a6803fd0ff3fb52c8dd0fde0a0ca5ef"
+            },
+            "wikipathways": {
+              "bytes": 101792,
+              "fdr_q_lt_0_05": 19,
+              "path": "output/landscape_gsea_c9ctrl_measured_only_unbounded/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "9ba7239a584c95a99bc7465f4b559868b4e9a83390f95d3f32cb2d81b2a3f7bd"
+            }
+          }
+        },
+        "C9 vs Sporadic": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 538,
+          "fixed_eight_term_panel": {
+            "bytes": 1005,
+            "found_rows": 8,
+            "pass_count": 6,
+            "passing_term_ids": [
+              "go:0006913",
+              "reactome:R-HSA-72172",
+              "reactome:R-HSA-72203",
+              "go:0000398",
+              "go:0005694",
+              "go:0000785"
+            ],
+            "path": "output/landscape_confirmatory_c9spor_measured_only_unbounded/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "419f7a1fa2a944c6e06aac9a3bf80174f7b8f84efcfc98615286d4213c5de05a"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "C9ORF72",
+                "SPORADIC"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": null,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107838,
+              "path": "output/landscape_proteome_measured_only_unbounded/distances.meta.json",
+              "sha256": "ee6e63ee1f5df320736652a233424a9bb2674a66a4fd22c11d6518141c28f0a9"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 2,
+              "valid_gradients": 3125
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_proteome_measured_only_unbounded/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 2942608,
+              "path": "output/landscape_proteome_measured_only_unbounded/result.json",
+              "sha256": "83247f80d3b3be738403aefaf74395e078ba21931208c032b4e2248455d508eb"
+            },
+            "run_manifest": {
+              "bytes": 304,
+              "path": "output/landscape_proteome_measured_only_unbounded/manifest.yaml",
+              "sha256": "a6f509af093757eab64612a480454d64632c8cc499942388317ff62cf88d3caa"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 920420,
+              "fdr_q_lt_0_05": 365,
+              "path": "output/landscape_gsea_c9spor_measured_only_unbounded/robust_go.csv",
+              "rows": 7165,
+              "sha256": "8b85fea6a6a3d441a921ab93b0d2d5d9e6e746586e9461de0042eeed695d13a5"
+            },
+            "phenotype": {
+              "bytes": 653674,
+              "fdr_q_lt_0_05": 47,
+              "path": "output/landscape_gsea_c9spor_measured_only_unbounded/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "9b83f4a9c3d8b171a7ea3579ec483141d36d0ff4fb24407ee7a57013e38c1b4c"
+            },
+            "reactome": {
+              "bytes": 273102,
+              "fdr_q_lt_0_05": 106,
+              "path": "output/landscape_gsea_c9spor_measured_only_unbounded/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "403c6dc8dc65db1fb4316d6bbb64d7a5ebd5b57f05c38491d38fa380c2ef146c"
+            },
+            "wikipathways": {
+              "bytes": 100448,
+              "fdr_q_lt_0_05": 20,
+              "path": "output/landscape_gsea_c9spor_measured_only_unbounded/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "2e5742d201df4b2141ae294b31072328842bfc247f8bb384c9f899d992f8bfa3"
+            }
+          }
+        },
+        "Sporadic vs Control": {
+          "fdr_q_lt_0_05_summed_database_term_rows": 103,
+          "fixed_eight_term_panel": {
+            "bytes": 1042,
+            "found_rows": 8,
+            "pass_count": 0,
+            "passing_term_ids": [],
+            "path": "output/landscape_confirmatory_spctrl_measured_only_unbounded/confirmatory_8terms_robust.csv",
+            "rows": 8,
+            "sha256": "39cf2f22c5280d34adf823f93921ba5979bd33700f9aca6b60f4a0d1400c932d"
+          },
+          "landscape": {
+            "design": {
+              "contrast": [
+                "SPORADIC",
+                "CONTROL"
+              ],
+              "covariates": [
+                "Sex"
+              ],
+              "max_hops": null,
+              "n_permutations": 999,
+              "transform": "log2"
+            },
+            "distance_metadata": {
+              "bytes": 107838,
+              "path": "output/landscape_sporadic_vs_control_measured_only_unbounded/distances.meta.json",
+              "sha256": "ee6e63ee1f5df320736652a233424a9bb2674a66a4fd22c11d6518141c28f0a9"
+            },
+            "distance_path_traversal": "measured_only",
+            "feature_accounting": {
+              "attempted": 3264,
+              "disconnected": 137,
+              "undersized": 2,
+              "valid_gradients": 3125
+            },
+            "input_manifest": {
+              "bytes": 447,
+              "path": "output/landscape_sporadic_vs_control_measured_only_unbounded/inputs.json",
+              "sha256": "5592e2ad0a7f2ca1e6577f4a1d3c4116e3ff7dfd0a0bbb4b4e9b826649c0395f"
+            },
+            "recorded_source_inputs": {
+              "data": {
+                "bytes": 11597957,
+                "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+              },
+              "metadata": {
+                "bytes": 20660,
+                "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+              }
+            },
+            "result": {
+              "bytes": 2945213,
+              "path": "output/landscape_sporadic_vs_control_measured_only_unbounded/result.json",
+              "sha256": "e51ba09dbe042328457d2ec617da7a95378399c838d4840dbd984c8d59702e76"
+            },
+            "run_manifest": {
+              "bytes": 266,
+              "path": "output/landscape_sporadic_vs_control_measured_only_unbounded/manifest.yaml",
+              "sha256": "9e9c50bde7384931c8eef110626b277a09dcfeda6b71fc602af3129c0fd6e617"
+            }
+          },
+          "robust_gsea": {
+            "go": {
+              "bytes": 871607,
+              "fdr_q_lt_0_05": 58,
+              "path": "output/landscape_gsea_spctrl_measured_only_unbounded/robust_go.csv",
+              "rows": 7165,
+              "sha256": "8ab5ce6578a680b12ac0ae30f8bd6494c6ce6f78fabf6489c9a68da40acf8981"
+            },
+            "phenotype": {
+              "bytes": 654800,
+              "fdr_q_lt_0_05": 0,
+              "path": "output/landscape_gsea_spctrl_measured_only_unbounded/robust_phenotype.csv",
+              "rows": 5474,
+              "sha256": "aae170a9e48758021bb88af2445174594f32e2f6f652c91c109377525f65b458"
+            },
+            "reactome": {
+              "bytes": 264547,
+              "fdr_q_lt_0_05": 32,
+              "path": "output/landscape_gsea_spctrl_measured_only_unbounded/robust_reactome.csv",
+              "rows": 1952,
+              "sha256": "1b6fffa42f46ca9571e09f0b633c8af5551412e05a4697b600146d37c4224d58"
+            },
+            "wikipathways": {
+              "bytes": 96847,
+              "fdr_q_lt_0_05": 13,
+              "path": "output/landscape_gsea_spctrl_measured_only_unbounded/robust_wikipathways.csv",
+              "rows": 731,
+              "sha256": "3b02df141b2abb69b79a84339397954eb68fca6f3faf5060e4af37dd00a437f5"
+            }
+          }
+        }
+      },
+      "fdr_q_lt_0_05_summed_database_term_row_pattern": [
+        538,
+        99,
+        103
+      ],
+      "fixed_eight_term_pass_pattern": [
+        6,
+        0,
+        0
+      ],
+      "max_hops": null
+    }
+  },
+  "reproducibility_boundary": {
+    "exact_upstream_regeneration_guaranteed": false,
+    "limitation": "The original live CoGEx corpus/version, producer package revisions, and effective GSEA seed/default were not embedded in the July outputs. Reference-script hashes also were not embedded in those outputs. Exact regeneration from upstream network resources is therefore not guaranteed, even when retained artifact integrity verifies.",
+    "offline_guarantee": "Given the retained local files, this snapshot makes exact artifact-byte integrity, row counts, FDR counts, and fixed-term decisions reproducibly verifiable without network access."
+  },
+  "schema_version": 1,
+  "snapshot_id": "c9-log2-measured-only-robust-gsea-2026-07",
+  "source_inputs": {
+    "proteomics_matrix": {
+      "bytes": 11597957,
+      "path": "output/proteomics/all_als.data.csv",
+      "sha256": "382fcb39cc2fddbe72edf47834899aa46fa12ea464bcbf0305dcafced6f9ccef"
+    },
+    "sample_metadata": {
+      "bytes": 20660,
+      "path": "output/proteomics/all_als.metadata.csv",
+      "sha256": "b0dee3c68168bb56d4cc3b533c82c86de34bb2a50195e8d83d6799ab1d523211"
+    }
+  }
+}
