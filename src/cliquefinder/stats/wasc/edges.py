@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from .types import Network, Theme, WascEdge
 
@@ -56,8 +56,7 @@ def compute_measured_cluster_members(
     cluster_terms
         Iterable of ``(theme, term_id)`` pairs (e.g. ``DEFAULT_CLUSTER_TERMS``).
     measured_uniprots
-        The proteomics-measured UniProt set ``M`` (3,257 for the Wave-22
-        protein-level matrix in this project).
+        The proteomics-measured UniProt set ``M`` supplied by the caller.
     fetch_term_members_func
         ``list[term_id] -> {term_id: {hgnc_id}}``. Typically
         ``scripts/viz/common.py::fetch_term_members_via_indra``.
@@ -120,6 +119,7 @@ def _resolve_default_dependencies() -> tuple[Callable, Callable, Callable, Calla
         hgnc_ids_to_uniprots,
         uniprot_to_hgnc_symbol,
     )
+
     from cliquefinder.stats.network_proximity import (
         extract_subgraph_induced_by_features,
     )

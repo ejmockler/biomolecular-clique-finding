@@ -1,5 +1,13 @@
 # WASC: Within-cluster Anchor-Slope Concordance — Path A Publication Scaffold
 
+> **SUPERSEDED SCAFFOLD (audited July 2026).** The WASC halt establishes only
+> instability of this raw-p selector/pipeline under SPOR 294→25 (mean Jaccard
+> 0.285 versus its frozen 0.70 gate). B=9999 was blocked and no edge verdict
+> exists; the result is not a general n=25 power theorem. The current pathway
+> state is bounded log2 measured-only **8/6/0**, while the STRING and matched-
+> RNA arguments repeated below are withdrawn. The body remains historical and
+> must not be used as current publication text.
+
 **Version:** v1 scaffold (NOT FOR SUBMISSION)
 **Pinned to:** git tag `wasc-prereg-v1.0.5`, commit `c9572c9` (2026-06-04)
 **Audience:** PI internal review only
@@ -326,4 +334,3 @@ The following self-check was performed before returning this scaffold to the PI.
 - **Scope commitment.** §1, §3.6, and §6.2 commit the document to Path A. Paths B and C appear only as labelled alternatives under §6.2 and do not change the recommended disposition.
 
 End of v1 scaffold.
-

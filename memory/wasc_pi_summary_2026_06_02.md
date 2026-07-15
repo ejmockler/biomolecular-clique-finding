@@ -1,5 +1,14 @@
 # WASC pipeline — status memo for PI (2026-06-02)
 
+> **SUPERSEDED INTERPRETATION (audited July 2026).** The retained calibration
+> result is narrower than the memo below: this raw-p selector/WASC pipeline was
+> unstable when SPOR was reduced from 294 to 25 (mean selected-set Jaccard
+> 0.285 versus the frozen 0.70 gate). The gate blocked B=9999 and licenses no
+> edge verdict; it does not establish universal structural underpowering at
+> n=25. The current pathway state is bounded log2 measured-only **8/6/0**;
+> legacy STRING and matched-RNA claims are withdrawn. Content below preserves
+> the June decision trail and is not current publication authority.
+
 ## TL;DR
 
 The WASC test (Within-cluster Anchor-Slope Concordance) ran through five pre-registered amendments today, surfaced two pre-existing arithmetic bugs that survived four prior audit gates, and produced **one substantive scientific result and one structural ceiling**:

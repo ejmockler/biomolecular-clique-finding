@@ -1,13 +1,19 @@
 """WASC — Within-cluster Anchor-Slope Concordance.
 
 Per-edge inverse-variance-weighted Cochran-Q invariance test on partial
-regression slopes within the 8 pre-registered C9-ALS cluster terms across
-{C9, SPOR, CTRL} donor groups.
+regression slopes within eight discovery-derived C9-ALS cluster terms that
+were fixed before WASC, across {C9, SPOR, CTRL} donor groups.
 
 See memory/wasc_spec.md and memory/wasc_build_plan.md.
 
-M1 scope (current): edge enumeration only. fit / null / FDR / STRING
-control / three-contrast decomposition come in M2-M5.
+Implemented scope: M1 edge enumeration; M2 preprocessing, FWL fits,
+Cochran-Q concordance, and matched substitute-target nulls that exclude each
+work unit's recorded true-target list; M2.5 label-shuffle and downsampling
+calibration; and M3 empirical Brown combination with BY-FDR.
+WASC's frozen calibration/stability gate failed when the SPOR group was reduced
+from 294 to 25 (mean selected-set Jaccard 0.285 versus the required 0.70), so the
+B=9999 production run and every edge-level verdict remain blocked. That result
+is specific to this selector/pipeline and is not a general theorem about n=25.
 """
 from __future__ import annotations
 
@@ -20,6 +26,30 @@ from .bins import (
     load_measured_degrees,
     sample_matched_non_neighbors,
 )
+from .combination import (
+    BrownResult,
+    BrownTable,
+    by_fdr,
+    compute_brown_per_anchor,
+    empirical_brown_per_anchor,
+)
+from .concordance import (
+    CochranQResult,
+    ConcordanceTable,
+    cochran_q,
+    compute_concordance_per_edge,
+)
+from .edges import (
+    DEFAULT_CLUSTER_TERMS,
+    compute_measured_cluster_members,
+    enumerate_wasc_indra_edges,
+)
+from .fit import (
+    EdgeBetaTable,
+    FwlFit,
+    fit_edges_per_group,
+    fit_fwl_per_pair,
+)
 from .null import (
     AnchorNullResult,
     AnchorWork,
@@ -30,36 +60,6 @@ from .null import (
     load_completed_anchors,
     run_null_serial,
 )
-from .combination import (
-    BrownResult,
-    BrownTable,
-    by_fdr,
-    compute_brown_per_anchor,
-    empirical_brown_per_anchor,
-)
-from .sanity import (
-    LabelShuffleResult,
-    downsample_group,
-    run_label_shuffle_calibration,
-    shuffle_group_labels,
-)
-from .edges import (
-    DEFAULT_CLUSTER_TERMS,
-    compute_measured_cluster_members,
-    enumerate_wasc_indra_edges,
-)
-from .concordance import (
-    CochranQResult,
-    ConcordanceTable,
-    cochran_q,
-    compute_concordance_per_edge,
-)
-from .fit import (
-    EdgeBetaTable,
-    FwlFit,
-    fit_edges_per_group,
-    fit_fwl_per_pair,
-)
 from .preprocess import (
     GroupDesign,
     WascDataBundle,
@@ -67,6 +67,12 @@ from .preprocess import (
     build_wasc_data_bundle,
     load_enriched_metadata,
     load_proteomics,
+)
+from .sanity import (
+    LabelShuffleResult,
+    downsample_group,
+    run_label_shuffle_calibration,
+    shuffle_group_labels,
 )
 from .types import Network, Theme, WascEdge
 
