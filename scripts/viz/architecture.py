@@ -6,8 +6,22 @@ naming, the geometry carries the meaning.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import plotly.graph_objects as go
+
+ROOT = Path(__file__).resolve().parents[2]
+with (ROOT / "data/publication/c9_primary_analysis.json").open(encoding="utf-8") as _fh:
+    _PRIMARY_ANALYSIS = json.load(_fh)
+N_FEATURES = int(_PRIMARY_ANALYSIS["feature_accounting"]["attempted"])
+N_VALID_GRADIENTS = int(
+    _PRIMARY_ANALYSIS["feature_accounting"]["valid_two_shell_gradients"]
+)
+N_PRIMARY_ROBUST_ANCHORS = int(
+    _PRIMARY_ANALYSIS["feature_accounting"]["primary_confirmatory_anchors"]
+)
 
 # Engineering palette — disciplined, no decorative chrome.
 INK = "#1a1a1a"            # primary text / line
@@ -163,7 +177,7 @@ def build_pipeline_fig() -> go.Figure:
     ))
     station_label(
         cx, g_y1 + 0.020, g_y0,
-        "MEASURE", "3,264 × 436",
+        "MEASURE", f"{N_FEATURES:,} × 436",
         "abundance matrix · C9·25  spor·294  hc·91",
     )
 
@@ -206,7 +220,7 @@ def build_pipeline_fig() -> go.Figure:
     ))
     station_label(
         cx, g_y1 + 0.020, g_y0,
-        "TEST", "3,264 × 3",
+        "TEST", f"{N_FEATURES:,} × 3",
         "effect size · per protein · per comparison",
     )
 
@@ -339,8 +353,8 @@ def build_pipeline_fig() -> go.Figure:
     g_x_right = max(cx + r2x, p2[0])
     station_label(
         cx, g_y_top, g_y_bot,
-        "CONCENTRATE", "3,257 slopes × 3",
-        "per anchor · per comparison",
+        "CONCENTRATE", f"{N_PRIMARY_ROBUST_ANCHORS:,} robust anchors × 3",
+        f"from {N_VALID_GRADIENTS:,} valid gradients",
     )
 
     # ------------------------------------------------------------------
@@ -349,7 +363,7 @@ def build_pipeline_fig() -> go.Figure:
     add_arrow(g_x_right + 0.012, slot_cxs[4] - 0.080, cy, "rank pathways")
 
     # ------------------------------------------------------------------
-    # Glyph 5 — RANK: pathway bars, top three above the family-wise line
+    # Glyph 5 — RANK: pathway bars, top three above the eightfold line
     # ------------------------------------------------------------------
     cx = slot_cxs[4]
     n_bars = 10

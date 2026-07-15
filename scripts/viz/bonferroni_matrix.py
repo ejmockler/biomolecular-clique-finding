@@ -1,8 +1,8 @@
-"""Bonferroni-8 confirmatory matrix — the headline image.
+"""Bonferroni-8 same-cohort consistency matrix — the headline image.
 
-8 pre-registered cluster terms × 3 comparisons.  Colored by raw p
+8 discovery-derived frozen cluster terms × 3 comparisons. Colored by raw p
 on a log scale, annotated with NES, with a pass/fail border marking
-the family-wise threshold (raw_p < 0.00625).
+the eightfold reporting threshold (raw_p < 0.00625).
 
 The visual story: the C9 columns are saturated with passing cells in
 warm colors; the sporadic-vs-healthy column is uniformly cool with
@@ -21,62 +21,25 @@ import plotly.graph_objects as go
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+if __package__:
+    from . import common as _common  # type: ignore[attr-defined]  # noqa: E402
+else:
+    import common as _common  # type: ignore[no-redef]  # noqa: E402
 
-# Pre-registered cluster terms, ordered by biological cluster.  Numbers
-# below transcribed from output/wave_24l_confirmatory.md (the source of
-# truth for the bounded measured-only-paths wave_24l confirmatory).
-TERMS = [
-    # (cluster, short_label, full_term)
-    ("Splicing",  "mRNA Splicing",                   "mRNA Splicing"),
-    ("Splicing",  "Processing Capped Pre-mRNA",      "Processing of Capped Intron-Containing Pre-mRNA"),
-    ("Splicing",  "mRNA splicing, via spliceosome",  "mRNA splicing, via spliceosome"),
-    ("Chromatin", "chromosome",                      "chromosome"),
-    ("Chromatin", "chromatin",                       "chromatin"),
-    ("Transport", "nucleocytoplasmic transport",     "nucleocytoplasmic transport"),
-    ("Transport", "nuclear pore",                    "nuclear pore"),
-    ("Transport", "Vpr-mediated nuclear import",     "Vpr-mediated nuclear import of PICs"),
-]
+ALPHA_FAMILY = _common.ALPHA_FAMILY
+ALPHA_PER_TEST = _common.ALPHA_PER_TEST
+BONFERRONI_8 = _common.BONFERRONI_8
+CONTRAST_ORDER = _common.CONTRAST_ORDER
+N_TERMS = _common.N_TERMS
+CANONICAL_TERMS = _common.TERMS
 
-# (NES, raw_p) for each term × contrast, from wave_24l_confirmatory.md
-DATA = {
-    # "C9 vs Sporadic"
-    "C9 vs Sporadic": {
-        "mRNA Splicing":                       (2.41, 0.0010),
-        "Processing Capped Pre-mRNA":          (2.51, 0.0010),
-        "mRNA splicing, via spliceosome":      (2.38, 0.0010),
-        "chromosome":                          (2.64, 0.0010),
-        "chromatin":                           (2.48, 0.0010),
-        "nucleocytoplasmic transport":         (2.10, 0.0010),
-        "nuclear pore":                        (1.82, 0.0055),
-        "Vpr-mediated nuclear import":         (1.63, 0.0116),
-    },
-    "C9 vs Healthy": {
-        "mRNA Splicing":                       (2.08, 0.0010),
-        "Processing Capped Pre-mRNA":          (2.17, 0.0010),
-        "mRNA splicing, via spliceosome":      (2.04, 0.0010),
-        "chromosome":                          (3.14, 0.0010),
-        "chromatin":                           (2.95, 0.0010),
-        "nucleocytoplasmic transport":         (1.83, 0.0010),
-        "nuclear pore":                        (1.78, 0.0210),
-        "Vpr-mediated nuclear import":         (1.34, 0.1388),
-    },
-    "Sporadic vs Healthy": {
-        "mRNA Splicing":                       (1.29, 0.1136),
-        "Processing Capped Pre-mRNA":          (1.35, 0.0652),
-        "mRNA splicing, via spliceosome":      (1.03, 0.4266),
-        "chromosome":                          (0.75, 0.9369),
-        "chromatin":                           (0.75, 0.8909),
-        "nucleocytoplasmic transport":         (1.09, 0.3403),
-        "nuclear pore":                        (1.49, 0.0446),
-        "Vpr-mediated nuclear import":         (1.44, 0.0543),
-    },
-}
 
-ALPHA_FAMILY = 0.05
-N_TERMS = 8
-ALPHA_PER_TEST = ALPHA_FAMILY / N_TERMS  # 0.00625
+# Discovery-derived frozen terms, ordered by biological cluster. Numeric results
+# come through common.py from the tracked production publication manifest.
+TERMS = [(cluster, short, full) for cluster, short, full, _ in CANONICAL_TERMS]
 
-CONTRASTS = ["C9 vs Sporadic", "C9 vs Healthy", "Sporadic vs Healthy"]
+DATA = BONFERRONI_8
+CONTRASTS = CONTRAST_ORDER
 
 # Cluster band colors (for the row-label background)
 CLUSTER_BAND = {
@@ -174,7 +137,7 @@ def main() -> None:
                 f"<b>{t}</b><br>{c}<br>"
                 f"NES: {nes[i, j]:.3f}<br>"
                 f"raw p: {raw_p[i, j]:.4f}<br>"
-                f"family-wise threshold: {ALPHA_PER_TEST:.5f}<br>"
+                f"eightfold reporting threshold: {ALPHA_PER_TEST:.5f}<br>"
                 f"<b>{pass_str}</b>"
             )
 
@@ -214,11 +177,12 @@ def main() -> None:
     fig.update_layout(
         title=dict(
             text=(
-                "<b>The cluster claim in one image</b><br>"
+                "<b>Fixed-panel same-cohort consistency</b><br>"
                 "<span style='font-size:13px;color:#666'>"
-                "8 pre-registered pathway terms × 3 group comparisons.  "
+                "8 discovery-derived frozen terms × 3 group comparisons. "
                 "Cells in cells = NES; color = -log₁₀(raw p); thick black "
-                "border = passes the family-wise threshold (raw p < 0.00625)."
+                "border = passes the eightfold reporting threshold (raw p < 0.00625). "
+                "No post-selection FWER guarantee; internal consistency, not independent confirmation."
                 "</span>"
             ),
             x=0.5, xanchor="center",

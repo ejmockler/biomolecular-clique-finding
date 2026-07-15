@@ -1,6 +1,6 @@
 """Shared constants + helpers for the C9-ALS cluster-explorer visualizations.
 
-- TERMS: 8 pre-registered cluster terms (cluster, short_label, full_term, term_id)
+- TERMS: 8 discovery-derived frozen terms (cluster, short_label, full_term, term_id)
 - CLUSTER_COLOR: hex color per biological cluster
 - resolve_groups: AnswerALS group definitions (C9 / SPORADIC / CONTROL)
 - fit_per_protein_t: fast vectorized OLS per-protein, returns t-statistic
@@ -8,14 +8,18 @@
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
+PRIMARY_ANALYSIS_PATH = ROOT / "data/publication/c9_primary_analysis.json"
+with PRIMARY_ANALYSIS_PATH.open(encoding="utf-8") as _fh:
+    PRIMARY_ANALYSIS = json.load(_fh)
 
-# Pre-registered cluster terms, ordered for narrative flow within each cluster.
+# Discovery-derived terms frozen for the same-cohort consistency rerun.
 # (cluster, short_label, full_term_name, cogex_term_id)
 TERMS = [
     ("Splicing",  "mRNA Splicing",                   "mRNA Splicing",                                   "reactome:R-HSA-72172"),
@@ -41,47 +45,31 @@ CLUSTER_TINT = {
     "Transport": "rgba(230, 85, 13, 0.18)",
 }
 
-# Wave_24l Bonferroni-8 confirmatory result, transcribed from
-# output/wave_24l_confirmatory.md.  This is the source of truth for
-# the headline matrix.  Keys: short_label per TERMS.  Values: (NES, raw_p).
+# Production log2(x+1), bounded measured-only h<=2 fixed-panel result.
+# The tracked publication manifest is the single source of numeric truth;
+# "Healthy" is retained only as the established display label in these figures.
+_CONFIRMATORY = PRIMARY_ANALYSIS["confirmatory"]
+_DISPLAY_CONTRAST = {
+    "C9 vs Sporadic": "C9 vs Sporadic",
+    "C9 vs Control": "C9 vs Healthy",
+    "Sporadic vs Control": "Sporadic vs Healthy",
+}
 BONFERRONI_8 = {
-    "C9 vs Sporadic": {
-        "mRNA Splicing":                  (2.41, 0.0010),
-        "Processing Capped Pre-mRNA":     (2.51, 0.0010),
-        "mRNA splicing, via spliceosome": (2.38, 0.0010),
-        "chromosome":                     (2.64, 0.0010),
-        "chromatin":                      (2.48, 0.0010),
-        "nucleocytoplasmic transport":    (2.10, 0.0010),
-        "nuclear pore":                   (1.82, 0.0055),
-        "Vpr-mediated nuclear import":    (1.63, 0.0116),
-    },
-    "C9 vs Healthy": {
-        "mRNA Splicing":                  (2.08, 0.0010),
-        "Processing Capped Pre-mRNA":     (2.17, 0.0010),
-        "mRNA splicing, via spliceosome": (2.04, 0.0010),
-        "chromosome":                     (3.14, 0.0010),
-        "chromatin":                      (2.95, 0.0010),
-        "nucleocytoplasmic transport":    (1.83, 0.0010),
-        "nuclear pore":                   (1.78, 0.0210),
-        "Vpr-mediated nuclear import":    (1.34, 0.1388),
-    },
-    "Sporadic vs Healthy": {
-        "mRNA Splicing":                  (1.29, 0.1136),
-        "Processing Capped Pre-mRNA":     (1.35, 0.0652),
-        "mRNA splicing, via spliceosome": (1.03, 0.4266),
-        "chromosome":                     (0.75, 0.9369),
-        "chromatin":                      (0.75, 0.8909),
-        "nucleocytoplasmic transport":    (1.09, 0.3403),
-        "nuclear pore":                   (1.49, 0.0446),
-        "Vpr-mediated nuclear import":    (1.44, 0.0543),
-    },
+    _DISPLAY_CONTRAST[contrast]: {
+        term: (float(values["NES"]), float(values["raw_p"]))
+        for term, values in result["terms"].items()
+    }
+    for contrast, result in _CONFIRMATORY["bounded"].items()
 }
 
-ALPHA_FAMILY = 0.05
-N_TERMS = 8
-ALPHA_PER_TEST = ALPHA_FAMILY / N_TERMS  # 0.00625
+ALPHA_FAMILY = float(_CONFIRMATORY["familywise_alpha"])
+N_TERMS = len(_CONFIRMATORY["term_order"])
+ALPHA_PER_TEST = float(_CONFIRMATORY["per_term_alpha"])
 
-CONTRAST_ORDER = ["C9 vs Sporadic", "C9 vs Healthy", "Sporadic vs Healthy"]
+CONTRAST_ORDER = [
+    _DISPLAY_CONTRAST[contrast]
+    for contrast in _CONFIRMATORY["contrast_order"]
+]
 # Internal short codes for filenames / column lookup
 CONTRAST_CODE = {
     "C9 vs Sporadic":      "c9spor",
@@ -131,7 +119,7 @@ def fit_per_protein_t(
     for the Group coefficient, indexed by protein.
 
     Vectorized per-protein with per-protein NaN masking.  Sub-second
-    for the AnswerALS scale (3,264 proteins × ~300 samples per pair).
+    for the AnswerALS scale (3,264 feature rows × ~300 samples per pair).
     """
     case, ctrl = contrast
     case_idx = groups[case].intersection(metadata.index)
@@ -271,18 +259,10 @@ def uniprot_to_hgnc_symbol(uniprots: list[str]) -> dict[str, str]:
 
     Uses INDRA's uniprot_client.get_gene_name, which returns the
     HGNC-approved symbol (e.g. SRSF1, NUP62, MBD3) rather than the
-    alphabetically-first synonym or a BAC-clone alias.  Falls back
-    to the project-local synonym map if uniprot_client doesn't
-    resolve, and finally to the UniProt ID itself."""
+    alphabetically-first synonym or a BAC-clone alias. Unresolved accessions
+    retain their UniProt ID; publication-figure generation never falls back to
+    a live identifier service."""
     from indra.databases import uniprot_client
-
-    # Fallback mapping (project-local synonyms) — only used if INDRA misses
-    from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
-    sym_to_feat = map_feature_ids_to_symbols(uniprots, verbose=False)
-    fallback: dict[str, str] = {}
-    for sym, fid in sym_to_feat.items():
-        if fid not in fallback or sym < fallback[fid]:
-            fallback[fid] = sym
 
     out: dict[str, str] = {}
     for u in uniprots:
@@ -293,5 +273,5 @@ def uniprot_to_hgnc_symbol(uniprots: list[str]) -> dict[str, str]:
                 continue
         except Exception:
             pass
-        out[u] = fallback.get(u, u)
+        out[u] = u
     return out

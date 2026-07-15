@@ -14,8 +14,8 @@ Conventions:
 from __future__ import annotations
 
 import math
-from pathlib import Path
 import sys
+from pathlib import Path
 
 # ---------------------------------------------------------------------
 # Palette — matches output/c9_triangulation_report.html CSS variables
@@ -720,7 +720,7 @@ def build_fig2_cohort() -> str:
     parts.append(
         f'<text x="{BLOCK_X0}" y="{H - 14}" font-family="{MONO}" '
         f'font-size="11" fill="{MUTED}" letter-spacing="0.4">'
-        f'410 donors  ·  436 PBMC samples  ·  3,264 proteins'
+        f'410 donors  ·  436 PBMC samples  ·  3,264 feature rows'
         f'</text>'
     )
 
@@ -754,14 +754,14 @@ def _glyph_rank(parts: list[str], cx: float, cy: float) -> tuple[float, float]:
 
 
 # =====================================================================
-# Figure 4 — Bonferroni-8 confirmatory matrix
+# Figure 4 — Bonferroni-8 same-cohort consistency matrix
 #   (HTML + CSS + JS; interactive tooltips)
 # =====================================================================
 
 def build_fig4_matrix() -> dict[str, str]:
-    """The headline figure: 8 pre-registered cluster pathway terms × 3
+    """The headline figure: 8 discovery-derived frozen pathway terms × 3
     group comparisons, with per-cell NES + colored by -log10(raw p) +
-    thick black border on family-wise passes.
+    thick black border on eightfold-threshold passes.
 
     Returns dict with three pieces that get embedded into the report:
       - 'html': matrix + legend markup (replaces #fig-matrix placeholder)
@@ -771,60 +771,16 @@ def build_fig4_matrix() -> dict[str, str]:
     Built as inline HTML/CSS/JS rather than Plotly/SVG so it inherits
     the report's design tokens directly and stays single-file standalone."""
 
-    # ---- Data: term metadata + per-contrast results --------------------
-    TERMS = [
-        ("Splicing",  "mRNA Splicing",
-         "mRNA Splicing"),
-        ("Splicing",  "Processing Capped Pre-mRNA",
-         "Processing of Capped Intron-Containing Pre-mRNA"),
-        ("Splicing",  "mRNA splicing, via spliceosome",
-         "mRNA splicing, via spliceosome"),
-        ("Chromatin", "chromosome",
-         "chromosome"),
-        ("Chromatin", "chromatin",
-         "chromatin"),
-        ("Transport", "nucleocytoplasmic transport",
-         "nucleocytoplasmic transport"),
-        ("Transport", "nuclear pore",
-         "nuclear pore"),
-        ("Transport", "Vpr-mediated nuclear import",
-         "Vpr-mediated nuclear import of PICs"),
-    ]
-    # Transcribed from output/wave_24l_confirmatory.md
-    DATA = {
-        "C9 vs Sporadic": {
-            "mRNA Splicing":                  (2.41, 0.0010),
-            "Processing Capped Pre-mRNA":     (2.51, 0.0010),
-            "mRNA splicing, via spliceosome": (2.38, 0.0010),
-            "chromosome":                     (2.64, 0.0010),
-            "chromatin":                      (2.48, 0.0010),
-            "nucleocytoplasmic transport":    (2.10, 0.0010),
-            "nuclear pore":                   (1.82, 0.0055),
-            "Vpr-mediated nuclear import":    (1.63, 0.0116),
-        },
-        "C9 vs Healthy": {
-            "mRNA Splicing":                  (2.08, 0.0010),
-            "Processing Capped Pre-mRNA":     (2.17, 0.0010),
-            "mRNA splicing, via spliceosome": (2.04, 0.0010),
-            "chromosome":                     (3.14, 0.0010),
-            "chromatin":                      (2.95, 0.0010),
-            "nucleocytoplasmic transport":    (1.83, 0.0010),
-            "nuclear pore":                   (1.78, 0.0210),
-            "Vpr-mediated nuclear import":    (1.34, 0.1388),
-        },
-        "Sporadic vs Healthy": {
-            "mRNA Splicing":                  (1.29, 0.1136),
-            "Processing Capped Pre-mRNA":     (1.35, 0.0652),
-            "mRNA splicing, via spliceosome": (1.03, 0.4266),
-            "chromosome":                     (0.75, 0.9369),
-            "chromatin":                      (0.75, 0.8909),
-            "nucleocytoplasmic transport":    (1.09, 0.3403),
-            "nuclear pore":                   (1.49, 0.0446),
-            "Vpr-mediated nuclear import":    (1.44, 0.0543),
-        },
-    }
-    ALPHA = 0.05 / 8  # 0.00625
-    CONTRASTS = ["C9 vs Sporadic", "C9 vs Healthy", "Sporadic vs Healthy"]
+    # ---- Data: tracked production publication state --------------------
+    here = Path(__file__).resolve().parent
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+    import common as _common  # local import keeps this module standalone
+
+    TERMS = [(cluster, short, full) for cluster, short, full, _ in _common.TERMS]
+    DATA = _common.BONFERRONI_8
+    ALPHA = _common.ALPHA_PER_TEST
+    CONTRASTS = _common.CONTRAST_ORDER
     CLUSTER_TAG = {"Splicing": "SPLI", "Chromatin": "CHR", "Transport": "TRA"}
 
     # ---- Color scale (matches bonferroni_matrix.py palette) ------------
@@ -862,7 +818,10 @@ def build_fig4_matrix() -> dict[str, str]:
     }
 
     # ---- Assemble HTML --------------------------------------------------
-    parts: list[str] = ['<div class="fig4-matrix">']
+    parts: list[str] = [
+        '<div class="fig4-matrix">',
+        '<div class="m-status">DISCOVERY-DERIVED FIXED PANEL · same-cohort consistency, not independent confirmation</div>',
+    ]
     parts.append('<div class="m-corner"></div>')
     for c in CONTRASTS:
         parts.append(
@@ -921,7 +880,7 @@ def build_fig4_matrix() -> dict[str, str]:
   </div>
   <div class="m-legend-note">
     <span class="m-legend-swatch"></span>
-    <span>thick black border = passes family-wise threshold (raw p &lt; {ALPHA:.5f} <em>and</em> NES &gt; 0)</span>
+    <span>thick black border = passes eightfold reporting threshold (raw p &lt; {ALPHA:.5f} <em>and</em> NES &gt; 0; no post-selection FWER guarantee)</span>
   </div>
 </div>'''
 
@@ -935,6 +894,17 @@ def build_fig4_matrix() -> dict[str, str]:
   gap: 5px;
   font-family: var(--font-sans);
   min-width: 580px;
+}
+.m-status {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-align: center;
 }
 .m-corner { /* spacer, no content */ }
 .m-colhead {
@@ -1206,15 +1176,20 @@ def _compute_fig5_data(top_n: int = 10) -> list[dict]:
         ...
     ]"""
     import sys
+
     import pandas as pd
 
     here = Path(__file__).resolve().parent
     sys.path.insert(0, str(here))
     # local imports — common.py lives next to this file
     from common import (
-        TERMS, CONTRAST_ORDER, CONTRAST_GROUPS,
-        resolve_groups, fit_per_protein_t,
-        fetch_term_members_via_indra, hgnc_ids_to_uniprots,
+        CONTRAST_GROUPS,
+        CONTRAST_ORDER,
+        TERMS,
+        fetch_term_members_via_indra,
+        fit_per_protein_t,
+        hgnc_ids_to_uniprots,
+        resolve_groups,
         uniprot_to_hgnc_symbol,
     )
 
@@ -1297,7 +1272,10 @@ def build_fig5_anatomy(data: list[dict]) -> dict[str, str]:
     if axis_max < 2.5:
         axis_max = 2.5
 
-    parts: list[str] = ['<div class="fig5-anatomy">']
+    parts: list[str] = [
+        '<div class="fig5-anatomy">',
+        '<div class="a-withdrawn">WITHDRAWN LEGACY F5 VIEW · not part of the current evidence stack</div>',
+    ]
 
     for cluster_data in data:
         cluster = cluster_data["cluster"]
@@ -1317,14 +1295,14 @@ def build_fig5_anatomy(data: list[dict]) -> dict[str, str]:
 
         # Inline legend — 3 swatches sized like the bars
         parts.append(
-            f'<div class="a-legend">'
-            f'<span class="a-swatch primary"></span>'
-            f'<span class="a-leg-label">C9 vs Sporadic</span>'
-            f'<span class="a-swatch secondary"></span>'
-            f'<span class="a-leg-label">C9 vs Healthy</span>'
-            f'<span class="a-swatch null"></span>'
-            f'<span class="a-leg-label">Sporadic vs Healthy</span>'
-            f'</div>'
+            '<div class="a-legend">'
+            '<span class="a-swatch primary"></span>'
+            '<span class="a-leg-label">C9 vs Sporadic</span>'
+            '<span class="a-swatch secondary"></span>'
+            '<span class="a-leg-label">C9 vs Healthy</span>'
+            '<span class="a-swatch null"></span>'
+            '<span class="a-leg-label">Sporadic vs Healthy</span>'
+            '</div>'
         )
 
         # Bar rows
@@ -1384,6 +1362,16 @@ def build_fig5_anatomy(data: list[dict]) -> dict[str, str]:
     css = '''
 .fig5-anatomy {
   font-family: var(--font-sans);
+}
+.a-withdrawn {
+  color: #9a6700;
+  border: 1px solid #d7b35c;
+  background: #fff8e1;
+  padding: 8px 10px;
+  margin-bottom: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
 }
 .a-cluster {
   margin-bottom: 24px;
@@ -1574,340 +1562,37 @@ def build_fig5_anatomy(data: list[dict]) -> dict[str, str]:
 
 
 # =====================================================================
-# Figure 6 — INDRA vs STRING (diverging mini-matrices, sign flip)
+# Figure 6 — withdrawn STRING-comparator receipt
 # =====================================================================
 
 def build_fig6_string() -> dict[str, str]:
-    """Two side-by-side mini-matrices showing the sign flip at every
-    cluster term when the regulatory graph is replaced with physical PPI.
+    """Render the withdrawn STRING comparison as a provenance warning only.
 
-    Same 8 cluster terms × 2 C9 contrasts on both sides; left panel
-    (INDRA / regulatory) saturated blue, right panel (STRING /
-    physical) saturated red. Mirror images. Diverging colormap.
-
-    Data: T43 wave_24k alternative-network test (discovery-era values;
-    internally consistent for the INDRA-vs-STRING comparison). Source:
-    output/string_alternative_network.md."""
-
-    # Row order matches Fig 4 for visual consistency across the report
-    TERMS = [
-        ("Splicing",  "SPLI", "mRNA Splicing"),
-        ("Splicing",  "SPLI", "Processing Capped Pre-mRNA"),
-        ("Splicing",  "SPLI", "mRNA splicing, via spliceosome"),
-        ("Chromatin", "CHR",  "chromosome"),
-        ("Chromatin", "CHR",  "chromatin"),
-        ("Transport", "TRA",  "nucleocytoplasmic transport"),
-        ("Transport", "TRA",  "nuclear pore"),
-        ("Transport", "TRA",  "Vpr-mediated nuclear import"),
-    ]
-    # (indra_c9spor, indra_c9hlthy, string_c9spor, string_c9hlthy,
-    #  string_q_c9spor, string_q_c9hlthy)
-    DATA = {
-        "mRNA Splicing":                  (+2.30, +1.94, -2.42, -2.18, "< 0.001", "< 0.001"),
-        "Processing Capped Pre-mRNA":     (+2.37, +2.14, -2.79, -2.57, "< 0.001", "< 0.001"),
-        "mRNA splicing, via spliceosome": (+2.21, +2.06, -1.85, -1.80, "= 0.001", "= 0.001"),
-        "chromosome":                     (+2.50, +3.07, -2.02, -2.50, "< 0.001", "< 0.001"),
-        "chromatin":                      (+2.35, +2.70, -1.41, -2.20, "= 0.032", "< 0.001"),
-        "nucleocytoplasmic transport":    (+2.15, +2.29, -2.05, -2.72, "< 0.001", "< 0.001"),
-        "nuclear pore":                   (+2.42, +2.55, -2.57, -2.95, "< 0.001", "< 0.001"),
-        "Vpr-mediated nuclear import":    (+2.29, +2.56, -2.69, -2.98, "< 0.001", "< 0.001"),
+    The legacy numeric matrix is intentionally not rendered: its slope
+    orientation is opposite production and it has no durable derivation.
+    """
+    return {
+        "html": """
+<div class="fig6-withdrawal-only">
+  <div class="withdrawal-kicker">WITHDRAWN LEGACY COMPARATOR</div>
+  <h3>STRING values removed from the publication figure</h3>
+  <p>The May artifact reversed the production slope orientation and was never
+  rerun on canonical log2, measured-only inputs. It licenses no
+  regulatory-versus-physical conclusion.</p>
+  <p class="withdrawal-next">Required before reuse: same-orientation pipeline,
+  frozen mapping, machine-readable result, and an audited rerun.</p>
+</div>""",
+        "css": """
+.fig6-withdrawal-only { max-width: 780px; margin: 36px auto; padding: 30px 34px;
+  border: 2px solid #871912; background: #fff7f4; color: #25120f; }
+.withdrawal-kicker { color: #871912; font-weight: 800; letter-spacing: .08em;
+  font-size: 12px; }
+.fig6-withdrawal-only h3 { margin: 10px 0 12px; font-size: 24px; }
+.fig6-withdrawal-only p { line-height: 1.5; margin: 8px 0; }
+.withdrawal-next { color: #5f3b34; font-size: 14px; }
+""",
+        "js": "",
     }
-    CONTRASTS = ["C9 vs Sporadic", "C9 vs Healthy"]
-
-    BLUE_STOPS = [
-        (0.00, (244, 244, 244)),
-        (0.15, (220, 234, 245)),
-        (0.30, (148, 194, 224)),
-        (0.50, (61, 143, 192)),
-        (0.75, (31, 93, 160)),
-        (1.00, (10, 59, 128)),
-    ]
-    RED_STOPS = [
-        (0.00, (244, 244, 244)),
-        (0.15, (250, 218, 207)),
-        (0.30, (235, 168, 150)),
-        (0.50, (215, 100, 75)),
-        (0.75, (180, 50, 35)),
-        (1.00, (135, 25, 18)),
-    ]
-
-    def color_for(value: float, scale_max: float = 3.0) -> str:
-        intensity = min(1.0, abs(value) / scale_max)
-        stops = BLUE_STOPS if value >= 0 else RED_STOPS
-        for i in range(len(stops) - 1):
-            s0, c0 = stops[i]
-            s1, c1 = stops[i + 1]
-            if s0 <= intensity <= s1:
-                if s1 == s0:
-                    return f"rgb({c0[0]},{c0[1]},{c0[2]})"
-                f = (intensity - s0) / (s1 - s0)
-                r = int(c0[0] + (c1[0] - c0[0]) * f)
-                g = int(c0[1] + (c1[1] - c0[1]) * f)
-                b = int(c0[2] + (c1[2] - c0[2]) * f)
-                return f"rgb({r},{g},{b})"
-        last = stops[-1][1]
-        return f"rgb({last[0]},{last[1]},{last[2]})"
-
-    parts: list[str] = ['<div class="fig6-string">']
-
-    # ---- Header row: panel titles (each spans 2 cells) -----------------
-    parts.append('<div class="g-corner"></div>')
-    parts.append('<div class="g-panel-header indra">INDRA · regulatory edges</div>')
-    parts.append('<div class="g-spacer"></div>')
-    parts.append('<div class="g-panel-header string">STRING · physical edges</div>')
-
-    # ---- Sub-header row: contrast names --------------------------------
-    parts.append('<div class="g-corner"></div>')
-    for c in CONTRASTS:
-        parts.append(f'<div class="g-contrast">{c}</div>')
-    parts.append('<div class="g-spacer"></div>')
-    for c in CONTRASTS:
-        parts.append(f'<div class="g-contrast">{c}</div>')
-
-    # ---- Term rows -----------------------------------------------------
-    prev_cluster: str | None = None
-    for cluster, tag, short in TERMS:
-        is_new = (cluster != prev_cluster and prev_cluster is not None)
-        prev_cluster = cluster
-        cluster_lc = cluster.lower()
-        new_class = ' new-cluster' if is_new else ''
-
-        parts.append(
-            f'<div class="g-rowhead {cluster_lc}{new_class}">'
-            f'<span class="g-cluster-tag">{tag}</span>'
-            f'<span class="g-term">{short}</span>'
-            f'</div>'
-        )
-
-        indra_c9s, indra_c9h, string_c9s, string_c9h, sq_c9s, sq_c9h = DATA[short]
-
-        # INDRA cells (positive)
-        for nes, contrast in ((indra_c9s, "C9 vs Sporadic"),
-                              (indra_c9h, "C9 vs Healthy")):
-            bg = color_for(nes)
-            text_color = "#ffffff" if abs(nes) > 1.5 else "#1a1a1a"
-            parts.append(
-                f'<div class="g-cell{new_class}" '
-                f'style="background:{bg};color:{text_color}" '
-                f'data-term="{short}" '
-                f'data-contrast="{contrast}" '
-                f'data-graph="INDRA · regulatory" '
-                f'data-nes="{nes:+.2f}" '
-                f'data-q="">'
-                f'{nes:+.2f}'
-                f'</div>'
-            )
-
-        # Spacer (column 4)
-        parts.append(f'<div class="g-spacer{new_class}"></div>')
-
-        # STRING cells (negative)
-        for nes, q, contrast in ((string_c9s, sq_c9s, "C9 vs Sporadic"),
-                                 (string_c9h, sq_c9h, "C9 vs Healthy")):
-            bg = color_for(nes)
-            text_color = "#ffffff" if abs(nes) > 1.5 else "#1a1a1a"
-            parts.append(
-                f'<div class="g-cell{new_class}" '
-                f'style="background:{bg};color:{text_color}" '
-                f'data-term="{short}" '
-                f'data-contrast="{contrast}" '
-                f'data-graph="STRING · physical" '
-                f'data-nes="{nes:+.2f}" '
-                f'data-q="q {q}">'
-                f'{nes:+.2f}'
-                f'</div>'
-            )
-
-    parts.append('</div>')
-
-    # ---- Legend: diverging scale ---------------------------------------
-    legend = '''
-<div class="fig6-legend">
-  <div class="g-legend-row">
-    <div class="g-legend-block">
-      <div class="g-legend-bar blue"></div>
-      <div class="g-legend-ticks"><span>0</span><span>+3</span></div>
-      <div class="g-legend-cap">positive NES — perturbation concentrated near anchors</div>
-    </div>
-    <div class="g-legend-block">
-      <div class="g-legend-bar red"></div>
-      <div class="g-legend-ticks"><span>0</span><span>−3</span></div>
-      <div class="g-legend-cap">negative NES — perturbation anti-concentrated</div>
-    </div>
-  </div>
-</div>'''
-
-    html = "\n".join(parts) + legend
-
-    css = '''
-.fig6-string {
-  display: grid;
-  grid-template-columns:
-    190px
-    minmax(58px, 1fr) minmax(58px, 1fr)
-    20px
-    minmax(58px, 1fr) minmax(58px, 1fr);
-  gap: 4px;
-  font-family: var(--font-sans);
-  min-width: 540px;
-}
-.g-corner, .g-spacer { /* layout only */ }
-.g-panel-header {
-  grid-column: span 2;
-  padding: 8px 10px 11px;
-  text-align: center;
-  font-size: 12.5px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  border-bottom: 2px solid var(--ink);
-}
-.g-panel-header.indra  { color: #0a3b80; }
-.g-panel-header.string { color: #871912; }
-.g-contrast {
-  text-align: center;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: var(--muted);
-  padding: 8px 4px 4px;
-}
-.g-rowhead {
-  padding: 12px 10px 12px 4px;
-  text-align: right;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-  font-size: 12.5px;
-}
-.g-cluster-tag {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  flex-shrink: 0;
-}
-.g-rowhead.splicing  .g-cluster-tag { color: var(--splicing); }
-.g-rowhead.chromatin .g-cluster-tag { color: var(--chromatin); }
-.g-rowhead.transport .g-cluster-tag { color: var(--transport); }
-.g-term { color: var(--ink); font-weight: 500; line-height: 1.3; }
-.g-rowhead.new-cluster,
-.g-cell.new-cluster,
-.g-spacer.new-cluster {
-  margin-top: 4px;
-  border-top: 1px solid var(--rule);
-  padding-top: 15px;
-}
-.g-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 14px;
-  padding: 13px 4px;
-  border-radius: 3px;
-  cursor: help;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
-  border: 2px solid transparent;
-}
-.g-cell:hover {
-  transform: scale(1.06);
-  box-shadow: 0 5px 18px rgba(0, 0, 30, 0.18);
-  z-index: 5;
-}
-
-.fig6-legend {
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--rule);
-}
-.g-legend-row {
-  display: flex;
-  gap: 28px;
-  flex-wrap: wrap;
-}
-.g-legend-block {
-  flex: 1;
-  min-width: 200px;
-}
-.g-legend-bar {
-  height: 14px;
-  border-radius: 2px;
-  border: 1px solid var(--rule);
-}
-.g-legend-bar.blue {
-  background: linear-gradient(to right,
-    #f4f4f4 0%, #dceaf5 15%, #94c2e0 30%,
-    #3d8fc0 50%, #1f5da0 75%, #0a3b80 100%);
-}
-.g-legend-bar.red {
-  background: linear-gradient(to right,
-    #f4f4f4 0%, #fadacf 15%, #eba896 30%,
-    #d7644b 50%, #b43223 75%, #871912 100%);
-}
-.g-legend-ticks {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-}
-.g-legend-cap {
-  margin-top: 6px;
-  font-size: 11.5px;
-  color: var(--muted);
-  font-style: italic;
-  line-height: 1.4;
-}
-
-@media (max-width: 640px) {
-  figure#fig-string .frame { overflow-x: auto; }
-}
-'''
-
-    js = '''(function() {
-  var tooltip = document.getElementById('fig4-tooltip');
-  if (!tooltip) {
-    tooltip = document.createElement('div');
-    tooltip.id = 'fig4-tooltip';
-    tooltip.className = 'm-tooltip';
-    document.body.appendChild(tooltip);
-  }
-  document.querySelectorAll('.fig6-string .g-cell').forEach(function(cell) {
-    cell.addEventListener('mouseenter', function() {
-      var term     = cell.dataset.term;
-      var contrast = cell.dataset.contrast;
-      var graph    = cell.dataset.graph;
-      var nes      = cell.dataset.nes;
-      var q        = cell.dataset.q;
-      var qLine    = q ? '<br>' + q : '';
-      tooltip.innerHTML =
-        '<div class="tt-term">' + term + '</div>' +
-        '<div class="tt-meta">' +
-          'graph:&nbsp;&nbsp;&nbsp;&nbsp;<b>' + graph + '</b><br>' +
-          'comparison: <b>' + contrast + '</b><br>' +
-          'NES:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>' + nes + '</b>' + qLine +
-        '</div>';
-      tooltip.style.display = 'block';
-      var rect = cell.getBoundingClientRect();
-      var ttRect = tooltip.getBoundingClientRect();
-      var left = rect.right + window.scrollX + 12;
-      if (left + ttRect.width > window.innerWidth - 20) {
-        left = rect.left + window.scrollX - ttRect.width - 12;
-      }
-      var top = rect.top + window.scrollY + (rect.height - ttRect.height) / 2;
-      if (top < window.scrollY + 10) top = window.scrollY + 10;
-      tooltip.style.left = left + 'px';
-      tooltip.style.top  = top  + 'px';
-    });
-    cell.addEventListener('mouseleave', function() {
-      tooltip.style.display = 'none';
-    });
-  });
-})();'''
-
-    return {"html": html, "css": css, "js": js}
 
 
 # =====================================================================

@@ -1,6 +1,6 @@
 """C9 cluster explorer — single rich HTML with three sections.
 
-Section 1: Bonferroni-8 confirmatory matrix (the wave_24l headline).
+Section 1: Bonferroni-8 fixed-panel same-cohort consistency matrix.
 Section 2: Where the cluster terms rank in the universe of tested pathways.
 Section 3: Inside each cluster — member proteins ranked by |t|.
 
@@ -8,6 +8,7 @@ Output: output/viz/cluster_explorer.html (open in any browser).
 """
 from __future__ import annotations
 
+import json
 import sys
 import warnings
 from pathlib import Path
@@ -22,15 +23,20 @@ warnings.filterwarnings("ignore", category=UserWarning)
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "viz"))
 
-from common import (
-    TERMS, CLUSTER_COLOR, CLUSTER_TINT,
-    BONFERRONI_8, ALPHA_PER_TEST,
-    CONTRAST_ORDER, CONTRAST_CODE, CONTRAST_GROUPS,
-    resolve_groups, fit_per_protein_t,
-    fetch_term_members_via_indra, hgnc_ids_to_uniprots,
+from architecture import build_pipeline_fig  # noqa: E402
+from common import (  # noqa: E402
+    ALPHA_PER_TEST,
+    BONFERRONI_8,
+    CLUSTER_COLOR,
+    CONTRAST_CODE,
+    CONTRAST_GROUPS,
+    CONTRAST_ORDER,
+    TERMS,
+    fit_per_protein_t,
+    hgnc_ids_to_uniprots,
+    resolve_groups,
     uniprot_to_hgnc_symbol,
 )
-from architecture import build_pipeline_fig
 
 OUT_HTML = ROOT / "output" / "viz" / "cluster_explorer.html"
 
@@ -104,7 +110,7 @@ def build_matrix_fig() -> go.Figure:
                 f"<b>{t}</b> ({clusters[i]})<br>{c}<br>"
                 f"NES: {nes[i, j]:.3f}<br>"
                 f"raw p: {raw_p[i, j]:.4f}<br>"
-                f"family-wise threshold: {ALPHA_PER_TEST:.5f}<br>"
+                f"eightfold reporting threshold: {ALPHA_PER_TEST:.5f}<br>"
                 f"<b>{pass_str}</b>"
             )
 
@@ -139,10 +145,10 @@ def build_matrix_fig() -> go.Figure:
     fig.update_layout(
         title=dict(
             text=(
-                "<b>Pre-registered cluster pathway terms × group comparisons</b><br>"
+                "<b>Discovery-derived frozen terms × group comparisons</b><br>"
                 "<span style='font-size:12px;color:#777'>"
                 "Cell number = enrichment score (NES).  Color = -log₁₀(raw p), saturated at the 1/1000 permutation floor.  "
-                "Thick black border = passes the family-wise threshold (raw p < 0.00625 AND NES > 0).</span>"
+                "Thick black border = passes the eightfold reporting threshold (raw p < 0.00625 AND NES > 0; no post-selection FWER guarantee).</span>"
             ),
             x=0.5, xanchor="center",
             font=dict(size=17),
@@ -183,7 +189,7 @@ def load_universe_gsea(contrast_code: str) -> pd.DataFrame:
     """Load + concatenate the four pathway-database GSEA outputs for
     the given contrast, robust scope.  These are wave_24i (with-
     intermediates) discovery-era results — used for the term ranking
-    universe view only.  The wave_24l confirmatory headline is on the
+    universe view only. The fixed-panel same-cohort result is on the
     matrix above."""
     # The local GSEA outputs split by contrast as separate dirs.
     contrast_dir_map = {
@@ -535,13 +541,16 @@ HEADER_HTML = """
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>C9-ALS cluster claim — explorer</title>
+<title>C9-ALS same-cohort fixed-panel explorer</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
          color: #1a1a1a; background: #fafafa; margin: 0; padding: 0; }
   .wrap { max-width: 1450px; margin: 0 auto; padding: 40px 20px 80px 20px; }
   h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px 0; }
   .sub { color: #777; font-size: 13px; margin-bottom: 36px; }
+  .integrity { color: #7a5200; background: #fff8e1; border: 1px solid #d7b35c;
+               border-radius: 5px; padding: 10px 12px; margin: 14px 0 28px;
+               font-size: 13px; font-weight: 650; }
   .section { margin-top: 56px; }
   .section h2 { font-size: 19px; font-weight: 700; border-bottom: 1px solid #ddd;
                 padding-bottom: 8px; margin-bottom: 12px; }
@@ -553,8 +562,9 @@ HEADER_HTML = """
 </head>
 <body>
 <div class="wrap">
-  <h1>C9-ALS regulatory-neighborhood cluster claim — explorer</h1>
-  <div class="sub">AnswerALS PBMC proteomics, 3,264 proteins × 436 samples.  Three pairwise comparisons.  Eight pre-registered cluster pathway terms.</div>
+  <h1>C9-ALS regulatory-neighborhood same-cohort explorer</h1>
+  <div class="sub">AnswerALS PBMC proteomics, 3,264 feature rows × 436 samples. Three pairwise comparisons. Eight discovery-derived frozen terms; not independent confirmation.</div>
+  <div class="integrity">AUDIT STATUS · The fixed-panel matrix is the current same-cohort result. Universe-ranking and member-anatomy sections are legacy exploratory views and are not supporting evidence.</div>
 """
 
 SECTION_TEMPLATES = {
@@ -565,22 +575,22 @@ SECTION_TEMPLATES = {
             "shape of the data that station emits — a matrix collapses to a "
             "vector, joins a regulatory graph, projects onto a per-anchor "
             "concentration statistic, and lands as a ranked list of pathway "
-            "outcomes."
+            "outcomes. The primary list contains 1,407 robust anchors from "
+            "3,117 valid two-shell gradients."
         ),
     },
     "matrix": {
-        "title": "1. The confirmation in one image",
+        "title": "1. Fixed-panel consistency in one image",
         "lede": (
-            "Eight pre-registered pathway terms tested under the wave_24l "
-            "measured-only-paths regulatory-network pipeline.  The triangulation "
-            "comes through cleanly: the C9 columns are saturated with bordered "
-            "(passing) cells; the sporadic-vs-healthy column has none.  Six terms "
-            "pass the family-wise threshold in <em>both</em> C9 comparisons — that "
-            "set is the graph-invariant core of the cluster claim."
+            "Eight discovery-derived terms frozen for the production log2, "
+            "measured-only consistency rerun. The C9 columns contain passing "
+            "cells; the sporadic-vs-healthy column has none. Six terms pass in "
+            "both C9 comparisons. This is internal same-cohort consistency, not "
+            "independent confirmation or a graph-invariant claim."
         ),
     },
     "universe": {
-        "title": "2. Where the cluster terms land in the universe of tested pathways",
+        "title": "2. LEGACY · where the terms landed in the discovery universe",
         "lede": (
             "Among all pathway terms tested by the discovery pipeline, where do the "
             "eight cluster terms rank?  In both C9 comparisons, cluster terms "
@@ -592,7 +602,7 @@ SECTION_TEMPLATES = {
         ),
     },
     "anatomy": {
-        "title": "3. Inside each cluster: which proteins drive the signal",
+        "title": "3. LEGACY · exploratory member anatomy",
         "lede": (
             "Each biological cluster has its constituent pathway terms and, in turn, "
             "their gene-set members.  For the members that are measured in our cohort, "
@@ -631,9 +641,16 @@ def main() -> None:
         print(f"  fit {c}")
         t_stats[c] = fit_per_protein_t(data, md, groups, contrast)
 
-    print("Fetching cluster term members from INDRA…")
-    term_ids = [t[3] for t in TERMS]
-    hgnc_members = fetch_term_members_via_indra(term_ids)
+    print("Loading frozen cluster term members…")
+    term_snapshot = json.loads(
+        (ROOT / "data/publication/c9_degree_stratified_null_terms.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hgnc_members = {
+        row["term_id"]: set(row["hgnc_ids"])
+        for row in term_snapshot["terms"]
+    }
     cluster_members: dict[str, set[str]] = {}
     for tid, hgncs in hgnc_members.items():
         cluster_members[tid] = hgnc_ids_to_uniprots(hgncs)
