@@ -29,25 +29,48 @@ dependencies = [
     "pandas>=2.0.0",
     "scipy>=1.10.0",
     "scikit-learn>=1.3.0",
+    "statsmodels>=0.14.0",
     "networkx>=3.1",
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
     "plotly>=5.17.0",
     "mygene>=3.2.0",
+    "PyYAML>=6.0",
     "python-dotenv>=1.0.0",
     "neo4j>=5.0.0",
     "tqdm>=4.65.0",
 ]
 
 [project.optional-dependencies]
+cogex = [
+    # Knowledge-graph/GSEA integration used by the publication workflows.
+    # Pin the reference client revision; the live database corpus remains an
+    # external input and is covered by the publication provenance disclaimer.
+    "indra-cogex[gsea] @ git+https://github.com/gyorilab/indra_cogex.git@6a95f2b18590ec2ef067217fd1f7f82b6e2f64af ; python_version >= '3.11'",
+    "flask>=3.0 ; python_version >= '3.11'",
+    "gseapy==1.2.1 ; python_version >= '3.11'",
+    "pysb>=1.17.0 ; python_version >= '3.11'",
+]
 belief = [
-    "indra-belief>=0.1.0",
+    # Not published on PyPI. Pin the last upstream revision that provides the
+    # noise_model and composed_scorer APIs imported by cliquefinder. The belief
+    # stack is supported on Python >=3.11: PySB 1.16 (the last 3.10 release)
+    # fails under modern isolated builds, while 1.17 provides a wheel for 3.11+.
+    "indra-belief @ git+https://github.com/gyorilab/indra-belief-model.git@476e0c81fb0934640d5aa889edfd2f5070651726 ; python_version >= '3.11'",
+    "pysb>=1.17.0 ; python_version >= '3.11'",
 ]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
+]
+
+[tool.uv]
+# indra-cogex currently declares INDRA from an unversioned Git URL. Override it
+# for uv-managed environments so the lock never follows upstream HEAD.
+override-dependencies = [
+    "indra @ git+https://github.com/gyorilab/indra.git@4c8c0555e5027ee2242b90795b761a6b7e78176b",
 ]
 
 [project.scripts]

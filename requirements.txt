@@ -19,6 +19,7 @@ seaborn>=0.12.0
 tqdm>=4.66.0
 
 # Data formats
+PyYAML>=6.0
 h5py>=3.9.0
 tables>=3.8.0
 

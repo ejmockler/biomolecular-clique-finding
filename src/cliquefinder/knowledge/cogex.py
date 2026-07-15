@@ -65,31 +65,36 @@ Examples:
 
 from __future__ import annotations
 
-from enum import Enum
-from collections import OrderedDict
-from typing import Tuple, List, Set, Optional, Dict, Literal
-from dataclasses import dataclass, field
-from pathlib import Path
-import os
 import json
 import logging
+import os
 import random
 import re
 import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Set, Tuple
+
+if TYPE_CHECKING:
+    from cliquefinder.validation.id_mapping import MyGeneInfoMapper
 
 # INDRA imports
 try:
+    from indra.databases import hgnc_client
     from indra_cogex.client.neo4j_client import Neo4jClient
     from indra_cogex.representation import norm_id
-    from indra.databases import hgnc_client
+
     INDRA_AVAILABLE = True
 except ImportError:
     INDRA_AVAILABLE = False
+
     def norm_id(*args, **kwargs):  # type: ignore[misc]
         """Stub that raises ImportError when INDRA is not installed."""
         raise ImportError(
-            "INDRA is required for CoGEx client. "
-            "Install with: pip install indra"
+            "INDRA/indra_cogex is required for CoGEx integration. "
+            "Install the pinned environment with `uv sync --extra cogex`."
         )
 
 # Neo4j typed exceptions for defence-in-depth error classification (ARCH-4-NOTE)
@@ -481,8 +486,8 @@ class CoGExClient:
         """
         if not INDRA_AVAILABLE:
             raise ImportError(
-                "indra_cogex package required. Install with: "
-                "pip install git+https://github.com/indralab/indra_cogex.git"
+                "indra_cogex package required. Install the pinned integration "
+                "with `uv sync --extra cogex`."
             )
 
         self._url = url

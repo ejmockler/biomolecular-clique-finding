@@ -62,6 +62,16 @@ class TestFetchEvidenceForEdges:
         with patch("cliquefinder.knowledge.cogex.Neo4jClient"):
             return CoGExClient(url="bolt://x", user="u", password="p")
 
+    @patch("cliquefinder.knowledge.cogex.INDRA_AVAILABLE", False)
+    def test_missing_dependency_points_to_pinned_extra(self):
+        with pytest.raises(ImportError) as error:
+            CoGExClient(url="bolt://x", user="u", password="p")
+
+        message = str(error.value)
+        assert "uv sync --extra cogex" in message
+        assert "pip install" not in message
+        assert "git+https" not in message
+
     def test_basic_fetch(self):
         """get_statements_by_hash is called and evidence is extracted."""
         client = self._make_client()

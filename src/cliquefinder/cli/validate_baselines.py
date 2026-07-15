@@ -246,7 +246,7 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--llm-scoring", action="store_true", default=False,
         help="Enable composed belief scoring on INDRA edges "
-             "(requires indra-belief[belief] extra)",
+             "(requires cliquefinder[belief] on Python >=3.11)",
     )
 
     parser.set_defaults(func=run_validate_baselines)
@@ -271,9 +271,9 @@ def _build_composed_scorer(args: argparse.Namespace):
         return scorer
     except ImportError:
         logger.warning(
-            "indra-belief[belief] extra not installed; "
+            "cliquefinder belief extra not installed; "
             "continuing without composed belief scoring. "
-            "Install with: pip install indra-belief[belief]"
+            "Install with: pip install -e '.[belief]' (Python >=3.11)"
         )
         return None
 
