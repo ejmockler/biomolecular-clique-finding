@@ -1184,11 +1184,12 @@ class PermutationTestResult:
 
     Attributes:
         clique_id: TF/clique identifier
-        observed_log2fc: Observed log2 fold change for the clique
+        observed_log2fc: Observed contrast coefficient for the clique (legacy
+            field name; a log2 fold change only when effect_scale=='log2')
         observed_pvalue: Observed p-value from MSstats
         observed_tvalue: Observed t-statistic
-        null_log2fc_mean: Mean log2FC from permuted null
-        null_log2fc_std: Std of log2FC from permuted null
+        null_log2fc_mean: Mean contrast coefficient from the permuted null
+        null_log2fc_std: Standard deviation of the null contrast coefficient
         null_tvalue_mean: Mean t-statistic from permuted null
         empirical_pvalue: Proportion of permutations with |t| >= |observed t|
         empirical_pvalue_directional: One-sided (same direction as observed)

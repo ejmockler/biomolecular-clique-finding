@@ -160,12 +160,12 @@ Summarizes proteins within each clique to a single abundance per sample using Tu
 |--------|---------|
 | contrast | Which comparison was tested |
 | feature_id | Protein identifier |
-| log2FC | Log2 fold change between conditions |
-| SE | Standard error of the fold change estimate |
+| log2FC | Contrast coefficient on the input-data scale; a log2 fold change only when the input intensities are log2-transformed |
+| SE | Standard error of the contrast coefficient, on the same scale |
 | tvalue | t-statistic |
 | df | Degrees of freedom |
 | pvalue | Raw p-value |
-| CI_lower, CI_upper | 95% confidence interval for log2FC |
+| CI_lower, CI_upper | 95% confidence interval for the contrast coefficient, on the same scale |
 | model_type | LMM or fixed-effects |
 | n_obs | Number of observations |
 | residual_var | Residual variance from the model |
@@ -174,6 +174,14 @@ Summarizes proteins within each clique to a single abundance per sample using Tu
 | issue | Any fitting warnings |
 | adj_pvalue | BH FDR-adjusted p-value |
 | significant | Whether adj_pvalue < threshold |
+
+**Scale contract:** the model fits the values supplied to it; it does not
+derive `log2(mean_case / mean_control)` from raw intensities. The standard
+differential path expects log2-transformed input. In the genome-wide empirical
+Bayes enrichment path, the scale-neutral `effect_size` column duplicates the
+legacy `log2fc` field and `effect_scale` records whether the fitted data were
+`log2` or `raw`. On raw input, the coefficient is a raw mean difference, not a
+log2 fold change, regardless of the legacy column name.
 
 **significant_cliques.csv** --- Cliques passing the FDR threshold. Same schema as clique_differential_permutation.csv (below).
 
@@ -216,12 +224,13 @@ GPU-accelerated batched OLS with label permutation. For each clique, precomputes
 | clique_id | Clique identifier |
 | clique_genes | Member genes |
 | n_proteins | Number of proteins in the clique |
-| log2FC | Observed log2 fold change |
+| log2FC | Observed contrast coefficient; a log2 fold change only for log2-transformed input |
 | perm_pvalue | Empirical permutation p-value |
 | pvalue | Parametric p-value from the model |
 | tvalue | Observed t-statistic |
-| null_log2FC_mean | Mean of the null log2FC distribution |
-| null_log2FC_std | Standard deviation of the null |
+| null_log2FC_mean | Mean of the null contrast-coefficient distribution |
+| null_log2FC_std | Standard deviation of that null distribution |
+| effect_scale | Scale of the observed and null coefficients (`log2`, `raw`, or inherited from the fitted input) |
 | null_tvalue_mean | Mean of the null t-statistic distribution |
 | empirical_pvalue_directional | One-sided permutation p-value |
 | n_permutations | Number of permutations performed |
@@ -233,8 +242,8 @@ GPU-accelerated batched OLS with label permutation. For each clique, precomputes
 | Column | Meaning |
 |--------|---------|
 | clique_id | Clique identifier |
-| null_log2FC_mean, null_log2FC_std | Null distribution moments for fold change |
-| null_log2FC_5pct, null_log2FC_95pct | Null distribution quantiles |
+| null_log2FC_mean, null_log2FC_std | Null contrast-coefficient distribution moments |
+| null_log2FC_5pct, null_log2FC_95pct | Null contrast-coefficient distribution quantiles |
 | null_tvalue_mean, null_tvalue_std | Null distribution moments for t-statistic |
 | null_tvalue_5pct, null_tvalue_95pct | Null distribution quantiles |
 | n_permutations | Number of permutations |
@@ -249,7 +258,9 @@ When run with `--enrichment-test --network-query GENE`, the differential pipelin
 |--------|---------|
 | gene_symbol | HGNC symbol |
 | feature_id | Original protein identifier |
-| log2fc | Log2 fold change |
+| log2fc | Legacy name for the fitted contrast coefficient; a log2 fold change only when `effect_scale` is `log2` |
+| effect_size | The same fitted contrast coefficient under a scale-neutral name |
+| effect_scale | Resolved input scale (`log2` or `raw`) |
 | t_statistic | Moderated t-statistic |
 | p_value | Raw p-value |
 | df | Degrees of freedom |
@@ -313,7 +324,9 @@ The z_score is the headline number. A z of 2.0 means the target set's effect siz
 | Column | Meaning |
 |--------|---------|
 | feature_id | Protein identifier |
-| log2fc | Log2 fold change |
+| log2fc | Legacy name for the fitted contrast coefficient; a log2 fold change only when `effect_scale` is `log2` |
+| effect_size | The same fitted contrast coefficient under a scale-neutral name |
+| effect_scale | Resolved input scale (`log2` or `raw`) |
 | t_statistic | EB-moderated t-statistic |
 | p_value | Raw p-value |
 | df | Degrees of freedom (d0 + df_residual) |
@@ -583,9 +596,18 @@ For network proximity tests, naive gene-label permutation would confound the tes
 
 **Expression matrix**: features-by-samples numeric matrix. Features are genes or proteins; values are abundances.
 
-**Log2 fold change (log2FC)**: log2(mean_case / mean_control). Positive means higher in disease; negative means lower. A log2FC of 1.0 means the protein is twice as abundant in disease.
+**Log2 fold change (log2FC)**: For data already expressed as log2
+intensities, the fitted case-minus-control coefficient is a log2 fold change;
+positive means higher in disease, and 1.0 corresponds to a two-fold ratio.
+This repository retains several legacy `log2FC`/`log2fc` column names. If
+`effect_scale` is `raw` (or a legacy workflow was given raw intensities), that
+number is instead a raw-scale mean difference and must not be interpreted as a
+fold change.
 
-**t-statistic**: effect size (log2FC) divided by its standard error. Larger |t| means more confident the effect is real, accounting for sample-to-sample variability.
+**t-statistic**: fitted contrast coefficient divided by its standard error.
+Larger |t| means more evidence that the contrast differs from zero, accounting
+for sample-to-sample variability. Its interpretation does not require the
+coefficient to be on a log2 scale.
 
 **FDR (false discovery rate)**: expected proportion of false positives among all rejected hypotheses. An FDR of 0.05 means ~5% of "significant" findings are expected to be false.
 
