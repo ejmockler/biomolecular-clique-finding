@@ -12,8 +12,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Ensure src is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd
 
@@ -22,8 +24,8 @@ from cliquefinder.stats.clique_analysis import map_feature_ids_to_symbols
 from cliquefinder.knowledge.indra_source import INDRAKnowledgeSource
 
 # --- Configuration ---
-DATA_CSV = Path("output/proteomics/all_als.data.csv")
-ENV_FILE = Path("/Users/noot/Documents/biomolecular-clique-finding/.env")
+DATA_CSV = ROOT / "output/proteomics/all_als.data.csv"
+ENV_FILE = ROOT / ".env"
 GENE_SYMBOL = "C9orf72"
 THRESHOLDS = [1, 2, 3, 4, 5, 6, 7, 8]
 

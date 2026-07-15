@@ -13,7 +13,7 @@ viz = CliqueVisualizer(style="paper")
 fig = viz.plot_clique_network(regulator="MAPT", df=cliques_df)
 ```
 
-**File**: `/Users/noot/Documents/biomolecular-clique-finding/src/cliquefinder/viz/cliques.py`
+**File**: `src/cliquefinder/viz/cliques.py`
 **Line**: 410
 
 ## Visual Encoding (Perceptual Engineering)
@@ -272,10 +272,10 @@ fig.save("figures/mapt_network.jpg", dpi=150)
 
 ## Testing
 
-A test script is provided at `/Users/noot/Documents/biomolecular-clique-finding/test_clique_network.py`:
+A test script is provided at `test_clique_network.py`:
 
 ```bash
-cd /Users/noot/Documents/biomolecular-clique-finding
+cd biomolecular-clique-finding
 source .venv/bin/activate
 python test_clique_network.py
 ```

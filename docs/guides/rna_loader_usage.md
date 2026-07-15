@@ -350,7 +350,7 @@ logging.basicConfig(level=logging.DEBUG)
 Run the test suite:
 
 ```bash
-cd /Users/noot/Documents/biomolecular-clique-finding
+cd biomolecular-clique-finding
 python test_rna_loader.py
 ```
 

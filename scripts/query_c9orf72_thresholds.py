@@ -5,8 +5,10 @@ import os
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # Load .env file
-env_file = Path("/Users/noot/Documents/biomolecular-clique-finding/.env")
+env_file = ROOT / ".env"
 if env_file.exists():
     for line in env_file.read_text().strip().splitlines():
         line = line.strip()
@@ -15,7 +17,7 @@ if env_file.exists():
             os.environ[key.strip()] = val.strip()
 
 # Add project src to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from cliquefinder.knowledge.indra_source import INDRAKnowledgeSource
 

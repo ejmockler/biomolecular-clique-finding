@@ -2,7 +2,7 @@
 
 ## Summary
 
-Updated `/Users/noot/Documents/biomolecular-clique-finding/src/cliquefinder/stats/bootstrap_comparison.py` to implement proper balanced bootstrap sampling instead of repeated subsampling.
+Updated `src/cliquefinder/stats/bootstrap_comparison.py` to implement proper balanced bootstrap sampling instead of repeated subsampling.
 
 ## Changes Made
 
@@ -122,7 +122,7 @@ print(config.bootstrap_controls)  # True
 
 ### Demonstration Script
 
-Created `/Users/noot/Documents/biomolecular-clique-finding/tests/test_bootstrap_modes.py` to demonstrate the difference between modes:
+Created `tests/test_bootstrap_modes.py` to demonstrate the difference between modes:
 
 ```bash
 .venv/bin/python tests/test_bootstrap_modes.py
@@ -183,16 +183,16 @@ results = run_bootstrap_comparison(
 
 ## Files Modified
 
-1. `/Users/noot/Documents/biomolecular-clique-finding/src/cliquefinder/stats/bootstrap_comparison.py`
+1. `src/cliquefinder/stats/bootstrap_comparison.py`
    - Added `bootstrap_controls` parameter to `BootstrapConfig`
    - Updated sampling logic to support both modes
    - Enhanced documentation and comments
 
 ## Files Created
 
-1. `/Users/noot/Documents/biomolecular-clique-finding/tests/test_bootstrap_modes.py`
+1. `tests/test_bootstrap_modes.py`
    - Demonstration script showing difference between modes
    - Educational output explaining statistical implications
 
-2. `/Users/noot/Documents/biomolecular-clique-finding/docs/BOOTSTRAP_IMPLEMENTATION.md`
+2. `docs/BOOTSTRAP_IMPLEMENTATION.md`
    - This documentation file
