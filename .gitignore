@@ -59,7 +59,16 @@ htmlcov/
 !tests/**/*.tsv
 
 # Output / results
-output/
+# Keep bulky/generated analysis artifacts local, but version the small
+# publication-facing documents that define the current scientific narrative.
+output/*
+!output/analytical_workflow_methods.md
+!output/analytical_workflow_breakdown.md
+!output/c9_triangulation_report.md
+!output/log2_bounded_vs_unbounded.md
+!output/size_matched_null.md
+!output/size_matched_null.json
+!output/size_matched_null.csv
 results/
 figures/
 

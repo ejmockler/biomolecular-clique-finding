@@ -1,0 +1,396 @@
+{
+  "schema_version": 1,
+  "analysis_id": "c9-als-fingerprint-log2-measured-only-h2-2026-07",
+  "status": "canonical_primary",
+  "recorded_on": "2026-07-12",
+  "design": {
+    "intensity_transform": "log2(x+1)",
+    "covariates": [
+      "Sex"
+    ],
+    "path_traversal": "measured_only",
+    "distance_direction": "undirected",
+    "max_hops": 2,
+    "landscape_permutations": 999,
+    "gsea_permutations": 1000,
+    "confirmatory_scope": "robust",
+    "confirmatory_scope_definition": "hop-1 measured neighborhood size >= 20"
+  },
+  "cohort": {
+    "measured_samples": 436,
+    "metadata_matched_samples": 423,
+    "primary_arm_samples": 410,
+    "arms": {
+      "C9ORF72": 25,
+      "SPORADIC": 294,
+      "CONTROL": 91
+    }
+  },
+  "feature_accounting": {
+    "attempted": 3264,
+    "attempted_human_uniprot_features": 3263,
+    "attempted_internal_retention_time_standards": 1,
+    "internal_retention_time_standard_id": "1/iRT_protein",
+    "valid_two_shell_gradients": 3117,
+    "primary_confirmatory_anchors": 1407,
+    "primary_confirmatory_anchor_rule": "valid gradients with hop-1 measured neighborhood size >= 20",
+    "no_reachable_measured_neighbor": 137,
+    "below_minimum_measurable_neighborhood": 10,
+    "minimum_measurable_neighborhood_size": 10,
+    "identity": "3264 = 3117 + 137 + 10"
+  },
+  "unbounded_feature_accounting": {
+    "attempted": 3264,
+    "valid_gradients": 3125,
+    "primary_confirmatory_anchors": 1407,
+    "no_reachable_measured_neighbor": 137,
+    "below_minimum_measurable_neighborhood": 2,
+    "identity": "3264 = 3125 + 137 + 2"
+  },
+  "empirical_bayes_prior_df": {
+    "C9 vs Sporadic": 4.98469971792816,
+    "C9 vs Control": 5.509674728521206,
+    "Sporadic vs Control": 4.921881586146681
+  },
+  "confirmatory": {
+    "family": "eight discovery-derived pathway terms fixed before method-transfer reruns",
+    "selection_status": "same-cohort consistency check; not independent confirmation or prospective preregistration",
+    "familywise_alpha": 0.05,
+    "per_term_alpha": 0.00625,
+    "post_selection_fwer_guarantee": false,
+    "threshold_interpretation": "eightfold multiplicity threshold across reported method-transfer tests; not selective inference for the same-cohort discovery step",
+    "bounded_pass_pattern": [
+      8,
+      6,
+      0
+    ],
+    "unbounded_pass_pattern": [
+      6,
+      0,
+      0
+    ],
+    "contrast_order": [
+      "C9 vs Sporadic",
+      "C9 vs Control",
+      "Sporadic vs Control"
+    ],
+    "term_order": [
+      "mRNA Splicing",
+      "Processing Capped Pre-mRNA",
+      "mRNA splicing, via spliceosome",
+      "chromosome",
+      "chromatin",
+      "nucleocytoplasmic transport",
+      "nuclear pore",
+      "Vpr-mediated nuclear import"
+    ],
+    "term_definitions": [
+      {
+        "db": "reactome",
+        "term_id": "reactome:R-HSA-72172",
+        "term": "mRNA Splicing",
+        "cluster": "Splicing"
+      },
+      {
+        "db": "reactome",
+        "term_id": "reactome:R-HSA-72203",
+        "term": "Processing Capped Pre-mRNA",
+        "cluster": "Splicing"
+      },
+      {
+        "db": "go",
+        "term_id": "go:0000398",
+        "term": "mRNA splicing, via spliceosome",
+        "cluster": "Splicing"
+      },
+      {
+        "db": "go",
+        "term_id": "go:0005694",
+        "term": "chromosome",
+        "cluster": "Chromatin"
+      },
+      {
+        "db": "go",
+        "term_id": "go:0000785",
+        "term": "chromatin",
+        "cluster": "Chromatin"
+      },
+      {
+        "db": "go",
+        "term_id": "go:0006913",
+        "term": "nucleocytoplasmic transport",
+        "cluster": "NPC"
+      },
+      {
+        "db": "go",
+        "term_id": "go:0005643",
+        "term": "nuclear pore",
+        "cluster": "NPC"
+      },
+      {
+        "db": "reactome",
+        "term_id": "reactome:R-HSA-180910",
+        "term": "Vpr-mediated nuclear import",
+        "cluster": "NPC"
+      }
+    ],
+    "bounded": {
+      "C9 vs Sporadic": {
+        "pass_count": 8,
+        "terms": {
+          "mRNA Splicing": {
+            "NES": 2.5040385359,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "Processing Capped Pre-mRNA": {
+            "NES": 2.588069256,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "mRNA splicing, via spliceosome": {
+            "NES": 2.4073586156,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "chromosome": {
+            "NES": 2.4732196492,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "chromatin": {
+            "NES": 2.3448132212,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "nucleocytoplasmic transport": {
+            "NES": 2.2211174098,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "nuclear pore": {
+            "NES": 1.790241245,
+            "raw_p": 0.0036101083,
+            "pass": true
+          },
+          "Vpr-mediated nuclear import": {
+            "NES": 1.7119403088,
+            "raw_p": 0.0019305019,
+            "pass": true
+          }
+        }
+      },
+      "C9 vs Control": {
+        "pass_count": 6,
+        "terms": {
+          "mRNA Splicing": {
+            "NES": 2.4608118824,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "Processing Capped Pre-mRNA": {
+            "NES": 2.5268065882,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "mRNA splicing, via spliceosome": {
+            "NES": 2.4372102041,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "chromosome": {
+            "NES": 3.0607129857,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "chromatin": {
+            "NES": 2.8255123021,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "nucleocytoplasmic transport": {
+            "NES": 2.1255073605,
+            "raw_p": 0.001,
+            "pass": true
+          },
+          "nuclear pore": {
+            "NES": 1.8770883309,
+            "raw_p": 0.0111940299,
+            "pass": false
+          },
+          "Vpr-mediated nuclear import": {
+            "NES": 1.4016609139,
+            "raw_p": 0.1071428571,
+            "pass": false
+          }
+        }
+      },
+      "Sporadic vs Control": {
+        "pass_count": 0,
+        "terms": {
+          "mRNA Splicing": {
+            "NES": 1.0168940476,
+            "raw_p": 0.4723404255,
+            "pass": false
+          },
+          "Processing Capped Pre-mRNA": {
+            "NES": 1.1116360379,
+            "raw_p": 0.2970711297,
+            "pass": false
+          },
+          "mRNA splicing, via spliceosome": {
+            "NES": 0.9407305791,
+            "raw_p": 0.5959271168,
+            "pass": false
+          },
+          "chromosome": {
+            "NES": 0.8373267162,
+            "raw_p": 0.8577154309,
+            "pass": false
+          },
+          "chromatin": {
+            "NES": 0.9035273112,
+            "raw_p": 0.6915219612,
+            "pass": false
+          },
+          "nucleocytoplasmic transport": {
+            "NES": 1.0462681948,
+            "raw_p": 0.4269911504,
+            "pass": false
+          },
+          "nuclear pore": {
+            "NES": 1.6282440209,
+            "raw_p": 0.0065963061,
+            "pass": false
+          },
+          "Vpr-mediated nuclear import": {
+            "NES": 1.4331053473,
+            "raw_p": 0.0641200546,
+            "pass": false
+          }
+        }
+      }
+    },
+    "unbounded": {
+      "C9 vs Sporadic": {
+        "pass_count": 6
+      },
+      "C9 vs Control": {
+        "pass_count": 0
+      },
+      "Sporadic vs Control": {
+        "pass_count": 0
+      }
+    },
+    "six_term_core": [
+      "mRNA Splicing",
+      "Processing Capped Pre-mRNA",
+      "mRNA splicing, via spliceosome",
+      "chromosome",
+      "chromatin",
+      "nucleocytoplasmic transport"
+    ],
+    "exploratory_full_database_robust_fdr_lt_0_05_rows": {
+      "unit": "database-term rows summed across GO, Reactome, WikiPathways, and HPO; not unique or independent pathways",
+      "C9 vs Sporadic": 284,
+      "C9 vs Control": 260,
+      "Sporadic vs Control": 0
+    }
+  },
+  "claim_scope": {
+    "licensed": [
+      "pathway-level count-and-pattern claim within this cohort",
+      "local regulatory-neighborhood signal at h<=2",
+      "C9-carrier-associated triangulation pattern within the analyzed cohort"
+    ],
+    "not_licensed": [
+      "individual-protein discovery",
+      "causal mechanism or regulatory direction",
+      "external-cohort generalization",
+      "edge-level WASC conclusion",
+      "post-transcriptional localization from the legacy matched-RNA artifact",
+      "regulatory-versus-physical network specificity from the legacy STRING artifact"
+    ]
+  },
+  "auxiliary_evidence": {
+    "size_matched_gene_set_null": {
+      "status": "canonical_log2_auxiliary",
+      "publication_use": "complementary same-cohort graph-independent check; not independent confirmation or post-selection FWER control",
+      "eightfold_threshold_pattern": [
+        8,
+        8,
+        0
+      ],
+      "result": "output/size_matched_null.json",
+      "report": "output/size_matched_null.md",
+      "frozen_inputs": "data/publication/c9_size_matched_null_inputs.json"
+    },
+    "pathway_level_degree_stratified_null": {
+      "status": "canonical_log2_auxiliary",
+      "publication_use": "same-data conditional sensitivity that weighs against, but does not rule out, a simple degree-location explanation for seven terms",
+      "eightfold_threshold_pattern": [
+        7,
+        7,
+        0
+      ],
+      "result": "data/publication/c9_degree_stratified_null.json",
+      "report": "data/publication/c9_degree_stratified_null.md",
+      "frozen_terms": "data/publication/c9_degree_stratified_null_terms.json"
+    },
+    "abundance_stratified_null": {
+      "status": "legacy_raw_artifact_only",
+      "publication_use": "withhold from the canonical evidence battery"
+    },
+    "string_alternative_network": {
+      "status": "withdrawn_pending_rerun",
+      "publication_use": "none",
+      "reason": "legacy raw analysis has no durable derivation and documents the opposite slope convention from production"
+    },
+    "matched_rna": {
+      "status": "withdrawn_pending_audited_rerun",
+      "publication_use": "none",
+      "reason": "legacy artifact reuses a with-intermediates distance matrix, uses unmoderated RNA statistics, and reports an impossible shared-donor denominator"
+    },
+    "age_partial_r2": {
+      "status": "legacy_raw_proxy_only",
+      "publication_use": "historical limitation only; not an age-adjusted test of the canonical pathway claim"
+    },
+    "five_analysis_sensitivities": {
+      "status": "legacy_raw_artifacts_only",
+      "publication_use": "withhold from the canonical evidence battery"
+    }
+  },
+  "source_artifacts": {
+    "bounded_landscapes": {
+      "C9 vs Sporadic": "output/landscape_proteome_measured_only_log2/result.json",
+      "C9 vs Control": "output/landscape_c9_vs_control_measured_only_log2/result.json",
+      "Sporadic vs Control": "output/landscape_sporadic_vs_control_measured_only_log2/result.json"
+    },
+    "bounded_confirmatory": {
+      "C9 vs Sporadic": "output/landscape_confirmatory_c9spor_measured_only_log2/confirmatory_8terms_robust.csv",
+      "C9 vs Control": "output/landscape_confirmatory_c9ctrl_measured_only_log2/confirmatory_8terms_robust.csv",
+      "Sporadic vs Control": "output/landscape_confirmatory_spctrl_measured_only_log2/confirmatory_8terms_robust.csv"
+    },
+    "bounded_gsea_summaries": {
+      "C9 vs Sporadic": "output/landscape_gsea_c9spor_measured_only_log2/summary.csv",
+      "C9 vs Control": "output/landscape_gsea_c9ctrl_measured_only_log2/summary.csv",
+      "Sporadic vs Control": "output/landscape_gsea_spctrl_measured_only_log2/summary.csv"
+    },
+    "unbounded_landscapes": {
+      "C9 vs Sporadic": "output/landscape_proteome_measured_only_unbounded/result.json",
+      "C9 vs Control": "output/landscape_c9_vs_control_measured_only_unbounded/result.json",
+      "Sporadic vs Control": "output/landscape_sporadic_vs_control_measured_only_unbounded/result.json"
+    },
+    "unbounded_confirmatory": {
+      "C9 vs Sporadic": "output/landscape_confirmatory_c9spor_measured_only_unbounded/confirmatory_8terms_robust.csv",
+      "C9 vs Control": "output/landscape_confirmatory_c9ctrl_measured_only_unbounded/confirmatory_8terms_robust.csv",
+      "Sporadic vs Control": "output/landscape_confirmatory_spctrl_measured_only_unbounded/confirmatory_8terms_robust.csv"
+    },
+    "canonical_auxiliaries": {
+      "size_matched_result": "output/size_matched_null.json",
+      "degree_matched_result": "data/publication/c9_degree_stratified_null.json"
+    },
+    "gsea_provenance": "data/publication/c9_gsea_provenance.json",
+    "bounded_vs_unbounded_report": "output/log2_bounded_vs_unbounded.md"
+  }
+}
