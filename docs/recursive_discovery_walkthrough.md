@@ -1,32 +1,32 @@
 # Recursive Regulatory Discovery Through INDRA Knowledge Graphs
 
-> **RETRACTION (April 2026).** The per-arm ROAST results below — including the
-> "46/46 significant at hop 1," the "1,364 of 1,384 at hop 3," the five-hop
-> cascade, the π̂₀-convergence boundary, and the per-arm specificity-triangle
-> counts — are **artifacts of a non-discriminatory test in a broadly perturbed
-> proteome**. A negative-control rerun showed 56.5% of size-matched random
-> gene sets pass the same ROAST gate; the competitive z-score returned p=0.211
-> (no VIF) and p=0.685 (Camera VIF-corrected); matched single-gene reanalysis
-> returned p=0.649. Three independent confirmations of the null.
+> **SUPERSEDED HISTORICAL WALKTHROUGH (audited July 2026).** The per-arm ROAST
+> cascade below is not current C9 evidence. In the historical observed-data
+> check, 56.5% of same-size random sets also passed the self-contained gate.
+> Those sets are not global-null sets and 56.5% is therefore not an FPR or
+> type-I calibration estimate; it shows poor specificity for the competitive
+> question "is this set more perturbed than the measured background?"
 >
-> The corrected methodology (gradient-based discovery with degree-preserving
-> permutation null) and honest scope are in
-> [`presentations/recursive-discovery/slides.md`](../presentations/recursive-discovery/slides.md).
-> The surviving signal is a small but robust proximity gradient
-> (Spearman ρ = −0.146, permutation p ≈ 0.001 at 1000-permutation resolution
-> across 938 distance-1 genes). Anything below this banner that depends on
-> per-arm significance, π̂₀-adaptive thresholds, recursive walking, or the
-> hierarchical-FDR cascade should be treated as **a methodological case study
-> in how broadly-perturbed datasets break self-contained gene-set tests**, not
-> as a description of C9orf72 biology.
+> The current authority is
+> [`data/publication/c9_primary_analysis.json`](../data/publication/c9_primary_analysis.json),
+> with methods and scope in
+> [`output/analytical_workflow_methods.md`](../output/analytical_workflow_methods.md).
+> The canonical analysis uses PBMC proteomics, `log2(x+1)`, Sex-adjusted
+> empirical-Bayes moderated `|t|`, measured-only **undirected** regulatory
+> distance at `h<=2`, 3,264 attempted features = 3,117 valid + 137 disconnected
+> + 10 undersized, and a 1,407-anchor fixed-term readout of 8/6/0. The terms are
+> discovery-derived on this cohort; this is not independent confirmation. Any
+> directional target-to-target propagation, recursive cascade, or per-arm
+> significance claim below is retained only as a record of the abandoned design.
 
 ## The Question
 
-C9orf72 repeat expansions are the most common genetic cause of ALS. INDRA's
+C9orf72 repeat expansions are the most common genetic cause of ALS. In this
+historical design, INDRA's
 knowledge graph tells us which genes C9orf72 regulates, and which genes
 those genes regulate, and so on. Separately, we have proteomics data from
-iPSC-derived motor neurons that tells us which proteins are altered in
-C9orf72 carriers.
+AnswerALS PBMC samples that tells us which proteins are altered in C9orf72
+carriers.
 
 The question: **can we walk outward through INDRA's regulatory graph from
 C9orf72, and at each step, confirm that the downstream targets actually
@@ -36,8 +36,8 @@ that boundary tell us?
 
 ## The Data
 
-**Proteomics**: 3,264 proteins quantified from iPSC-derived motor neurons
-(AnswerALS cohort). Three groups:
+**Proteomics**: 3,264 measured rows from AnswerALS PBMC samples (not
+iPSC-derived motor neurons). Three primary groups:
 
 | Group | n | Description |
 |-------|---|-------------|
@@ -783,7 +783,7 @@ INDRA API latency (~1 second per CoGEx query), not by computation.
 | Stopping (hop 3+) | π₀ convergence, Δ < 0.01 between hops |
 | Edge reliability | Corrected INDRA noise model, per-edge, contradiction-aware |
 | Cohort | 25 C9orf72 carriers, 294 sporadic ALS, 91 healthy controls |
-| Proteome | 3,264 proteins from iPSC-derived motor neurons |
+| Proteome | 3,264 measured rows from AnswerALS PBMC samples |
 | Knowledge graph | INDRA CoGEx regulatory edges |
 | Contrasts | C9 vs Sporadic, C9 vs Control, Sporadic vs Control |
 | Runtime | ~20 minutes per contrast |

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Fetch STRING v12.0 human physical-PPI links for the INDRA-vs-STRING contrast
-# referenced in the Wave 24k T43 sign-flip analysis and the Wave 24l publication
-# figure pipeline (scripts/viz/report_figures.py).
+# Fetch STRING v12.0 human physical-PPI links for a future audited rerun of the
+# withdrawn Wave 24k T43 INDRA-vs-STRING comparison.
 #
 # The downloaded archive is ~8.5 MB and is gitignored under data/string/.
-# The contrast logic itself does not load this file at runtime — Wave 24k
-# numbers are pinned in report_figures.py — but the file is the reference
-# substrate for any STRING re-derivation.
+# No legacy STRING numbers remain in the publication figure source. This file
+# is only a reference substrate; reuse requires a same-orientation canonical
+# log2, measured-only derivation with frozen mapping and machine-readable output.
 #
 # Source: https://stringdb-downloads.org/
 # License: STRING data is freely available for academic use under CC BY 4.0.
