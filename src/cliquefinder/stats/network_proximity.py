@@ -934,10 +934,32 @@ def query_shortest_paths_batched(
     return distances
 
 
+#: The only ``BioEntity`` properties a caller may key the graph on.
+#: Cypher has no parameter slot for a property name, so the value is
+#: interpolated into the query text — it must therefore never come from
+#: an unvalidated source.  Keep this frozen and small.
+GRAPH_KEY_PROPERTIES = frozenset({"name", "id"})
+
+
+def _validated_key_property(key_property: str) -> str:
+    """Return ``key_property`` if it is a legal node-key, else raise.
+
+    Guards the one place where a caller-supplied string reaches Cypher
+    as query *text* rather than as a bound parameter.
+    """
+    if key_property not in GRAPH_KEY_PROPERTIES:
+        raise ValueError(
+            f"key_property must be one of "
+            f"{sorted(GRAPH_KEY_PROPERTIES)}, got {key_property!r}"
+        )
+    return key_property
+
+
 def query_gene_degrees_batched(
     cogex_client: Any,
     gene_names: list[str],
     batch_size: int = 500,
+    key_property: str = "name",
 ) -> dict[str, int]:
     """Query Neo4j for each gene's regulatory degree (undirected).
 
@@ -949,20 +971,35 @@ def query_gene_degrees_batched(
     Restricting both queries to ``ALL_REGULATORY_TYPES`` keeps them
     coherent.
 
+    Parameters
+    ----------
+    key_property
+        Which ``BioEntity`` property identifies a node: ``"name"`` (the
+        bare symbol) or ``"id"`` (the namespaced CURIE, e.g.
+        ``hgnc:391``).  ``"name"`` is **ambiguous**: the grouping key is
+        the bare string, so ``count(r)`` sums over every entity carrying
+        that name in any namespace — a gene homonym (``AR`` → the
+        androgen receptor), a FamPlex family (``AKT`` → ``fplx:AKT``),
+        or a chemical (``NADPH`` → ``chebi:16474``).  ``"id"`` is
+        one-node-per-key and is the correct choice for identity-preserving
+        work; ``"name"`` is retained only to reproduce legacy artifacts.
+
     Returns
     -------
-    Dict of ``{gene_name: regulatory_degree}``.
+    Dict of ``{node_key: regulatory_degree}``, keyed by whichever
+    property ``key_property`` selects.
     """
+    prop = _validated_key_property(key_property)
     degrees: dict[str, int] = {}
 
     for i in range(0, len(gene_names), batch_size):
         batch = gene_names[i:i + batch_size]
-        query = """
+        query = f"""
         MATCH (g:BioEntity)
-        WHERE g.name IN $gene_list
+        WHERE g.{prop} IN $gene_list
         OPTIONAL MATCH (g)-[r:indra_rel]-()
         WHERE r.stmt_type IN $stmt_types
-        WITH g.name AS gene, count(r) AS degree
+        WITH g.{prop} AS gene, count(r) AS degree
         RETURN gene, degree
         """
         rows = cogex_client._execute_query(
@@ -1043,6 +1080,7 @@ def extract_subgraph_induced_by_features(
     seed_batch_size: int = 500,
     max_edges_per_batch: int = 5_000_000,
     restrict_endpoints_to_features: bool = False,
+    key_property: str = "name",
 ) -> tuple[list[tuple[str, str, dict[str, Any]]], set[str]]:
     """Extract regulatory edges induced by ``features`` ∪ their k-hop neighbors.
 
@@ -1111,6 +1149,19 @@ def extract_subgraph_induced_by_features(
         unmeasured intermediates that downstream BFS discards anyway.
         ``max_hops`` is ignored under this mode — the BFS depth is
         applied later in ``compute_all_pairs_shortest_paths_bounded``.
+    key_property
+        Which ``BioEntity`` property identifies a node — ``"name"`` (bare
+        symbol) or ``"id"`` (namespaced CURIE, e.g. ``hgnc:391``).  Every
+        returned edge endpoint and every member of ``matched_features``
+        is expressed in this key space, so ``features`` must be supplied
+        in it too.
+
+        ``"name"`` does not preserve entity identity: a symbol string can
+        name several ``BioEntity`` nodes across namespaces, so passing an
+        alias admits whatever *other* entity owns that string (``AR`` ->
+        the androgen receptor; ``AKT`` -> ``fplx:AKT``).  Prefer ``"id"``
+        for identity-preserving traversal; ``"name"`` reproduces legacy
+        artifacts.
 
     Returns
     -------
@@ -1160,6 +1211,8 @@ def extract_subgraph_induced_by_features(
             f"seed_batch_size must be >= 1, got {seed_batch_size}"
         )
 
+    prop = _validated_key_property(key_property)
+
     if not features:
         return [], set()
 
@@ -1172,10 +1225,10 @@ def extract_subgraph_induced_by_features(
     # very differently.
     matched_features: set[str] = set()
     feature_list = list(features)
-    probe_query = """
+    probe_query = f"""
     MATCH (b:BioEntity)
-    WHERE b.name IN $batch
-    RETURN DISTINCT b.name AS name
+    WHERE b.{prop} IN $batch
+    RETURN DISTINCT b.{prop} AS name
     """
     for i in range(0, len(feature_list), seed_batch_size):
         batch = feature_list[i:i + seed_batch_size]
@@ -1192,15 +1245,15 @@ def extract_subgraph_induced_by_features(
         # endpoints would be dropped anyway.  Query (features, features)
         # edges directly: one Cypher pass per source-batch with the
         # target set passed server-side via $feature_set.
-        edge_query_measured = """
+        edge_query_measured = f"""
         MATCH (a:BioEntity)-[r:indra_rel]->(b:BioEntity)
-        WHERE a.name IN $batch
-          AND b.name IN $feature_set
+        WHERE a.{prop} IN $batch
+          AND b.{prop} IN $feature_set
           AND r.evidence_count >= $min_evidence
           AND r.stmt_type IN $stmt_types
         RETURN DISTINCT
-          a.name AS source_name,
-          b.name AS target_name,
+          a.{prop} AS source_name,
+          b.{prop} AS target_name,
           r.evidence_count AS evidence_count,
           r.stmt_type AS stmt_type
         LIMIT $max_edges
@@ -1243,12 +1296,12 @@ def extract_subgraph_induced_by_features(
     frontier: set[str] = set(features)
 
     # Phase 1: regulatory-only BFS frontier expansion, hop by hop.
-    expand_query = """
+    expand_query = f"""
     MATCH (a:BioEntity)-[r:indra_rel]-(b:BioEntity)
-    WHERE a.name IN $batch
+    WHERE a.{prop} IN $batch
       AND r.evidence_count >= $min_evidence
       AND r.stmt_type IN $stmt_types
-    RETURN DISTINCT a.name AS source, b.name AS target
+    RETURN DISTINCT a.{prop} AS source, b.{prop} AS target
     LIMIT $max_edges
     """
     for hop in range(1, max_hops + 1):
@@ -1289,14 +1342,14 @@ def extract_subgraph_induced_by_features(
     # Phase 2: extract regulatory edges among collected nodes.  Per
     # batch over nodes_seen, query out-edges then post-filter to keep
     # only those whose target is also in nodes_seen.
-    edge_query = """
+    edge_query = f"""
     MATCH (a:BioEntity)-[r:indra_rel]->(b:BioEntity)
-    WHERE a.name IN $batch
+    WHERE a.{prop} IN $batch
       AND r.evidence_count >= $min_evidence
       AND r.stmt_type IN $stmt_types
     RETURN DISTINCT
-      a.name AS source_name,
-      b.name AS target_name,
+      a.{prop} AS source_name,
+      b.{prop} AS target_name,
       r.evidence_count AS evidence_count,
       r.stmt_type AS stmt_type
     LIMIT $max_edges

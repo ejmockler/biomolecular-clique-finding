@@ -52,6 +52,13 @@ from cliquefinder.stats.differential import fdr_correction
 from cliquefinder.stats.perturbation_gradient import run_gradient_test
 from cliquefinder.utils.fileio import atomic_write_json, atomic_write_text
 
+from ._graph_key import (
+    CURIE_GRAPH_KEY,
+    SYMBOL_GRAPH_KEY,
+    VALID_GRAPH_KEYS,
+    node_property_for,
+    resolve_feature_curies,
+)
 from ._intensity import (
     LOG2_TRANSFORM,
     RAW_TRANSFORM,
@@ -107,6 +114,7 @@ class LandscapeDesign:
     n_permutations: int
     covariates: tuple[str, ...]
     transform: str = LOG2_TRANSFORM
+    graph_key: str = CURIE_GRAPH_KEY
     description: str = ""
 
     def __post_init__(self) -> None:
@@ -119,6 +127,12 @@ class LandscapeDesign:
             raise ValueError(
                 f"LandscapeDesign.transform must be one of "
                 f"{sorted(_VALID_TRANSFORMS)}, got {self.transform!r}"
+            )
+
+        if self.graph_key not in VALID_GRAPH_KEYS:
+            raise ValueError(
+                f"LandscapeDesign.graph_key must be one of "
+                f"{sorted(VALID_GRAPH_KEYS)}, got {self.graph_key!r}"
             )
 
         if len(self.contrast) != 2 or self.contrast[0] == self.contrast[1]:
@@ -148,6 +162,7 @@ class LandscapeDesign:
             "n_permutations": int(self.n_permutations),
             "covariates": list(self.covariates),
             "transform": str(self.transform),
+            "graph_key": str(self.graph_key),
             "description": self.description,
         }
 
@@ -172,6 +187,13 @@ class LandscapeDesign:
             # genuinely-log2 file would be mislabeled here; such emitters must
             # set "transform" in the design block themselves.
             transform=str(data.get("transform", RAW_TRANSFORM)),
+            # Same back-compat rule as ``transform``: a design serialized
+            # without a ``graph_key`` predates the field, so it came from
+            # the symbol-keyed graph — default to "symbol", NOT the
+            # constructor's "curie".  This lets the resume guard refuse a
+            # curie-keyed design against a symbol-keyed run instead of
+            # silently mixing two different graphs in one output_dir.
+            graph_key=str(data.get("graph_key", SYMBOL_GRAPH_KEY)),
             description=str(data.get("description", "")),
         )
 
@@ -720,22 +742,33 @@ def _fit_engine_for_contrast(
 
 def _build_distance_matrix(
     cogex_client,
-    measured_symbols: list[str],
+    node_keys: list[str],
     measured_feature_ids: list[str],
-    sym_to_feat: dict[str, str],
+    feat_to_nodes: dict[str, list[str]],
+    node_to_feats: dict[str, list[str]],
     max_hops: int | None,
     seed_batch_size: int = 500,
+    key_property: str = "name",
 ) -> tuple[FeatureDistanceMatrix, set[str], dict[str, int], list[tuple[str, str, dict]]]:
     """Extract regulatory subgraph and build per-protein distance matrix.
 
-    Aggregates HGNC-keyed all-pairs distances back to UniProt-keyed
-    per-protein distances using the bridge's min-over-aliases convention
-    (Wave 22).  Returns:
+    Aggregates graph-keyed all-pairs distances back to UniProt-keyed
+    per-protein distances.  The graph key space is the caller's choice
+    (``key_property``): under ``"id"`` each feature owns exactly one
+    CURIE node, under ``"name"`` it owns every resolved symbol/alias.
+    The aggregation is written once for both — min-over-nodes for
+    distance, max-over-nodes for degree — and collapses to the identity
+    in the one-node-per-feature case.
+
+    Returns:
 
     - ``FeatureDistanceMatrix`` keyed by UniProt feature_ids.
-    - Set of unmatched feature_ids (UniProt accessions whose aliases
-      did not resolve to a BioEntity in INDRA).
-    - Per-feature_id graph degree (max-over-aliases against full INDRA),
+    - Set of unmatched feature_ids: those with no graph node at all AND
+      those whose nodes did not resolve to a ``BioEntity`` in INDRA.
+      Both are genuinely "absent from the graph", and conflating them
+      with graph-isolated features is what made the legacy field
+      uninformative.
+    - Per-feature_id graph degree (max-over-nodes against full INDRA),
       for the degree-binned null.
     - Raw edge list (returned for caller's optional reuse).
     """
@@ -746,23 +779,24 @@ def _build_distance_matrix(
     )
 
     logger.info(
-        "Extracting regulatory subgraph induced by %d HGNC aliases "
-        "(%d UniProt proteins)",
-        len(measured_symbols), len(measured_feature_ids),
+        "Extracting regulatory subgraph induced by %d graph nodes "
+        "(%d UniProt proteins, key=%s)",
+        len(node_keys), len(measured_feature_ids), key_property,
     )
     t_extract = time.time()
-    edges, matched_symbols = extract_subgraph_induced_by_features(
+    edges, matched_nodes = extract_subgraph_induced_by_features(
         cogex_client=cogex_client,
-        features=measured_symbols,
+        features=node_keys,
         max_hops=max_hops,
         min_evidence=1,
         seed_batch_size=seed_batch_size,
         restrict_endpoints_to_features=True,  # wave_24l measured-only
+        key_property=key_property,
     )
     logger.info(
-        "Extracted %d regulatory edges; %d/%d HGNC aliases matched "
+        "Extracted %d regulatory edges; %d/%d graph nodes matched "
         "in INDRA (%.1fs)",
-        len(edges), len(matched_symbols), len(measured_symbols),
+        len(edges), len(matched_nodes), len(node_keys),
         time.time() - t_extract,
     )
 
@@ -777,74 +811,80 @@ def _build_distance_matrix(
     # chain of measured intermediates — no routing through unmeasured
     # INDRA nodes.  This is the regulatory-cascade interpretation of
     # the shell statistic (cf. wave_24l).
-    measured_symbol_set = set(measured_symbols)
-    distances_hgnc_dict = compute_all_pairs_shortest_paths_bounded(
+    node_key_set = set(node_keys)
+    distances_node_dict = compute_all_pairs_shortest_paths_bounded(
         edges=edges,
-        source_nodes=measured_symbols,
+        source_nodes=node_keys,
         max_hops=max_hops,
-        target_filter=measured_symbol_set,
-        node_filter=measured_symbol_set,
+        target_filter=node_key_set,
+        node_filter=node_key_set,
     )
     logger.info("All-pairs done (%.1fs)", time.time() - t_apsp)
 
-    # Full-INDRA degrees per HGNC alias — needed for degree-bin matching
+    # Full-INDRA degrees per graph node — needed for degree-bin matching
     # consistent with the bridge's per-seed gradient.
     logger.info(
-        "Querying full-INDRA regulatory degrees for %d HGNC aliases",
-        len(measured_symbols),
+        "Querying full-INDRA regulatory degrees for %d graph nodes",
+        len(node_keys),
     )
     t_deg = time.time()
-    degrees_hgnc = query_gene_degrees_batched(
+    degrees_node = query_gene_degrees_batched(
         cogex_client=cogex_client,
-        gene_names=measured_symbols,
+        gene_names=node_keys,
         batch_size=500,
+        key_property=key_property,
     )
     logger.info("Degrees done (%.1fs)", time.time() - t_deg)
 
     # Aggregate to UniProt level (Wave 22 convention):
-    # - distance: min over aliases that have a finite distance.
-    # - degree: max over aliases (hub-status ceiling).
-    # - unmatched at protein level: NO alias of this UniProt resolved.
-    feat_to_syms: dict[str, list[str]] = {}
-    for sym, fid in sym_to_feat.items():
-        if fid in measured_feature_ids:
-            feat_to_syms.setdefault(fid, []).append(sym)
-
+    # - distance: min over this feature's nodes that have a finite distance.
+    # - degree: max over its nodes (hub-status ceiling).
+    # - unmatched at protein level: this feature has NO node in the graph,
+    #   either because nothing resolved for it or because none of its
+    #   nodes exist as a BioEntity.
+    #
+    # Iterate ``measured_feature_ids`` rather than the mapping's keys: a
+    # feature that resolved to nothing is absent from ``feat_to_nodes``
+    # entirely, and looping over the mapping would silently skip it — so
+    # it would never be recorded as unmatched and would be indistinguishable
+    # downstream from a feature that resolved but is graph-isolated.
     distances_prot: dict[str, dict[str, int]] = {}
     degrees_prot: dict[str, int] = {}
     unmatched_proteins: set[str] = set()
-    for fid, aliases in feat_to_syms.items():
-        # Degree: max over aliases.
+    for fid in measured_feature_ids:
+        nodes = feat_to_nodes.get(fid, [])
         degrees_prot[fid] = max(
-            (degrees_hgnc.get(a, 0) for a in aliases), default=0,
+            (degrees_node.get(n, 0) for n in nodes), default=0,
         )
-        # Unmatched at protein level if NO alias matched in INDRA.
-        if matched_symbols.isdisjoint(aliases):
+        if not nodes or matched_nodes.isdisjoint(nodes):
             unmatched_proteins.add(fid)
 
-    # Build per-source UniProt distance dict by aggregating alias rows.
-    # For each source UniProt, take the min distance to each target
-    # UniProt across all (source_alias, target_alias) pairs.
+    # Build per-source UniProt distance dict by aggregating node rows.
+    # For each source feature, take the min distance to each target
+    # feature across all (source_node, target_node) pairs.
     feature_id_set = set(measured_feature_ids)
-    for source_fid, source_aliases in feat_to_syms.items():
+    for source_fid in measured_feature_ids:
         per_target: dict[str, int] = {source_fid: 0}
-        for source_alias in source_aliases:
-            alias_dists = distances_hgnc_dict.get(source_alias, {})
-            for target_alias, dist in alias_dists.items():
-                target_fid = sym_to_feat.get(target_alias)
-                if target_fid is None or target_fid not in feature_id_set:
-                    continue
-                if target_fid == source_fid:
-                    continue  # self-distance handled above
-                # Under unbounded BFS (max_hops=None) keep every
-                # reachable measured target; otherwise enforce the
-                # hop cap.
-                if dist >= 1 and (
-                    max_hops is None or dist <= max_hops
-                ):
-                    existing = per_target.get(target_fid)
-                    if existing is None or dist < existing:
-                        per_target[target_fid] = dist
+        for source_node in feat_to_nodes.get(source_fid, []):
+            node_dists = distances_node_dict.get(source_node, {})
+            for target_node, dist in node_dists.items():
+                # A node can back more than one measured row when two
+                # rows are the same gene (e.g. the two TMPO rows); both
+                # inherit that node's distances.
+                for target_fid in node_to_feats.get(target_node, ()):
+                    if target_fid not in feature_id_set:
+                        continue
+                    if target_fid == source_fid:
+                        continue  # self-distance handled above
+                    # Under unbounded BFS (max_hops=None) keep every
+                    # reachable measured target; otherwise enforce the
+                    # hop cap.
+                    if dist >= 1 and (
+                        max_hops is None or dist <= max_hops
+                    ):
+                        existing = per_target.get(target_fid)
+                        if existing is None or dist < existing:
+                            per_target[target_fid] = dist
         distances_prot[source_fid] = per_target
 
     matrix = FeatureDistanceMatrix.from_distance_dict(
@@ -1430,18 +1470,43 @@ def _compute_landscape_locked(
         abs_t_per_feature = bridge.get_abs_t_per_feature()
         measured_feature_ids = sorted(abs_t_per_feature.keys())
         n_features_input = len(measured_feature_ids)
-        # HGNC aliases for every measured UniProt — what we actually
-        # query INDRA for.  Sorted for deterministic Cypher batching.
-        feat_to_syms: dict[str, list[str]] = {}
-        for sym, fid in sym_to_feat.items():
-            if fid in abs_t_per_feature:
-                feat_to_syms.setdefault(fid, []).append(sym)
-        measured_symbols = sorted({
-            sym for syms in feat_to_syms.values() for sym in syms
+
+        # Choose the graph key space.  Under "curie" each measured
+        # feature owns exactly one namespaced INDRA node, so a traversal
+        # cannot pick up a homonymous entity's edges; under the legacy
+        # "symbol" space a feature owns every resolved alias string and
+        # can.  See ``panels/_graph_key`` for the failure mode.
+        key_property = node_property_for(design.graph_key)
+        feat_to_nodes: dict[str, list[str]] = {}
+        node_to_feats: dict[str, list[str]] = {}
+
+        if design.graph_key == CURIE_GRAPH_KEY:
+            feat_to_curie, node_to_feats, unresolved = resolve_feature_curies(
+                measured_feature_ids
+            )
+            feat_to_nodes = {
+                fid: [curie] for fid, curie in feat_to_curie.items()
+            }
+            if unresolved:
+                logger.info(
+                    "%d measured features have no HGNC identity and are "
+                    "excluded from the graph: %s",
+                    len(unresolved),
+                    ", ".join(sorted(unresolved)[:10])
+                    + (" ..." if len(unresolved) > 10 else ""),
+                )
+        else:
+            for sym, fid in sym_to_feat.items():
+                if fid in abs_t_per_feature:
+                    feat_to_nodes.setdefault(fid, []).append(sym)
+                    node_to_feats.setdefault(sym, []).append(fid)
+
+        node_keys = sorted({
+            n for nodes in feat_to_nodes.values() for n in nodes
         })
         logger.info(
-            "Measured features: %d UniProt proteins (%d HGNC aliases)",
-            n_features_input, len(measured_symbols),
+            "Measured features: %d UniProt proteins (%d %s graph nodes)",
+            n_features_input, len(node_keys), design.graph_key,
         )
 
         # Phase 3: distance matrix at protein level (Wave 22 aggregation).
@@ -1450,11 +1515,13 @@ def _compute_landscape_locked(
                 matrix_path=matrix_path,
                 resume=resume,
                 bridge=bridge,
-                measured_symbols=measured_symbols,
+                node_keys=node_keys,
                 measured_feature_ids=measured_feature_ids,
-                sym_to_feat=sym_to_feat,
+                feat_to_nodes=feat_to_nodes,
+                node_to_feats=node_to_feats,
                 max_hops=design.max_hops,
                 seed_batch_size=seed_batch_size,
+                key_property=key_property,
             )
         )
 
@@ -1569,11 +1636,13 @@ def _load_or_build_distance_matrix(
     matrix_path: Path,
     resume: bool,
     bridge,
-    measured_symbols: list[str],
+    node_keys: list[str],
     measured_feature_ids: list[str],
-    sym_to_feat: dict[str, str],
+    feat_to_nodes: dict[str, list[str]],
+    node_to_feats: dict[str, list[str]],
     max_hops: int,
     seed_batch_size: int,
+    key_property: str = "name",
 ) -> tuple[FeatureDistanceMatrix, set[str], dict[str, int], bool]:
     """Resume-aware distance matrix construction.
 
@@ -1659,24 +1728,22 @@ def _load_or_build_distance_matrix(
                 cogex_client = _get_cogex_client(bridge)
                 logger.info(
                     "Resume: graph_degrees not in meta sidecar; "
-                    "re-querying full-INDRA degrees for %d aliases",
-                    len(measured_symbols),
+                    "re-querying full-INDRA degrees for %d graph nodes",
+                    len(node_keys),
                 )
-                degrees_hgnc = query_gene_degrees_batched(
+                degrees_node = query_gene_degrees_batched(
                     cogex_client=cogex_client,
-                    gene_names=measured_symbols,
+                    gene_names=node_keys,
                     batch_size=500,
+                    key_property=key_property,
                 )
-                feat_to_syms: dict[str, list[str]] = {}
-                for sym, fid in sym_to_feat.items():
-                    if fid in measured_feature_ids:
-                        feat_to_syms.setdefault(fid, []).append(sym)
                 graph_degrees = {
                     fid: max(
-                        (degrees_hgnc.get(a, 0) for a in aliases),
+                        (degrees_node.get(n, 0)
+                         for n in feat_to_nodes.get(fid, [])),
                         default=0,
                     )
-                    for fid, aliases in feat_to_syms.items()
+                    for fid in measured_feature_ids
                 }
                 return cached, set(cached.unmatched), graph_degrees, True
             else:
@@ -1691,10 +1758,12 @@ def _load_or_build_distance_matrix(
     cogex_client = _get_cogex_client(bridge)
     matrix, unmatched, graph_degrees, _edges = _build_distance_matrix(
         cogex_client=cogex_client,
-        measured_symbols=measured_symbols,
+        node_keys=node_keys,
         measured_feature_ids=measured_feature_ids,
-        sym_to_feat=sym_to_feat,
+        feat_to_nodes=feat_to_nodes,
+        node_to_feats=node_to_feats,
         max_hops=max_hops,
         seed_batch_size=seed_batch_size,
+        key_property=key_property,
     )
     return matrix, unmatched, graph_degrees, False
