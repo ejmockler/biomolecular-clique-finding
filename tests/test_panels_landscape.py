@@ -1110,9 +1110,10 @@ class TestPathTraversalTag:
         ):
             _load_or_build_distance_matrix(
                 matrix_path=path, resume=True, bridge=None,
-                measured_symbols=["A", "B"],
+                node_keys=["A", "B"],
                 measured_feature_ids=["A", "B"],
-                sym_to_feat={"A": "A", "B": "B"},
+                feat_to_nodes={"A": ["A"], "B": ["B"]},
+                node_to_feats={"A": ["A"], "B": ["B"]},
                 max_hops=2, seed_batch_size=500,
             )
 
@@ -1137,9 +1138,10 @@ class TestPathTraversalTag:
         ):
             _load_or_build_distance_matrix(
                 matrix_path=path, resume=True, bridge=None,
-                measured_symbols=["A", "B"],
+                node_keys=["A", "B"],
                 measured_feature_ids=["A", "B"],
-                sym_to_feat={"A": "A", "B": "B"},
+                feat_to_nodes={"A": ["A"], "B": ["B"]},
+                node_to_feats={"A": ["A"], "B": ["B"]},
                 max_hops=2, seed_batch_size=500,
             )
 
