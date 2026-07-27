@@ -84,7 +84,15 @@ figures/
 .playwright-mcp/
 .gemini/
 node_modules/
-presentations/
+presentations/*
+!presentations/c9-als-fingerprint/
+presentations/c9-als-fingerprint/.slidev/
+presentations/c9-als-fingerprint/dist/
+presentations/c9-als-fingerprint/export/
+presentations/c9-als-fingerprint/slides.md.bak
+
+# Local Slidev render-review captures.
+tw*.png
 
 # Local benchmark data (large: ~450MB corpus)
 data/benchmark/

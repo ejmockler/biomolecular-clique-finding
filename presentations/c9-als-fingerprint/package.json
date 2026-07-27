@@ -1,0 +1,18 @@
+{
+  "name": "c9-als-fingerprint-presentation",
+  "version": "1.0.0",
+  "description": "C9-ALS proteomic fingerprint: gradient discovery and per-edge concordance",
+  "scripts": {
+    "dev": "slidev --open",
+    "build": "slidev build",
+    "export": "slidev export",
+    "export-pdf": "slidev export --format pdf"
+  },
+  "dependencies": {
+    "@slidev/cli": "^0.50.0",
+    "@slidev/theme-default": "latest"
+  },
+  "devDependencies": {
+    "playwright-chromium": "^1.58.2"
+  }
+}

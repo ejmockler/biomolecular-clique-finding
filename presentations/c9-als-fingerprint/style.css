@@ -1,0 +1,68 @@
+/*
+ * Global overrides for the C9-ALS deck.
+ * Slidev auto-loads ./style.css.
+ *
+ * Hide the dev-viewer navigation chrome so screen-sharing the live
+ * `npm run dev` view stays clean. This is presenter UI only — it never
+ * appears in `slidev build` or `slidev export`, so removing it here has
+ * no effect on the delivered deck, only on the interactive viewer.
+ *
+ * Trade-off: you also lose the on-screen arrows and the `o` overview for
+ * yourself. Keyboard nav still works (←/→/Space/f for fullscreen).
+ */
+
+/* Right-side slide-list / overview cluster (the numbered panel) */
+#app > .fixed.right-5 {
+  display: none !important;
+}
+
+/* Bottom-left navbar (prev/next/overview/pen/presenter buttons) */
+.slidev-slide-container > .absolute.bottom-0.left-0 {
+  display: none !important;
+}
+
+/* Belt-and-suspenders: any Slidev overview/nav containers in other versions */
+.slidev-overview,
+.slidev-nav-controls {
+  display: none !important;
+}
+
+/*
+ * Method strip (PI technical layer): on slides that carry a <MethodStrip>, pin
+ * the layout to the canvas height and reserve a bottom band via border-box
+ * padding, so top-aligned content flows ABOVE the strip. The strip itself stays
+ * position:absolute to the fixed slide container (not the layout), so it sits at
+ * the true canvas bottom. Scoped via :has() — strip-less slides are untouched.
+ */
+.slidev-layout:has(.method-strip) {
+  height: 100%;
+  box-sizing: border-box;
+  padding-bottom: 48px !important;
+}
+
+/*
+ * Interlude data tables ("Under the hood" slides): neutralize the theme's
+ * default cyan header fill and make rows compact + dark. Per-cell color
+ * utilities (verdict reds/greens, highlights) still win — we don't set td color.
+ */
+.slidev-layout table {
+  width: 100%;
+  border-collapse: collapse;
+  background: transparent;
+  font-size: 13px;
+  margin: 0.4rem 0 0;
+}
+.slidev-layout thead th {
+  background: transparent !important;
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid #334155;
+  padding: 5px 10px;
+}
+.slidev-layout tbody td {
+  border: none;
+  padding: 5px 10px;
+  vertical-align: top;
+}
