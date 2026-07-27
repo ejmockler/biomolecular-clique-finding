@@ -69,6 +69,17 @@ def main() -> None:
     ap.add_argument("--contrast", required=True, choices=sorted(CONTRASTS))
     ap.add_argument("--max-hops", type=int, default=2,
                     help="Bounded depth (2 = published primary).")
+    ap.add_argument(
+        "--graph-key", default="curie", choices=("curie", "symbol"),
+        help=(
+            "How a measured feature is identified as a graph node. "
+            "'curie' gives each feature one namespaced gene id, so a "
+            "traversal cannot inherit a homonymous entity's edges. "
+            "'symbol' is the legacy name-matched space that produced the "
+            "original artifacts. Written into the output dir name so the "
+            "two key spaces can never share a directory."
+        ),
+    )
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -78,7 +89,11 @@ def main() -> None:
     log = logging.getLogger(f"landscape-log2-{args.contrast}")
 
     (case, control), stem = CONTRASTS[args.contrast]
-    out_dir = ROOT / f"output/{stem}_measured_only_log2"
+    # The legacy symbol-keyed artifacts own the unsuffixed directory name;
+    # a curie-keyed run is a DIFFERENT graph and must never resume into or
+    # overwrite them.
+    suffix = "" if args.graph_key == "symbol" else f"_{args.graph_key}"
+    out_dir = ROOT / f"output/{stem}_measured_only_log2{suffix}"
     data_path = ROOT / "output/proteomics/all_als.data.csv"
     metadata_path = ROOT / "output/proteomics/all_als.metadata.csv"
 
@@ -88,15 +103,16 @@ def main() -> None:
         n_permutations=999,
         covariates=("Sex",),
         transform="log2",  # log2(x+1) — the corrected production scale
+        graph_key=args.graph_key,
         description=(
             f"log2 published-primary re-run — {case} vs {control}, "
             f"measured-only regulatory graph, max_hops={args.max_hops}, "
-            f"log2(x+1) intensities"
+            f"log2(x+1) intensities, {args.graph_key}-keyed graph nodes"
         ),
     )
 
-    log.info("=== LOG2 LANDSCAPE START: %s vs %s (h=%d) ===",
-             case, control, args.max_hops)
+    log.info("=== LOG2 LANDSCAPE START: %s vs %s (h=%d, key=%s) ===",
+             case, control, args.max_hops, args.graph_key)
     log.info("Output dir: %s", out_dir)
 
     t0 = time.time()

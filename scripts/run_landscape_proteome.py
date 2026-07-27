@@ -89,6 +89,11 @@ def main() -> None:
         n_permutations=999,
         covariates=("Sex",),
         transform="log2",  # log2(x+1) intensities
+        # Pinned: this driver reproduces the historical symbol-keyed
+        # artifacts in its output dir. The pipeline default is now
+        # "curie" (one namespaced gene id per feature); leaving this
+        # implicit would silently write a different graph here.
+        graph_key="symbol",
         description=(
             "Wave 24l full proteome — every measured protein as seed, "
             "C9_vs_SPORADIC, regulatory edges, max_hops=None (BFS to "

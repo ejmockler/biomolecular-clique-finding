@@ -80,6 +80,11 @@ def main() -> None:
         n_permutations=49,
         covariates=("Sex",),
         transform="log2",  # explicit: matches the production default
+        # Pinned: this driver reproduces the historical symbol-keyed
+        # artifacts in its output dir. The pipeline default is now
+        # "curie" (one namespaced gene id per feature); leaving this
+        # implicit would silently write a different graph here.
+        graph_key="symbol",
         description=f"Wave 24f extrapolation — {n_features} features × 49 perms, log2(x+1)",
     )
 
