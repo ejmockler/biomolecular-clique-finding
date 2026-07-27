@@ -89,10 +89,19 @@ has been performed; age therefore remains an unresolved limitation.
 
 All 3,264 measured features are attempted as anchors in the bounded,
 measured-only network analysis. Of these, 3,117 yield valid two-shell gradients;
-137 have no reachable measured neighbor (`DisconnectedFeature`), and 10 more
-fail the implemented guardrail requiring at least 10 measurable genes in the
-neighborhood. These are network-statistic exclusions, not missing-intensity or
-data-quality exclusions. The iRT standard is one of the 137 disconnected rows.
+137 are recorded as `DisconnectedFeature`, and 10 more fail the implemented
+guardrail requiring at least 10 measurable genes in the neighborhood.
+
+The single reason recorded against all 137 is not uniform in fact. Six of them —
+`1/iRT_protein`, P30042, P51784, Q58FG1, Q9BRJ2 and Q9Y4D8 — never resolved to a
+gene symbol and so were never nodes in the extracted graph at all; for these the
+exclusion is an identifier-resolution outcome, not a graph-reachability one. The
+retained metadata cannot distinguish the two cases, because its `unmatched` field
+is populated only for features that already resolved and is therefore empty in
+every run. The remaining 131 do carry a recorded full-INDRA degree and are
+genuinely isolated within the measured-only depth-2 subgraph. None of the 147 is
+a missing-intensity or data-quality exclusion in the abundance sense — that
+matrix is complete. The iRT standard is one of the six unresolved rows.
 
 ## The per-protein moderated-t statistic
 
@@ -214,12 +223,28 @@ decays as we move away from it through the regulatory network.
 The network is extracted from live INDRA CoGEx using four statement types
 (`Activation`, `Inhibition`, `IncreaseAmount`, and `DecreaseAmount`) with at
 least one item of evidence. Both endpoints and every traversed intermediate are
-restricted to the measured feature universe. The UniProt-to-symbol/alias bridge
-is queried live through MyGene; distance is the minimum finite distance over a
-row's resolved symbol/alias pairs.
-The source statements are directed, but distance is measured *undirected*,
-because the question is regulatory-neighborhood proximity rather than causal
-flow. Thus a reported hop distance never routes through an unmeasured protein.
+restricted to the measured feature universe. The source statements are directed,
+but distance is measured *undirected*, because the question is
+regulatory-neighborhood proximity rather than causal flow.
+
+That restriction requires care, because it is only as strong as the identifier
+that defines a "measured feature". In the analysis reported here each measured
+row was represented by every gene symbol and alias a live lookup returned for it,
+and network nodes were matched on their bare name. Name strings do not preserve
+entity identity: when an alias of a measured protein is also the official name of
+a *different* and unmeasured entity, that entity and all of its regulatory edges
+enter the graph under the measured row's identity. This affected 119 of the 3,258
+graph-resolved rows, 96 of them among the 1,407 confirmatory anchors. The largest
+single case is instructive — `AR` is an alias of the measured AKR1B1, so the
+androgen receptor, which is not measured and carries 14,818 regulatory
+relationships, was admitted as that row and gave it a first-shell neighborhood of
+821 proteins against a dataset median of 17. Most other cases are protein-family
+or chemical nodes rather than gene homonyms. The measured-only guarantee
+therefore held over name strings rather than over measured proteins, and a
+reported hop distance could route through an unmeasured entity that shares a name
+with a measured one. Identifying each feature by a single namespaced gene
+identifier removes the ambiguity, and any reanalysis should do so; the counts
+reported here predate that change and should be read with this caveat attached.
 The retained `distances.npz` files contain the analyzed distance matrices, while
 `distances.meta.json` preserves their feature labels, degrees, and unmatched
 features. The canonical GSEA receipt hashes the metadata JSON, not the NPZ
@@ -247,13 +272,17 @@ spatially-organized perturbation should leave.
 The analysis is bounded at depth 2 by reasoned choice, not by a reachability
 limit. At depth two the statistic compares the anchor's direct regulatory
 partners with its two-hop partners under an **undirected** proximity metric. It
-does not trace directional propagation. Extending deeper changes the question
-rather than sharpening it: it
-stops measuring local decay and starts asking whether the anchor's neighborhood
-differs from its entire connected component, a weaker and more diffuse
-comparison. The current unbounded sensitivity attenuates the pass pattern from
-8/6/0 to 6/0/0. That establishes depth sensitivity; it does not by itself
-identify the deeper-shell signal as a particular kind of biological noise.
+does not trace directional propagation. The bound is topological, and it should
+not be read as confining the statistic to a small neighborhood: in the analyzed
+measured-only graph the hop-2 shell already spans a median 60% of an anchor's
+connected component, rising to 76% among the 1,407 confirmatory anchors. The
+depth-2 slope is therefore already a near-neighborhood-versus-most-of-component
+contrast, and removing the bound raises component coverage from roughly 61% to
+99% rather than introducing a different comparison. The operative justification
+for the bound is consequently empirical rather than structural: the current
+unbounded sensitivity attenuates the pass pattern from 8/6/0 to 6/0/0. That
+establishes depth sensitivity; it does not by itself identify the deeper-shell
+signal as a particular kind of biological noise.
 
 At depth 2, with shells $h \in \{1, 2\}$, the weighted slope reduces exactly to
 $$\hat m_a = \bar S_2 - \bar S_1,$$
@@ -271,11 +300,21 @@ Instead, degree stratification is a conservative diagnostic of how a slope
 compares with label arrangements that approximately retain degree location.
 
 For each anchor, production removes the anchor from the label pool. Each
-remaining measured feature receives its full-INDRA count of incident regulatory
+remaining measured feature receives a full-INDRA count of incident regulatory
 relationships, taking the maximum over that UniProt row's resolved aliases. This
 is not the number of unique measured hop-1 neighbors; the degree query applies
 the statement-type filter but does not reapply the shell extraction's explicit
-evidence-count predicate. Features are sorted by degree and
+evidence-count predicate. Nor is the count necessarily the feature's *own*:
+because the query is keyed on the bare INDRA entity name, an alias shared with
+another entity contributes that entity's degree. For 119 of the 3,258
+degree-carrying features — 96 of the 1,407 robust anchors — the assigned degree
+exceeds that of the feature's own gene, usually through a protein-family node
+(AKT1 is assigned `fplx:AKT`'s 35,596 rather than its own 9,070) and sometimes
+through a different gene (AKR1B1 is assigned that of `AR`, the androgen
+receptor: 14,818 rather than 2,120). Because degree only sets rank-block
+membership under a coarse 100-wide binning, and the pathway ranking never reads
+the resulting p-values, this imprecision stays confined to the diagnostic.
+Features are sorted by degree and
 partitioned into consecutive rank blocks of 100; $|t|$ is shuffled within each
 block. These are similar-degree blocks, not exact degree matches. Randomness uses
 base seed 42 plus a stable MD5-derived anchor identifier. The gradient's
@@ -328,8 +367,10 @@ sets up to 50,000 members. No phenotype labels are permuted.
 Significance comes from gene-set (label) permutation over the fixed ranking: the
 members of $S$ are the unit of permutation, never the phenotype. We ask whether a
 pathway's members sit non-randomly toward the concentrated end of a ranking we
-hold fixed. Raw enrichment scores grow systematically with gene-set size, so a
-raw $ES$ is not comparable across pathways of different sizes. GSEA normalizes
+hold fixed. Raw enrichment scores depend systematically on gene-set size — $|ES|$
+*shrinks* as the matched set grows, because each hit's increment is normalized by
+the weight total over the whole matched set — so a raw $ES$ is not comparable
+across pathways of different sizes. GSEA normalizes
 against the magnitude of the **same-sign** permutation null,
 $$D_s(S)=\mathbb{E}\!\left[|ES^{\mathrm{null}}(S)|\mid
 \operatorname{sign}(ES^{\mathrm{null}})=s\right], \qquad
